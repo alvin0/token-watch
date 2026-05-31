@@ -1,0 +1,4 @@
+{"type":"session_meta","timestamp":"2025-01-15T10:00:00.000Z","payload":{"id":"codex-sess-bad456","cwd":"/home/user/project","cli_version":"1.2.3","source":"cli","git":{"branch":"main","repository_url":"https://github.com/user/project.git"}}}
+{invalid json - this line is intentionally malformed for robustness testing
+{"type":"event_msg","timestamp":"2025-01-15T10:00:15.000Z","payload":{"type":"token_count"},"info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":500,"output_tokens":800,"reasoning_output_tokens":200,"total_tokens":1800},"total_token_usage":{"input_tokens":1000,"cached_input_tokens":500,"output_tokens":800,"reasoning_output_tokens":200,"total_tokens":1800},"model_context_window":200000},"rate_limits":{"primary":{"used_percent":20,"window_minutes":1,"resets_in_seconds":45}}}
+{"type":"unknown_event","data":{"foo":"bar"}}

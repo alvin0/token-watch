@@ -1,0 +1,168 @@
+{
+  "name": "token-watch",
+  "displayName": "Token Watch",
+  "description": "A VS Code extension.",
+  "version": "0.0.1",
+  "publisher": "dinh-ai",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "token-watch.openPanel",
+        "title": "Open Panel",
+        "category": "Token Watch"
+      },
+      {
+        "command": "token-watch.rescan",
+        "title": "Rescan Logs",
+        "category": "Token Watch"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "token-watch-container",
+          "title": "Token Watch",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "token-watch-container": [
+        {
+          "type": "webview",
+          "id": "token-watch.sidebarView",
+          "name": "Token Watch"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Token Watch",
+      "properties": {
+        "tokenWatch.sources.codex.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Toggle Codex ingestion."
+        },
+        "tokenWatch.sources.claude.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Toggle Claude ingestion."
+        },
+        "tokenWatch.sources.codex.path": {
+          "type": "string",
+          "default": "",
+          "description": "Custom Codex sessions path. Empty means default (~/.codex/sessions)."
+        },
+        "tokenWatch.sources.claude.path": {
+          "type": "string",
+          "default": "",
+          "description": "Custom Claude projects path. Empty means default (~/.claude/projects)."
+        },
+        "tokenWatch.pricing.overrides": {
+          "type": "object",
+          "default": {},
+          "description": "Map of modelId → { inputPer1K, cachedInputPer1K, cacheCreationPer1K, outputPer1K }. Merged over bundled defaults."
+        },
+        "tokenWatch.currency.secondary": {
+          "type": "string",
+          "default": "",
+          "description": "ISO currency code for secondary display (e.g. JPY). Empty disables."
+        },
+        "tokenWatch.currency.secondaryRate": {
+          "type": "number",
+          "default": 0,
+          "description": "USD → secondary currency multiplier. Must be > 0 to display."
+        },
+        "tokenWatch.ingestion.watchDebounceMs": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 250,
+          "maximum": 60000,
+          "description": "File-watch debounce interval in milliseconds."
+        },
+        "tokenWatch.ingestion.maxLineBytes": {
+          "type": "number",
+          "default": 1048576,
+          "minimum": 4096,
+          "description": "Lines larger than this are skipped without buffering."
+        },
+        "tokenWatch.ingestion.backfillMonths": {
+          "type": "number",
+          "default": 6,
+          "description": "Historical backfill cap in months. 0 = unlimited. Bounds first-time reads only."
+        },
+        "tokenWatch.analytics.anomalyMultiplier": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "description": "Day cost > k × trailing median flags anomaly."
+        },
+        "tokenWatch.analytics.contextFillWarnPct": {
+          "type": "number",
+          "default": 80,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Session peak-fill highlight threshold (%)."
+        },
+        "tokenWatch.statusBar.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show/hide the status bar item."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "pretest": "npm run compile-tests && npm run compile",
+    "test": "vscode-test"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "recharts": "2.15.0",
+    "sql.js": "1.11.0",
+    "zustand": "5.0.3"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.7",
+    "@types/node": "^20.14.0",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "@types/sql.js": "^1.4.11",
+    "@types/vscode": "^1.90.0",
+    "@typescript-eslint/eslint-plugin": "^7.14.0",
+    "@typescript-eslint/parser": "^7.14.0",
+    "@vscode/test-cli": "^0.0.9",
+    "@vscode/test-electron": "^2.4.0",
+    "autoprefixer": "10.4.19",
+    "esbuild": "^0.21.5",
+    "eslint": "^8.57.0",
+    "fast-check": "4.8.0",
+    "npm-run-all": "^4.1.5",
+    "postcss": "8.4.39",
+    "postcss-cli": "11.0.0",
+    "tailwindcss": "3.4.4",
+    "typescript": "^5.5.0"
+  }
+}

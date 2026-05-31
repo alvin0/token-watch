@@ -1,0 +1,16 @@
+.vscode/**
+.vscode-test/**
+.vscode-test.mjs
+src/**
+out/**
+node_modules/**
+.gitignore
+.eslintrc.json
+esbuild.js
+tsconfig.json
+tailwind.config.js
+postcss.config.js
+**/*.map
+**/*.ts
+.agents/**
+skills-lock.json
