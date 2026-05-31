@@ -9,7 +9,21 @@ export function InsightCards() {
   const g = useStore((s) => s.granularity) as Period;
   if (!result || result.view !== "dashboard") { return null; }
   const { cur, peakLabel } = computePeriods(result.series, g);
-  const cacheSaved = (cur.cache / 1000) * (0.005 - 0.0025); // savings = cache * (inputRate - cacheRate)
+  // Cache savings: use blended cost per 1K from variants to estimate input vs cached rate spread
+  // Approximate: savings = cacheReadTokens * (blendedInputRate - blendedCacheRate)
+  // Since we don't have per-model rates in the webview, use the variant data to derive
+  // a weighted average spread. Fallback to a conservative estimate.
+  let cacheSaved = 0;
+  if (result.variants && result.variants.length > 0) {
+    // Weighted average blendedCostPer1K gives us an approximation
+    const totalCost = result.variants.reduce((s, v) => s + v.costUsd, 0);
+    const totalTokens = result.variants.reduce((s, v) => s + v.totalTokens, 0);
+    const avgRatePer1K = totalTokens > 0 ? (totalCost / totalTokens) * 1000 : 0.005;
+    // Cache savings ≈ cacheReadTokens * avgRatePer1K * 0.5 (cache is ~50% cheaper)
+    cacheSaved = (cur.cache / 1000) * avgRatePer1K * 0.5;
+  } else {
+    cacheSaved = (cur.cache / 1000) * (0.005 - 0.0025);
+  }
   const avgTurn = cur.turns > 0 ? cur.cost / cur.turns : 0;
 
   return (

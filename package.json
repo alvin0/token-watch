@@ -1,16 +1,28 @@
 {
   "name": "token-watch",
   "displayName": "Token Watch",
-  "description": "A VS Code extension.",
+  "description": "Track AI coding token usage and cost across Codex and Claude sessions, in a sidebar dashboard and the status bar.",
   "version": "0.0.1",
-  "publisher": "dinh-ai",
+  "publisher": "alvin0-dinhai",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dinh-ai-system-exe-com-vn/token-watch.git"
+  },
+  "keywords": [
+    "tokens",
+    "usage",
+    "cost",
+    "codex",
+    "claude"
+  ],
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": [
     "Other"
   ],
+  "icon": "resources/icon-marketplace.png",
   "main": "./dist/extension.js",
   "activationEvents": [
     "onStartupFinished"
@@ -33,7 +45,7 @@
         {
           "id": "token-watch-container",
           "title": "Token Watch",
-          "icon": "resources/icon.svg"
+          "icon": "resources/icon-activitybar.png"
         }
       ]
     },
@@ -130,6 +142,8 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "package:vsix": "vsce package --out token-watch.vsix",
+    "publish": "vsce publish",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "check-types": "tsc --noEmit",
@@ -155,6 +169,7 @@
     "@typescript-eslint/parser": "^7.14.0",
     "@vscode/test-cli": "^0.0.9",
     "@vscode/test-electron": "^2.4.0",
+    "@vscode/vsce": "^3.9.1",
     "autoprefixer": "10.4.19",
     "esbuild": "^0.21.5",
     "eslint": "^8.57.0",

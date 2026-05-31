@@ -16,7 +16,9 @@ import { AnalyticsService } from "./analytics.js";
 import { DEFAULT_PRICING, FALLBACK_RATE } from "../shared/defaultPricing.js";
 import { scan } from "./discovery.js";
 import { ingestAll } from "./ingest.js";
+import * as queries from "./store/queries.js";
 import type { WorkerRequest, WorkerEvent, IngestConfig } from "../shared/workerProtocol.js";
+import type { PricingTable, ModelRate } from "../shared/types.js";
 
 let store: UsageStore | undefined;
 let pricing: PricingEngine | undefined;
@@ -60,6 +62,26 @@ function classifyErrorScope(err: unknown, fallbackScope: string): string {
   return fallbackScope;
 }
 
+/**
+ * Extract a fallback rate from the merged pricing table's "$fallback" key,
+ * falling back to the bundled FALLBACK_RATE constant.
+ */
+function buildFallbackRate(table: PricingTable): ModelRate {
+  const fb = table["$fallback"];
+  return fb ?? FALLBACK_RATE;
+}
+
+/** Remove meta keys (like $fallback) from a pricing table before passing to PricingEngine. */
+function stripMetaKeys(table: PricingTable): PricingTable {
+  const result: PricingTable = {};
+  for (const [key, value] of Object.entries(table)) {
+    if (!key.startsWith("$")) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 async function handleInit(req: Extract<WorkerRequest, { type: "init" }>): Promise<void> {
   const SQL = await initSqlJs({
     locateFile: (file: string) => join(__dirname, file),
@@ -73,7 +95,7 @@ async function handleInit(req: Extract<WorkerRequest, { type: "init" }>): Promis
 
   // Merge default pricing with user overrides
   const mergedTable = { ...DEFAULT_PRICING, ...req.config.pricingOverrides };
-  pricing = new PricingEngine(mergedTable, FALLBACK_RATE);
+  pricing = new PricingEngine(stripMetaKeys(mergedTable), buildFallbackRate(mergedTable));
 
   analytics = new AnalyticsService(store.database, pricing);
 
@@ -134,6 +156,8 @@ parentPort!.on("message", (req: WorkerRequest) => {
               store.deleteCursor(c.filePath);
             }
           }
+          // Reset quality counters — forceFull re-parses everything from scratch
+          store.resetQualityCounters();
         }
 
         const options = {
@@ -154,9 +178,25 @@ parentPort!.on("message", (req: WorkerRequest) => {
         break;
       }
 
-      case "updatePricing":
-        // Placeholder — wired in task 8.3
+      case "updatePricing": {
+        if (!store || !pricing || !analytics) {
+          post({ type: "error", scope: "updatePricing", message: "Worker not initialized" });
+          break;
+        }
+        const mergedTable = { ...DEFAULT_PRICING, ...req.table };
+        pricing = new PricingEngine(stripMetaKeys(mergedTable), buildFallbackRate(mergedTable));
+        analytics = new AnalyticsService(store.database, pricing);
+        queries.recomputeCosts(store.database, stripMetaKeys(mergedTable));
+        // Recompute unmapped models with new pricing table
+        store.recordUnmappedModels(pricing.unmappedModels(store.distinctModels()));
+        store.flush();
+        post({
+          type: "ingestComplete",
+          freshness: analytics.freshness(),
+          warnings: analytics.warnings(),
+        });
         break;
+      }
 
       case "flush":
         if (store) {

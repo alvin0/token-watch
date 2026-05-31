@@ -64,7 +64,7 @@ export class IngestionCoordinator implements vscode.Disposable {
   }
 
   rescan(): void {
-    this.send({ type: "scanAndIngest", reason: "manual" });
+    this.send({ type: "scanAndIngest", reason: "manual", forceFull: true });
   }
 
   updatePricing(table: PricingTable): void {
@@ -76,9 +76,13 @@ export class IngestionCoordinator implements vscode.Disposable {
     this.disposed = true;
 
     if (this.worker) {
+      // Send flush and wait briefly for it to be processed before terminating.
+      // The worker's beforeExit handler also calls flush as a safety net.
       this.send({ type: "flush" });
-      this.worker.terminate();
+      const w = this.worker;
       this.worker = null;
+      // Give the worker a short window to process the flush message
+      setTimeout(() => { w.terminate(); }, 200);
     }
 
     this.rejectAllPending("Coordinator disposed");

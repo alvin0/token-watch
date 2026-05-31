@@ -10,7 +10,6 @@ import { CodexParser } from "../../worker/parsers/codex.js";
 import type { ParseOutput } from "../../worker/parsers/types.js";
 import type { FileCursor } from "../../shared/storeTypes.js";
 import type { CandidateFile } from "../../worker/discovery.js";
-import type { CumulativeTotals } from "../../shared/types.js";
 import type { RawCodexTurn } from "../../shared/types.js";
 
 const MAX_LINE_BYTES = 1_000_000;
@@ -159,7 +158,6 @@ suite("Ingestion property tests", () => {
               assert.ok(prefixOutput, "Prefix parse should emit output");
 
               // Resume from prefix endOffset with prefix endState
-              const suffixContent = lines.slice(prefixLineCount).join("\n");
               const suffixFile = tmpFile("prop4-suffix");
               // Write full file content for correct offset-based parsing
               writeFileSync(suffixFile, lines.join("\n"), "utf8");
@@ -264,7 +262,6 @@ suite("Ingestion property tests", () => {
           // Each turn = 2 lines (turn_context + token_count), plus 1 session_meta
           const prefixLineCount = 1 + splitAt * 2;
           const prefixLines = allLines.slice(0, prefixLineCount);
-          const suffixLines = allLines.slice(prefixLineCount);
 
           const fullFile = tmpFile("prop6-full");
           const prefixFile = tmpFile("prop6-prefix");

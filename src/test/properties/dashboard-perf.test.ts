@@ -17,7 +17,6 @@ import { makeVariantId } from "../../shared/variant.js";
 import type { UsageRecord, ToolEvent, Source } from "../../shared/types.js";
 import type { StoreBatch, FileContribution } from "../../shared/storeTypes.js";
 import type { AnalyticsQuery, AnalyticsResult } from "../../shared/protocol.js";
-import { totalTokens } from "../../shared/types.js";
 
 function toLocalDay(d: Date): string {
   const y = d.getFullYear();
@@ -122,7 +121,6 @@ suite("Dashboard-from-store performance + aggregated-payload regression", () => 
     // Populate with test data
     const records: UsageRecord[] = [];
     const toolEvents: ToolEvent[] = [];
-    const sentinel = "SUPER_SECRET_PROMPT_CONTENT_12345";
 
     for (let i = 0; i < 20; i++) {
       const source: Source = i % 2 === 0 ? "codex" : "claude";

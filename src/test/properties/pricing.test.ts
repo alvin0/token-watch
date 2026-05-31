@@ -68,8 +68,8 @@ suite("PricingEngine property tests", () => {
     );
   });
 
-  // Feature: token-tracking, Property 11: unmapped models excluded from confirmed cost; absent models in unmapped set
-  test("Property 11: unmapped models excluded from confirmed cost; absent models in unmapped set", () => {
+  // Feature: token-tracking, Property 11: unmapped models flagged as unknown; absent models in unmapped set
+  test("Property 11: unmapped models flagged as unknown; absent models in unmapped set", () => {
     const knownTable: PricingTable = { "known-model": { inputPer1K: 0.01, outputPer1K: 0.03 } };
     const engine = new PricingEngine(knownTable);
 
@@ -78,10 +78,11 @@ suite("PricingEngine property tests", () => {
         unknownModelName,
         cumulativeTotalsArb,
         (model: string, totals: CumulativeTotals) => {
-          // Unknown model returns usd: 0, unknown: true
+          // Unknown model returns unknown: true (cost uses fallback rate, not $0)
           const result = engine.costOfTokens(model, totals);
-          assert.strictEqual(result.usd, 0);
           assert.strictEqual(result.unknown, true);
+          // Cost is computed via fallback rate, so it's >= 0
+          assert.ok(result.usd >= 0, `Cost should be >= 0, got ${result.usd}`);
         },
       ),
       { numRuns: 100 },
@@ -100,7 +101,7 @@ suite("PricingEngine property tests", () => {
 
           // Every model NOT in the table should be in unmapped
           for (const m of seen) {
-            if (!(m in knownTable)) {
+            if (!Object.hasOwn(knownTable, m)) {
               assert.ok(unmappedSet.has(m), `${m} should be unmapped`);
             } else {
               assert.ok(!unmappedSet.has(m), `${m} should NOT be unmapped`);

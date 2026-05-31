@@ -1,4 +1,5 @@
 import type { DailyAggregate } from "../../shared/storeTypes";
+import { localDay as toLocalDayStr } from "../../shared/time";
 
 export type Period = "day" | "week" | "month" | "year";
 export type ChartMode = "Tokens" | "Cost" | "Turns";
@@ -17,18 +18,18 @@ export interface Bkt {
 
 export function pRange(g: Period) {
   const now = new Date();
-  const today = now.toISOString().slice(0, 10);
+  const today = toLocalDayStr(now);
   const y = now.getFullYear();
   const m = now.getMonth();
 
   if (g === "day") {
-    const prevDay = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
+    const prevDay = toLocalDayStr(new Date(now.getTime() - 86400000));
     return { from: today, prevFrom: prevDay, prevTo: prevDay };
   }
   if (g === "week") {
-    const from = new Date(now.getTime() - 7 * 86400000).toISOString().slice(0, 10);
-    const prevFrom = new Date(now.getTime() - 14 * 86400000).toISOString().slice(0, 10);
-    const prevTo = new Date(now.getTime() - 8 * 86400000).toISOString().slice(0, 10);
+    const from = toLocalDayStr(new Date(now.getTime() - 7 * 86400000));
+    const prevFrom = toLocalDayStr(new Date(now.getTime() - 14 * 86400000));
+    const prevTo = toLocalDayStr(new Date(now.getTime() - 8 * 86400000));
     return { from, prevFrom, prevTo };
   }
   if (g === "month") {
@@ -38,9 +39,8 @@ export function pRange(g: Period) {
     const prevMonth = m === 0 ? 11 : m - 1;
     const prevYear = m === 0 ? y - 1 : y;
     const prevFrom = `${prevYear}-${String(prevMonth + 1).padStart(2, "0")}-01`;
-    const prevTo = `${y}-${String(m + 1).padStart(2, "0")}-00`; // last day of prev month
     // Actually compute last day of prev month properly
-    const lastDayPrev = new Date(y, m, 0).toISOString().slice(0, 10);
+    const lastDayPrev = toLocalDayStr(new Date(y, m, 0));
     return { from, prevFrom, prevTo: lastDayPrev };
   }
   // year: this calendar year
@@ -109,7 +109,7 @@ export function makeBuckets(series: DailyAggregate[], g: Period): Bkt[] {
 
 export function wk(day: string): string {
   const d = new Date(day + "T00:00:00"); const dow = d.getDay() || 7;
-  return new Date(d.getTime() - (dow - 1) * 86400000).toISOString().slice(0, 10);
+  return toLocalDayStr(new Date(d.getTime() - (dow - 1) * 86400000));
 }
 
 export function fmtT(n: number): string {

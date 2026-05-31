@@ -8,7 +8,6 @@
  * Requirements: 4.6, 4.7, 4.8, 4.9, 4.10, 4.24, 4.25, 4.26
  */
 
-import { statSync } from "node:fs";
 import type { CandidateFile } from "./discovery";
 import type { UsageStore } from "./store/UsageStore";
 import type { FileCursor, StoreBatch, FileContribution } from "../shared/storeTypes";
@@ -19,7 +18,7 @@ import { CodexParser } from "./parsers/codex";
 import { ClaudeParser } from "./parsers/claude";
 import { normalize } from "./normalizer";
 import { PricingEngine } from "./pricing";
-import { makeVariantId, baseModelOf } from "../shared/variant";
+import { localDay } from "../shared/time";
 import type { ParseOutput, ResumeState } from "./parsers/types";
 
 export type IngestDecision = "skip" | "append" | "reingest" | "firstRead";
@@ -70,19 +69,29 @@ export async function ingestFile(
   store: UsageStore,
   pricing: PricingEngine,
   options: IngestOptions,
-): Promise<IngestDecision> {
+): Promise<FileIngestResult> {
+  const empty = (d: IngestDecision): FileIngestResult => ({
+    decision: d, malformedCount: 0, oversizedCount: 0,
+  });
+
   const cursor = store.getCursor(candidate.filePath);
   let decision = decideAction(candidate, cursor);
 
   if (decision === "skip") {
-    return "skip";
+    return empty("skip");
   }
 
   // Backfill cap: on first reads only, skip files older than backfillMonths (Req 4.24)
-  if (decision === "firstRead") {
+  // backfillMonths === 0 means unlimited (no cap).
+  // We deliberately do NOT persist a cursor for backfill-skipped files: the skip
+  // happens before any file I/O (only the discovery stat, which runs regardless),
+  // so there is nothing to save. If such a file is later modified, its mtime moves
+  // past the cutoff and it is correctly ingested as a full firstRead (offset 0,
+  // proper running totals) rather than a partial append against an empty baseline.
+  if (decision === "firstRead" && options.backfillMonths > 0) {
     const cutoff = Date.now() - options.backfillMonths * 30 * 24 * 60 * 60 * 1000;
     if (candidate.mtimeMs < cutoff) {
-      return "skip";
+      return empty("skip");
     }
   }
 
@@ -141,15 +150,19 @@ export async function ingestFile(
       recentRequestIds: [],
       contribution: decision === "append" && cursor ? cursor.contribution : emptyContribution,
     });
-    return decision;
+    return empty(decision);
   }
 
   // Normalize raw turns → UsageRecords
-  const records: UsageRecord[] = parseOutput.rawTurns.map(normalize);
-  const toolEvents: ToolEvent[] = parseOutput.toolEvents;
+  // Drop turns with no valid timestamp (would land in 1970-01-01 bucket)
+  const records: UsageRecord[] = parseOutput.rawTurns
+    .map(normalize)
+    .filter((r) => r.timestamp > 0);
+  const toolEvents: ToolEvent[] = parseOutput.toolEvents
+    .filter((e) => e.timestamp > 0);
 
   // Build contribution (daily + session aggregates)
-  const contribution = buildContribution(records, toolEvents, pricing, candidate.source);
+  const contribution = buildContribution(records, toolEvents, pricing);
 
   // Merge contribution with existing cursor contribution on append
   const finalContribution = decision === "append" && cursor
@@ -179,7 +192,11 @@ export async function ingestFile(
     contribution: finalContribution,
   });
 
-  return decision;
+  return {
+    decision,
+    malformedCount: parseOutput.malformedCount,
+    oversizedCount: parseOutput.oversizedCount,
+  };
 }
 
 /**
@@ -214,31 +231,48 @@ export async function ingestAll(
   const ordered = [...small, ...large];
   const total = ordered.length;
 
+  let totalMalformed = 0;
+  let totalOversized = 0;
+
   for (let i = 0; i < total; i++) {
-    const decision = await ingestFile(ordered[i], store, pricing, options);
+    const fileResult = await ingestFile(ordered[i], store, pricing, options);
     result.processed++;
-    switch (decision) {
+    switch (fileResult.decision) {
       case "skip": result.skipped++; break;
       case "append": result.appended++; break;
       case "reingest": result.reingested++; break;
       case "firstRead": result.firstReads++; break;
     }
+    totalMalformed += fileResult.malformedCount;
+    totalOversized += fileResult.oversizedCount;
     onProgress?.(result.processed, total);
   }
 
+  // Persist quality metrics — incremental appends only see new issues, so we
+  // accumulate. forceFull rescans reset these counters beforehand.
+  store.updateMetaCounts(totalMalformed, totalOversized);
+
+  // Record last ingest run timestamp
+  store.setMeta("last_ingest_run_utc", String(Date.now()));
+
+  // Record unmapped models — evaluate against ALL models in the store, not just
+  // those parsed this run, so a watch tick on one file doesn't clobber the set.
+  const unmapped = pricing.unmappedModels(store.distinctModels());
+  store.recordUnmappedModels(unmapped);
+
   return result;
+}
+
+/** Result from processing a single file. */
+interface FileIngestResult {
+  decision: IngestDecision;
+  malformedCount: number;
+  oversizedCount: number;
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-function toLocalDay(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
 
 /**
  * Build a FileContribution from normalized records and tool events.
@@ -249,7 +283,6 @@ function buildContribution(
   records: UsageRecord[],
   toolEvents: ToolEvent[],
   pricing: PricingEngine,
-  source: Source,
 ): FileContribution {
   // Daily aggregates keyed by "day|source|variantId|workspace"
   const dailyMap = new Map<string, {
@@ -270,7 +303,7 @@ function buildContribution(
     recordKeys.push(rec.dedupKey);
 
     const tsDate = new Date(rec.timestamp);
-    const day = toLocalDay(tsDate);
+    const day = localDay(tsDate);
     const workspace = rec.workspace ?? "";
 
     // Cost
@@ -293,7 +326,7 @@ function buildContribution(
       existing.sums.reasoningTokens += rec.reasoningTokens;
       existing.turns++;
       existing.costUsd += cost.usd;
-      if (cost.unknown) existing.unknownTurns++;
+      if (cost.unknown) { existing.unknownTurns++; }
     } else {
       dailyMap.set(dailyKey, {
         day, source: rec.source, variantId: rec.variantId, workspace,
@@ -325,7 +358,7 @@ function buildContribution(
       existingSess.costUsd += cost.usd;
       existingSess.firstTsUtc = Math.min(existingSess.firstTsUtc, rec.timestamp);
       existingSess.lastTsUtc = Math.max(existingSess.lastTsUtc, rec.timestamp);
-      if (isSidechain) existingSess.sidechainTokens += total;
+      if (isSidechain) { existingSess.sidechainTokens += total; }
     } else {
       sessionMap.set(sessKey, {
         source: rec.source, sessionId: rec.sessionId,

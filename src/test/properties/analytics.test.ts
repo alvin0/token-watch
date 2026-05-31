@@ -10,7 +10,6 @@ import { SCHEMA_SQL, SCHEMA_VERSION } from "../../worker/store/schema.js";
 import { UsageStore } from "../../worker/store/UsageStore.js";
 import { variantBreakdown, toolUsage } from "../../worker/store/queries.js";
 import { totalTokens } from "../../shared/types.js";
-import { makeVariantId, baseModelOf } from "../../shared/variant.js";
 import type { UsageRecord, ToolEvent, Source } from "../../shared/types.js";
 import type { StoreBatch, FileContribution } from "../../shared/storeTypes.js";
 

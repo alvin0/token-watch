@@ -85,7 +85,6 @@ function buildBatch(records: UsageRecord[], toolEvents: ToolEvent[]): StoreBatch
     const day = toLocalDay(new Date(rec.timestamp));
     const dKey = `${day}|${rec.source}|${rec.variantId}|${rec.workspace ?? ""}`;
     const existing = dailyMap.get(dKey);
-    const total = totalTokens(rec);
     if (existing) {
       existing.sums.inputTokens += rec.inputTokens;
       existing.sums.outputTokens += rec.outputTokens;
@@ -228,6 +227,14 @@ suite("Store property tests (in-memory sql.js)", () => {
           // is on the record and tool_event tables.
           assert.strictEqual(recordCountAfterFirst, records.length);
           assert.strictEqual(toolCountAfterFirst, toolEvents.length);
+
+          // daily_aggregate is additive by design: re-applying the same batch
+          // doubles the token totals (the subtract path handles revert).
+          assert.strictEqual(
+            totalAfterSecond,
+            totalAfterFirst * 2,
+            "Daily aggregate totals are additive on re-apply",
+          );
 
           db.close();
         },

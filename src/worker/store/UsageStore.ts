@@ -18,9 +18,9 @@ import { dirname } from "node:path";
 
 import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
 import type { FileCursor, FileContribution, StoreBatch } from "../../shared/storeTypes.js";
-import type { UsageRecord, ToolEvent } from "../../shared/types.js";
 import { totalTokens } from "../../shared/types.js";
 import { baseModelOf } from "../../shared/variant.js";
+import { localDay } from "../../shared/time.js";
 
 export class UsageStore {
   private db: Database | null = null;
@@ -145,7 +145,7 @@ export class UsageStore {
       for (const rec of batch.records) {
         const total = totalTokens(rec);
         const tsDate = new Date(rec.timestamp);
-        const dayLocal = toLocalDay(tsDate);
+        const dayLocal = localDay(tsDate);
         const dowLocal = tsDate.getDay();
         const hourLocal = tsDate.getHours();
 
@@ -190,7 +190,7 @@ export class UsageStore {
       // Insert tool events
       for (const evt of batch.toolEvents) {
         const tsDate = new Date(evt.timestamp);
-        const dayLocal = toLocalDay(tsDate);
+        const dayLocal = localDay(tsDate);
 
         db.run(
           `INSERT OR REPLACE INTO tool_event
@@ -263,6 +263,11 @@ export class UsageStore {
           s.sums.inputTokens + s.sums.outputTokens + s.sums.cacheReadTokens +
           s.sums.cacheCreationTokens + s.sums.reasoningTokens;
 
+        // Derive workspace from records in this session
+        const sessionWorkspace = batch.records.find(
+          (r) => r.source === s.source && r.sessionId === s.sessionId && r.workspace
+        )?.workspace ?? "";
+
         db.run(
           `INSERT INTO session_aggregate
            (source, session_id, workspace, first_ts_utc, last_ts_utc,
@@ -270,7 +275,7 @@ export class UsageStore {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(source, session_id)
            DO UPDATE SET
-             workspace = excluded.workspace,
+             workspace = CASE WHEN excluded.workspace != '' THEN excluded.workspace ELSE workspace END,
              first_ts_utc = MIN(first_ts_utc, excluded.first_ts_utc),
              last_ts_utc = MAX(last_ts_utc, excluded.last_ts_utc),
              turns = turns + excluded.turns,
@@ -280,7 +285,7 @@ export class UsageStore {
           [
             s.source,
             s.sessionId,
-            "", // workspace from session context
+            sessionWorkspace,
             s.firstTsUtc,
             s.lastTsUtc,
             s.turns,
@@ -349,6 +354,9 @@ export class UsageStore {
       );
     }
 
+    // Clean up zeroed daily rows
+    db.run("DELETE FROM daily_aggregate WHERE turns <= 0");
+
     // Subtract session deltas
     for (const s of contribution.sessions) {
       const totalTok =
@@ -357,16 +365,12 @@ export class UsageStore {
 
       db.run(
         `UPDATE session_aggregate SET
-           first_ts_utc = CASE WHEN first_ts_utc = ? THEN first_ts_utc ELSE first_ts_utc END,
-           last_ts_utc = CASE WHEN last_ts_utc = ? THEN last_ts_utc ELSE last_ts_utc END,
            turns = turns - ?,
            total_tokens = total_tokens - ?,
            cost_usd = cost_usd - ?,
            sidechain_tokens = sidechain_tokens - ?
          WHERE source = ? AND session_id = ?`,
         [
-          s.firstTsUtc,
-          s.lastTsUtc,
           s.turns,
           totalTok,
           s.costUsd,
@@ -376,6 +380,9 @@ export class UsageStore {
         ]
       );
     }
+
+    // Clean up zeroed session rows
+    db.run("DELETE FROM session_aggregate WHERE turns <= 0");
   }
 
   deleteCursor(filePath: string): void {
@@ -391,7 +398,8 @@ export class UsageStore {
 
   /**
    * Increment malformed_line_count and oversized_line_count in the meta table.
-   * Called after each ingest run to persist quality metrics.
+   * Incremental appends only parse new bytes, so each run adds only newly-seen
+   * issues. forceFull rescans call `resetQualityCounters()` first.
    */
   updateMetaCounts(malformed: number, oversized: number): void {
     const db = this.getDb();
@@ -407,6 +415,49 @@ export class UsageStore {
         `INSERT INTO meta (key, value) VALUES ('oversized_line_count', ?)
          ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + ? AS TEXT)`,
         [String(oversized), oversized],
+      );
+    }
+  }
+
+  /** Reset the quality counters to 0 (called before a forceFull rescan). */
+  resetQualityCounters(): void {
+    const db = this.getDb();
+    db.run("DELETE FROM meta WHERE key IN ('malformed_line_count', 'oversized_line_count')");
+  }
+
+  /** Return the set of distinct model names currently in the store. */
+  distinctModels(): Set<string> {
+    const db = this.getDb();
+    const result = db.exec("SELECT DISTINCT model FROM usage_record");
+    const models = new Set<string>();
+    if (result.length > 0) {
+      for (const row of result[0].values) {
+        if (typeof row[0] === "string") { models.add(row[0]); }
+      }
+    }
+    return models;
+  }
+
+  /** Set a meta key to a string value. */
+  setMeta(key: string, value: string): void {
+    const db = this.getDb();
+    db.run(
+      "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+      [key, value],
+    );
+  }
+
+  /** Record unmapped models into the unmapped_model table (replaces previous set). */
+  recordUnmappedModels(models: string[]): void {
+    const db = this.getDb();
+    // Clear previous unmapped set and replace with current
+    db.run("DELETE FROM unmapped_model");
+    if (models.length === 0) { return; }
+    const now = Date.now();
+    for (const model of models) {
+      db.run(
+        `INSERT OR IGNORE INTO unmapped_model (model, first_seen_utc) VALUES (?, ?)`,
+        [model, now],
       );
     }
   }
@@ -429,11 +480,4 @@ export class UsageStore {
     }
     return this.db;
   }
-}
-
-function toLocalDay(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
 }

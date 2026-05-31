@@ -24,6 +24,7 @@ import type {
   RateLimitInfo,
 } from "../../shared/protocol.js";
 import { PricingEngine } from "../pricing.js";
+import { localDayFromMs } from "../../shared/time.js";
 import { baseModelOf } from "../../shared/variant.js";
 
 // ---------------------------------------------------------------------------
@@ -47,8 +48,8 @@ function buildDailyWhere(q: AnalyticsQuery, tablePrefix = ""): WhereClause {
   const params: SqlValue[] = [];
 
   // Range filter on day_local (YYYY-MM-DD string comparison)
-  const fromDay = utcToDay(q.range.fromUtc);
-  const toDay = utcToDay(q.range.toUtc);
+  const fromDay = localDayFromMs(q.range.fromUtc);
+  const toDay = localDayFromMs(q.range.toUtc);
   conditions.push(`${tablePrefix}day_local >= ?`);
   params.push(fromDay);
   conditions.push(`${tablePrefix}day_local <= ?`);
@@ -90,8 +91,8 @@ function buildRecordWhere(q: AnalyticsQuery, tablePrefix = ""): WhereClause {
   const conditions: string[] = [];
   const params: SqlValue[] = [];
 
-  const fromDay = utcToDay(q.range.fromUtc);
-  const toDay = utcToDay(q.range.toUtc);
+  const fromDay = localDayFromMs(q.range.fromUtc);
+  const toDay = localDayFromMs(q.range.toUtc);
   conditions.push(`${tablePrefix}day_local >= ?`);
   params.push(fromDay);
   conditions.push(`${tablePrefix}day_local <= ?`);
@@ -112,14 +113,6 @@ function buildRecordWhere(q: AnalyticsQuery, tablePrefix = ""): WhereClause {
 
 function placeholders(n: number): string {
   return new Array(n).fill("?").join(",");
-}
-
-function utcToDay(utcMs: number): string {
-  const d = new Date(utcMs);
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
 }
 
 function num(v: SqlValue): number {

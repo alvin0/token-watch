@@ -61,7 +61,6 @@ export async function readLines(
 
       while (chunkStart < bytesRead) {
         const nlIdx = readBuf.indexOf(0x0a, chunkStart); // find \n
-        const lineEnd = nlIdx === -1 || nlIdx >= bytesRead ? bytesRead : nlIdx;
         const foundNewline = nlIdx !== -1 && nlIdx < bytesRead;
 
         if (foundNewline) {

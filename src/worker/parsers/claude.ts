@@ -45,9 +45,6 @@ export class ClaudeParser implements SourceParser {
       bufferedTools = [];
     }
 
-    readLines: // label for clarity in comments
-    void 0;
-
     const stats = await readLines({ filePath, startOffset, maxLineBytes }, (line, _byteOffset) => {
       // Fast substring check: only parse lines with both "assistant" and "usage"
       if (!line.includes('"assistant"') || !line.includes('"usage"')) {

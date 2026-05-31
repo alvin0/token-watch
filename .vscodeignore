@@ -14,3 +14,9 @@ postcss.config.js
 **/*.ts
 .agents/**
 skills-lock.json
+resources/Untitled*
+.kiro/**
+AGENTS.md
+**/*.vsix
+resources/_*.html
+resources/*-src.png

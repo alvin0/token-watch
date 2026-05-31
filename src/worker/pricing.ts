@@ -46,7 +46,7 @@ export class PricingEngine {
   unmappedModels(seen: Set<string>): string[] {
     const result: string[] = [];
     for (const model of seen) {
-      if (!(model in this.table)) {
+      if (!Object.hasOwn(this.table, model)) {
         result.push(model);
       }
     }
@@ -54,7 +54,7 @@ export class PricingEngine {
   }
 
   private compute(model: string, t: CumulativeTotals | TokenSums): CostBreakdown {
-    let rate: ModelRate | undefined = this.table[model];
+    let rate: ModelRate | undefined = Object.hasOwn(this.table, model) ? this.table[model] : undefined;
     let unknown = false;
 
     if (!rate) {

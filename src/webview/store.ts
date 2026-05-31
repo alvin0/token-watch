@@ -57,12 +57,6 @@ function nextId(): string {
   return `q-${++queryCounter}`;
 }
 
-function defaultRange(): { fromUtc: number; toUtc: number } {
-  const now = Date.now();
-  const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
-  return { fromUtc: now - thirtyDaysMs, toUtc: now };
-}
-
 /** Compute the query range based on granularity — ensures enough data is fetched */
 function rangeForGranularity(granularity: string): { fromUtc: number; toUtc: number } {
   const now = Date.now();
