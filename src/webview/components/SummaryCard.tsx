@@ -13,8 +13,20 @@ export function SummaryCard() {
   const delta = prev.cost > 0 ? ((cur.cost - prev.cost) / prev.cost) * 100 : 0;
   const isDown = delta <= 0;
   const sourceLabel = !sources ? "" : sources.length === 1 ? ` (${sources[0]})` : "";
-  const labels: Record<Period, string> = { day: `Today cost${sourceLabel}`, week: `This week cost${sourceLabel}`, month: `This month cost${sourceLabel}`, year: `This year cost${sourceLabel}` };
-  const vs: Record<Period, string> = { day: "vs yesterday", week: "vs prev week", month: "vs prev month", year: "vs prev year" };
+  const labels: Record<Period, string> = {
+    today: `Today cost${sourceLabel}`,
+    day: `Last 7 days cost${sourceLabel}`,
+    week: `Last 7 weeks cost${sourceLabel}`,
+    month: `Last 6 months cost${sourceLabel}`,
+    year: `Last 2 years cost${sourceLabel}`,
+  };
+  const vs: Record<Period, string> = {
+    today: "vs yesterday",
+    day: "vs previous 7 days",
+    week: "vs previous 7 weeks",
+    month: "vs previous 6 months",
+    year: "vs previous 2 years",
+  };
 
   return (
     <div className="tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e] tw-p-3">
@@ -24,7 +36,7 @@ export function SummaryCard() {
           <div className="tw-text-[10px] tw-text-[var(--vscode-descriptionForeground)]">{labels[g]}</div>
           <div className="tw-text-[10px] tw-text-[var(--vscode-descriptionForeground)] tw-mt-0.5">
             {fmtT(cur.tokens)} tokens • {cur.turns.toLocaleString()} turns
-            {g !== "day" && <span> • {cur.activeDays} day{cur.activeDays !== 1 ? "s" : ""} active</span>}
+            <span> • {cur.activeDays} day{cur.activeDays !== 1 ? "s" : ""} active</span>
           </div>
         </div>
         {prev.cost > 0 && (

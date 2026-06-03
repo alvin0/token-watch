@@ -1,7 +1,7 @@
 import { useStore } from "../store";
 import { useQuery } from "../hooks/useQuery";
 import { formatCost } from "../format";
-import { computePeriods } from "../lib/periodData";
+import { computePeriods, fmtT } from "../lib/periodData";
 import type { Period } from "../lib/periodData";
 
 export function InsightCards() {
@@ -9,6 +9,24 @@ export function InsightCards() {
   const g = useStore((s) => s.granularity) as Period;
   if (!result || result.view !== "dashboard") { return null; }
   const { cur, peakLabel } = computePeriods(result.series, g);
+
+  if (g === "today") {
+    const inputBase = cur.input + cur.cache;
+    const tokenParts = cur.input + cur.output + cur.cache + cur.reasoning;
+    const cacheHit = inputBase > 0 ? (cur.cache / inputBase) * 100 : 0;
+    const tokensPerTurn = cur.turns > 0 ? cur.tokens / cur.turns : 0;
+    const reasoningMix = tokenParts > 0 ? (cur.reasoning / tokenParts) * 100 : 0;
+
+    return (
+      <div className="tw-grid tw-grid-cols-2 tw-gap-1.5">
+        <MiniCard icon="🧠" label="Cache hit" value={`${cacheHit.toFixed(1)}%`} />
+        <MiniCard icon="⚖" label="Tokens / turn" value={fmtT(tokensPerTurn)} />
+        <MiniCard icon="↵" label="Turns today" value={cur.turns.toLocaleString()} />
+        <MiniCard icon="⛭" label="Reasoning mix" value={`${reasoningMix.toFixed(1)}%`} />
+      </div>
+    );
+  }
+
   // Cache savings: use blended cost per 1K from variants to estimate input vs cached rate spread
   // Approximate: savings = cacheReadTokens * (blendedInputRate - blendedCacheRate)
   // Since we don't have per-model rates in the webview, use the variant data to derive

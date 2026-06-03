@@ -55,7 +55,7 @@ export interface IngestConfig {
 export type WorkerRequest =
   | { type: "init"; dbPath: string; config: IngestConfig }
   | { type: "query"; id: string; query: AnalyticsQuery }
-  | { type: "scanAndIngest"; reason: "activation" | "watch" | "manual"; forceFull?: boolean }
+  | { type: "scanAndIngest"; reason: "activation" | "watch" | "manual"; forceFull?: boolean; changedPaths?: string[] }
   | { type: "updatePricing"; table: PricingTable }
   | { type: "flush" };
 

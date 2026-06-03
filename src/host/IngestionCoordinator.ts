@@ -59,8 +59,8 @@ export class IngestionCoordinator implements vscode.Disposable {
     });
   }
 
-  scanAndIngest(reason: "activation" | "watch" | "manual"): void {
-    this.send({ type: "scanAndIngest", reason });
+  scanAndIngest(reason: "activation" | "watch" | "manual", changedPaths?: string[]): void {
+    this.send({ type: "scanAndIngest", reason, changedPaths });
   }
 
   rescan(): void {

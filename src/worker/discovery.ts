@@ -1,5 +1,5 @@
 import { readdirSync, statSync } from "node:fs";
-import { join, basename } from "node:path";
+import { join, basename, isAbsolute, relative, resolve, sep } from "node:path";
 import type { Source } from "../shared/types.js";
 
 export interface CandidateFile {
@@ -34,6 +34,52 @@ export function scan(roots: SourceRoots): CandidateFile[] {
   return results;
 }
 
+/**
+ * Build candidates only for files reported by the watcher. This keeps active
+ * Codex/Claude updates fast by avoiding a full root scan on every append.
+ */
+export function scanChanged(paths: string[], roots: SourceRoots): CandidateFile[] {
+  const results = new Map<string, CandidateFile>();
+
+  for (const filePath of paths) {
+    const scoped = candidatesForChangedPath(filePath, roots);
+    for (const candidate of scoped) {
+      results.set(candidate.filePath, candidate);
+    }
+  }
+
+  return [...results.values()].sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+function candidatesForChangedPath(filePath: string, roots: SourceRoots): CandidateFile[] {
+  const candidates: CandidateFile[] = [];
+
+  if (roots.codex?.enabled && isInside(filePath, roots.codex.path)) {
+    if (isDirSafe(filePath)) {
+      walkCodex(filePath, candidates);
+      return candidates;
+    }
+    const candidate = candidateForChangedPath(filePath, roots);
+    if (candidate) {
+      candidates.push(candidate);
+    }
+    return candidates;
+  }
+
+  if (roots.claude?.enabled && isInside(filePath, roots.claude.path)) {
+    if (isDirSafe(filePath)) {
+      walkClaude(filePath, candidates);
+      return candidates;
+    }
+    const candidate = candidateForChangedPath(filePath, roots);
+    if (candidate) {
+      candidates.push(candidate);
+    }
+  }
+
+  return candidates;
+}
+
 /** Recursively find all `rollout-*.jsonl` files under the Codex sessions root. */
 function walkCodex(root: string, out: CandidateFile[]): void {
   walkDir(root, (filePath) => {
@@ -45,22 +91,37 @@ function walkCodex(root: string, out: CandidateFile[]): void {
   });
 }
 
-/** Find all `*.jsonl` files one level deep inside project subdirectories. */
+/** Find all `*.jsonl` files under Claude projects, including nested subagent logs. */
 function walkClaude(root: string, out: CandidateFile[]): void {
-  // root is already the projects directory (e.g. ~/.claude/projects)
-  const subdirs = readDirSafe(root);
-  for (const sub of subdirs) {
-    const subPath = join(root, sub);
-    if (!isDirSafe(subPath)) { continue; }
-    const files = readDirSafe(subPath);
-    for (const file of files) {
-      if (file.endsWith(".jsonl")) {
-        const filePath = join(subPath, file);
-        const candidate = statCandidate(filePath, "claude");
-        if (candidate) { out.push(candidate); }
+  walkDir(root, (filePath) => {
+    if (filePath.endsWith(".jsonl")) {
+      const candidate = statCandidate(filePath, "claude");
+      if (candidate) {
+        out.push(candidate);
       }
     }
+  });
+}
+
+function candidateForChangedPath(filePath: string, roots: SourceRoots): CandidateFile | null {
+  if (roots.codex?.enabled && isInside(filePath, roots.codex.path)) {
+    if (isDirSafe(filePath)) {
+      return null;
+    }
+    const name = basename(filePath);
+    if (name.startsWith("rollout-") && name.endsWith(".jsonl")) {
+      return statCandidate(filePath, "codex");
+    }
   }
+
+  if (roots.claude?.enabled && isInside(filePath, roots.claude.path) && filePath.endsWith(".jsonl")) {
+    if (isDirSafe(filePath)) {
+      return null;
+    }
+    return statCandidate(filePath, "claude");
+  }
+
+  return null;
 }
 
 /** Stat a file and build a CandidateFile, or null if stat fails. */
@@ -105,4 +166,9 @@ function isDirSafe(p: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isInside(filePath: string, root: string): boolean {
+  const rel = relative(resolve(root), resolve(filePath));
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }

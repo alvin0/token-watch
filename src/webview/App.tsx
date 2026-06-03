@@ -8,6 +8,7 @@ import { CompositionCard } from "./components/CompositionCard";
 import { TrendChart } from "./components/TrendChart";
 import { TopModelsCard } from "./components/TopModelsCard";
 import { RecentPeriodsCard } from "./components/RecentPeriodsCard";
+import { TodayInsightsCard } from "./components/TodayInsightsCard";
 import { FooterBar } from "./components/FooterBar";
 import { LoadingState } from "./components/LoadingState";
 import { EmptyState } from "./components/EmptyState";
@@ -43,9 +44,9 @@ export function App() {
         <SummaryCard />
         <InsightCards />
         <CompositionCard />
-        <TrendChart />
+        {granularity === "today" ? <TodayInsightsCard /> : <TrendChart />}
         <TopModelsCard />
-        <RecentPeriodsCard />
+        {granularity !== "today" && <RecentPeriodsCard />}
       </div>
       <FooterBar />
     </div>

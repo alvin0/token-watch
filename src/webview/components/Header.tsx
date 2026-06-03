@@ -8,7 +8,10 @@ export function Header({ status }: { status: string }) {
       <span className="tw-flex tw-items-center tw-gap-1 tw-text-[9px]" style={{ color: c }}>
         <span className="tw-w-[5px] tw-h-[5px] tw-rounded-full" style={{ backgroundColor: c }} />{status}
       </span>
-      <button onClick={() => vscodeApi.postMessage({ type: "rescan" })}
+      <button
+        title="Rescan logs"
+        aria-label="Rescan logs"
+        onClick={() => vscodeApi.postMessage({ type: "rescan" })}
         className="tw-ml-auto tw-text-[12px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-text-[var(--vscode-foreground)] tw-cursor-pointer">↻</button>
     </div>
   );

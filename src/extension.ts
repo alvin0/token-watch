@@ -64,8 +64,8 @@ export async function activate(context: vscode.ExtensionContext) {
   if (config.sources.claude.enabled) {
     watchPaths.push(config.sources.claude.path || path.join(home, ".claude", "projects"));
   }
-  const fileWatcher = new FileWatcher(watchPaths, config.ingestion.watchDebounceMs, () => {
-    coordinator?.scanAndIngest("watch");
+  const fileWatcher = new FileWatcher(watchPaths, config.ingestion.watchDebounceMs, (changedPaths) => {
+    coordinator?.scanAndIngest("watch", changedPaths);
   });
   context.subscriptions.push(fileWatcher);
 

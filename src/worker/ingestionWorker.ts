@@ -14,16 +14,21 @@ import { UsageStore } from "./store/UsageStore.js";
 import { PricingEngine } from "./pricing.js";
 import { AnalyticsService } from "./analytics.js";
 import { DEFAULT_PRICING, FALLBACK_RATE } from "../shared/defaultPricing.js";
-import { scan } from "./discovery.js";
+import { scan, scanChanged } from "./discovery.js";
 import { ingestAll } from "./ingest.js";
 import * as queries from "./store/queries.js";
 import type { WorkerRequest, WorkerEvent, IngestConfig } from "../shared/workerProtocol.js";
 import type { PricingTable, ModelRate } from "../shared/types.js";
 
+type ScanRequest = Extract<WorkerRequest, { type: "scanAndIngest" }>;
+
 let store: UsageStore | undefined;
 let pricing: PricingEngine | undefined;
 let analytics: AnalyticsService | undefined;
 let config: IngestConfig | undefined;
+let scanInProgress = false;
+let pendingScan: ScanRequest | undefined;
+let pendingPricing: PricingTable | undefined;
 
 function post(event: WorkerEvent): void {
   parentPort!.postMessage(event);
@@ -82,6 +87,168 @@ function stripMetaKeys(table: PricingTable): PricingTable {
   return result;
 }
 
+function mergeScanRequests(existing: ScanRequest | undefined, incoming: ScanRequest): ScanRequest {
+  if (!existing) {
+    return incoming;
+  }
+
+  if (existing.forceFull || incoming.forceFull) {
+    return { type: "scanAndIngest", reason: "manual", forceFull: true };
+  }
+
+  if (existing.reason !== "watch" || incoming.reason !== "watch") {
+    return { type: "scanAndIngest", reason: existing.reason === "activation" || incoming.reason === "activation" ? "activation" : "manual" };
+  }
+
+  if (!existing.changedPaths?.length || !incoming.changedPaths?.length) {
+    return { type: "scanAndIngest", reason: "watch" };
+  }
+
+  return {
+    type: "scanAndIngest",
+    reason: "watch",
+    changedPaths: [...new Set([...existing.changedPaths, ...incoming.changedPaths])],
+  };
+}
+
+function enqueueScan(req: ScanRequest): void {
+  if (scanInProgress) {
+    pendingScan = mergeScanRequests(pendingScan, req);
+    return;
+  }
+
+  void runScanQueue(req);
+}
+
+async function runScanQueue(first: ScanRequest): Promise<void> {
+  scanInProgress = true;
+  let current: ScanRequest | undefined = first;
+
+  try {
+    while (current || pendingPricing) {
+      if (current) {
+        pendingScan = undefined;
+        try {
+          await handleScanAndIngest(current);
+        } catch (err: unknown) {
+          const scope = classifyErrorScope(err, current.type);
+          const message = sanitizeErrorMessage(err);
+          post({ type: "error", scope, message });
+        }
+        current = pendingScan;
+      } else if (pendingPricing) {
+        const table = pendingPricing;
+        pendingPricing = undefined;
+        try {
+          handleUpdatePricing(table);
+        } catch (err: unknown) {
+          const scope = classifyErrorScope(err, "updatePricing");
+          const message = sanitizeErrorMessage(err);
+          post({ type: "error", scope, message });
+        }
+        current = pendingScan;
+      }
+    }
+  } finally {
+    scanInProgress = false;
+    if (pendingScan) {
+      const queued = pendingScan;
+      pendingScan = undefined;
+      enqueueScan(queued);
+    }
+  }
+}
+
+async function handleScanAndIngest(req: ScanRequest): Promise<void> {
+  if (!store || !pricing || !analytics || !config) {
+    post({ type: "error", scope: "scanAndIngest", message: "Worker not initialized" });
+    return;
+  }
+
+  // Discover candidate files from configured source roots
+  const sourceRoots = {
+    codex: config.sources.codex.enabled
+      ? { enabled: true, path: config.sources.codex.path ?? "" }
+      : undefined,
+    claude: config.sources.claude.enabled
+      ? { enabled: true, path: config.sources.claude.path ?? "" }
+      : undefined,
+  };
+  if (req.reason === "watch" && req.changedPaths && req.changedPaths.length > 0) {
+    const changedCandidates = scanChanged(req.changedPaths, sourceRoots);
+    const candidates = changedCandidates.length > 0 ? changedCandidates : scan(sourceRoots);
+    await ingestCandidates(req, candidates);
+    return;
+  }
+
+  await ingestCandidates(req, scan(sourceRoots));
+}
+
+async function ingestCandidates(req: ScanRequest, candidates: ReturnType<typeof scan>): Promise<void> {
+  if (!store || !pricing || !analytics || !config) {
+    post({ type: "error", scope: "scanAndIngest", message: "Worker not initialized" });
+    return;
+  }
+
+  // forceFull (manual rescan): wipe existing data, parse from offset 0
+  if (req.forceFull) {
+    for (const c of candidates) {
+      const cursor = store.getCursor(c.filePath);
+      if (cursor) {
+        store.subtractFileContribution(cursor.fileId);
+        store.deleteFileRows(cursor.fileId);
+        store.deleteCursor(c.filePath);
+      }
+    }
+    // Reset quality counters — forceFull re-parses everything from scratch
+    store.resetQualityCounters();
+  }
+
+  const options = {
+    maxLineBytes: config.ingestion.maxLineBytes,
+    backfillMonths: req.forceFull ? 0 : config.ingestion.backfillMonths,
+  };
+
+  await ingestAll(candidates, store, pricing, options, (processed, total, fileResult) => {
+    post({ type: "progress", processed, total, partial: true });
+    const currentAnalytics = analytics;
+    if (currentAnalytics && fileResult.decision !== "skip") {
+      post({
+        type: "ingestComplete",
+        freshness: currentAnalytics.freshness(),
+        warnings: currentAnalytics.warnings(),
+      });
+    }
+  });
+
+  store.flush();
+  post({ type: "progress", processed: candidates.length, total: candidates.length, partial: false });
+  post({
+    type: "ingestComplete",
+    freshness: analytics.freshness(),
+    warnings: analytics.warnings(),
+  });
+}
+
+function handleUpdatePricing(table: PricingTable): void {
+  if (!store || !pricing || !analytics) {
+    post({ type: "error", scope: "updatePricing", message: "Worker not initialized" });
+    return;
+  }
+  const mergedTable = { ...DEFAULT_PRICING, ...table };
+  pricing = new PricingEngine(stripMetaKeys(mergedTable), buildFallbackRate(mergedTable));
+  analytics = new AnalyticsService(store.database, pricing);
+  queries.recomputeCosts(store.database, stripMetaKeys(mergedTable));
+  // Recompute unmapped models with new pricing table
+  store.recordUnmappedModels(pricing.unmappedModels(store.distinctModels()));
+  store.flush();
+  post({
+    type: "ingestComplete",
+    freshness: analytics.freshness(),
+    warnings: analytics.warnings(),
+  });
+}
+
 async function handleInit(req: Extract<WorkerRequest, { type: "init" }>): Promise<void> {
   const SQL = await initSqlJs({
     locateFile: (file: string) => join(__dirname, file),
@@ -131,70 +298,16 @@ parentPort!.on("message", (req: WorkerRequest) => {
       }
 
       case "scanAndIngest": {
-        if (!store || !pricing || !analytics || !config) {
-          post({ type: "error", scope: "scanAndIngest", message: "Worker not initialized" });
-          return;
-        }
-
-        // Discover candidate files from configured source roots
-        const candidates = scan({
-          codex: config.sources.codex.enabled
-            ? { enabled: true, path: config.sources.codex.path ?? "" }
-            : undefined,
-          claude: config.sources.claude.enabled
-            ? { enabled: true, path: config.sources.claude.path ?? "" }
-            : undefined,
-        });
-
-        // forceFull (manual rescan): wipe existing data, parse from offset 0
-        if (req.forceFull) {
-          for (const c of candidates) {
-            const cursor = store.getCursor(c.filePath);
-            if (cursor) {
-              store.subtractFileContribution(cursor.fileId);
-              store.deleteFileRows(cursor.fileId);
-              store.deleteCursor(c.filePath);
-            }
-          }
-          // Reset quality counters — forceFull re-parses everything from scratch
-          store.resetQualityCounters();
-        }
-
-        const options = {
-          maxLineBytes: config.ingestion.maxLineBytes,
-          backfillMonths: req.forceFull ? 0 : config.ingestion.backfillMonths,
-        };
-
-        await ingestAll(candidates, store, pricing, options, (processed, total) => {
-          post({ type: "progress", processed, total, partial: true });
-        });
-
-        store.flush();
-        post({
-          type: "ingestComplete",
-          freshness: analytics.freshness(),
-          warnings: analytics.warnings(),
-        });
+        enqueueScan(req);
         break;
       }
 
       case "updatePricing": {
-        if (!store || !pricing || !analytics) {
-          post({ type: "error", scope: "updatePricing", message: "Worker not initialized" });
-          break;
+        if (scanInProgress) {
+          pendingPricing = req.table;
+        } else {
+          handleUpdatePricing(req.table);
         }
-        const mergedTable = { ...DEFAULT_PRICING, ...req.table };
-        pricing = new PricingEngine(stripMetaKeys(mergedTable), buildFallbackRate(mergedTable));
-        analytics = new AnalyticsService(store.database, pricing);
-        queries.recomputeCosts(store.database, stripMetaKeys(mergedTable));
-        // Recompute unmapped models with new pricing table
-        store.recordUnmappedModels(pricing.unmappedModels(store.distinctModels()));
-        store.flush();
-        post({
-          type: "ingestComplete",
-          freshness: analytics.freshness(),
-          warnings: analytics.warnings(),
-        });
         break;
       }
 

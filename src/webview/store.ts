@@ -10,6 +10,8 @@ import type {
   WebviewRequest,
 } from "../shared/protocol";
 import type { Source, Effort } from "../shared/types";
+import { queryRangeForPeriod } from "./lib/periodData";
+import type { Period } from "./lib/periodData";
 
 // --- VS Code WebView messaging ---
 
@@ -19,7 +21,7 @@ export const vscodeApi = acquireVsCodeApi();
 // --- Slice interfaces ---
 
 export interface Filters {
-  granularity: "day" | "week" | "month" | "year";
+  granularity: Period;
   range: { fromUtc: number; toUtc: number };
   sources?: Source[];
   models?: string[];
@@ -57,25 +59,12 @@ function nextId(): string {
   return `q-${++queryCounter}`;
 }
 
-/** Compute the query range based on granularity — ensures enough data is fetched */
-function rangeForGranularity(granularity: string): { fromUtc: number; toUtc: number } {
-  const now = Date.now();
-  const day = 24 * 60 * 60 * 1000;
-  switch (granularity) {
-    case "day": return { fromUtc: now - 14 * day, toUtc: now };       // 2 weeks for comparison
-    case "week": return { fromUtc: now - 56 * day, toUtc: now };      // 8 weeks
-    case "month": return { fromUtc: now - 180 * day, toUtc: now };    // 6 months
-    case "year": return { fromUtc: now - 730 * day, toUtc: now };     // 2 years
-    default: return { fromUtc: now - 30 * day, toUtc: now };
-  }
-}
-
 // --- Store ---
 
 export const useStore = create<Store>((set, get) => ({
   // Filters defaults
-  granularity: "day",
-  range: rangeForGranularity("day"),
+  granularity: "today",
+  range: queryRangeForPeriod("today"),
   sources: undefined,
   models: undefined,
   efforts: undefined,
@@ -97,7 +86,7 @@ export const useStore = create<Store>((set, get) => ({
   setFilter(partial) {
     // If granularity changed, update the query range accordingly
     if (partial.granularity && partial.granularity !== get().granularity) {
-      partial = { ...partial, range: rangeForGranularity(partial.granularity) };
+      partial = { ...partial, range: queryRangeForPeriod(partial.granularity as Period) };
     }
     // Clear results when filters change so stale data doesn't show
     set({ ...partial, results: {} });
@@ -124,12 +113,16 @@ export const useStore = create<Store>((set, get) => ({
   requestQuery() {
     const s = get();
     const id = nextId();
+    const range = queryRangeForPeriod(s.granularity);
+    if (range.fromUtc !== s.range.fromUtc || range.toUtc !== s.range.toUtc) {
+      set({ range });
+    }
     // Map "year" to "month" for the protocol (UI handles year grouping locally)
-    const queryGranularity = s.granularity === "year" ? "month" : s.granularity;
+    const queryGranularity = s.granularity === "year" ? "month" : s.granularity === "today" ? "day" : s.granularity;
     const query: AnalyticsQuery = {
       view: "dashboard",
       granularity: queryGranularity,
-      range: s.range,
+      range,
       sources: s.sources,
       models: s.models,
       efforts: s.efforts,

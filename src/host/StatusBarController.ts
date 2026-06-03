@@ -41,18 +41,42 @@ export class StatusBarController implements vscode.Disposable {
 
     let tokens = 0;
     let cost = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let reasoningTokens = 0;
+    let cacheReadTokens = 0;
+    let cacheCreationTokens = 0;
+    let turns = 0;
 
     if (result.view === "dashboard") {
       for (const row of result.series) {
         tokens += row.totalTokens;
         cost += row.costUsd;
+        inputTokens += row.inputTokens;
+        outputTokens += row.outputTokens;
+        reasoningTokens += row.reasoningTokens;
+        cacheReadTokens += row.cacheReadTokens;
+        cacheCreationTokens += row.cacheCreationTokens;
+        turns += row.turns;
       }
     }
 
     const tokensStr = formatTokens(tokens);
     const costStr = formatCost(cost);
     this.item.text = `$(zap) ${tokensStr} | $${costStr}`;
-    this.item.tooltip = "Token Watch – Today's usage";
+    this.item.tooltip = [
+      "Token Watch - Today's usage",
+      "",
+      `Input: ${formatTokenDetail(inputTokens)}`,
+      `Output: ${formatTokenDetail(outputTokens)}`,
+      `Reasoning: ${formatTokenDetail(reasoningTokens)}`,
+      `Cache read: ${formatTokenDetail(cacheReadTokens)}`,
+      `Cache write: ${formatTokenDetail(cacheCreationTokens)}`,
+      "",
+      `Total: ${formatTokenDetail(tokens)}`,
+      `Turns: ${turns.toLocaleString()}`,
+      `Cost: $${costStr}`,
+    ].join("\n");
 
     if (this.enabled) {
       this.item.show();
@@ -88,6 +112,13 @@ function formatTokens(n: number): string {
     return k % 1 === 0 ? `${k}K` : `${k.toFixed(1)}K`;
   }
   return String(n);
+}
+
+/** Format an exact token count with a compact suffix for tooltip rows. */
+function formatTokenDetail(n: number): string {
+  const exact = Math.round(n).toLocaleString();
+  const compact = formatTokens(n);
+  return exact === compact ? exact : `${exact} (${compact})`;
 }
 
 /** Format USD cost to 2 decimal places. */

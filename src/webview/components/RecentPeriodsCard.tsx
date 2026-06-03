@@ -8,7 +8,7 @@ export function RecentPeriodsCard() {
   const result = useQuery("dashboard");
   const g = useStore((s) => s.granularity) as Period;
   if (!result || result.view !== "dashboard" || result.series.length === 0) { return null; }
-  const buckets = makeBuckets(result.series, g).slice(0, g === "day" ? 7 : 6);
+  const buckets = makeBuckets(result.series, g);
   const maxT = Math.max(...buckets.map((b) => b.tokens), 1);
 
   return (

@@ -60,7 +60,7 @@ export function getConfig(): TokenWatchConfig {
       secondaryRate: cfg.get<number>("currency.secondaryRate", 0),
     },
     ingestion: {
-      watchDebounceMs: clamp(cfg.get<number>("ingestion.watchDebounceMs", 2000), 250, 60000),
+      watchDebounceMs: clamp(cfg.get<number>("ingestion.watchDebounceMs", 500), 250, 60000),
       maxLineBytes: Math.max(cfg.get<number>("ingestion.maxLineBytes", 1048576), 4096),
       backfillMonths: Math.max(cfg.get<number>("ingestion.backfillMonths", 6), 0),
     },

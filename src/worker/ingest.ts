@@ -213,7 +213,7 @@ export async function ingestAll(
   store: UsageStore,
   pricing: PricingEngine,
   options: IngestOptions,
-  onProgress?: (processed: number, total: number) => void,
+  onProgress?: (processed: number, total: number, fileResult: FileIngestResult) => void,
 ): Promise<IngestResult> {
   const result: IngestResult = {
     processed: 0,
@@ -245,7 +245,7 @@ export async function ingestAll(
     }
     totalMalformed += fileResult.malformedCount;
     totalOversized += fileResult.oversizedCount;
-    onProgress?.(result.processed, total);
+    onProgress?.(result.processed, total, fileResult);
   }
 
   // Persist quality metrics — incremental appends only see new issues, so we
@@ -264,7 +264,7 @@ export async function ingestAll(
 }
 
 /** Result from processing a single file. */
-interface FileIngestResult {
+export interface FileIngestResult {
   decision: IngestDecision;
   malformedCount: number;
   oversizedCount: number;

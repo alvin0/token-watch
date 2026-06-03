@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { watch, type FSWatcher } from "node:fs";
+import { isAbsolute, join } from "node:path";
 
 /**
  * Watches a set of directories via `fs.watch` (recursive where supported)
@@ -8,21 +9,23 @@ import { watch, type FSWatcher } from "node:fs";
 export class FileWatcher implements vscode.Disposable {
   private watchers: FSWatcher[] = [];
   private debounceTimer: NodeJS.Timeout | null = null;
+  private pendingPaths = new Set<string>();
   private readonly debounceMs: number;
-  private readonly onChangeCallback: () => void;
+  private readonly onChangeCallback: (changedPaths: string[]) => void;
 
   constructor(
     paths: string[],
     debounceMs: number,
-    onChangeCallback: () => void,
+    onChangeCallback: (changedPaths: string[]) => void,
   ) {
     this.debounceMs = debounceMs;
     this.onChangeCallback = onChangeCallback;
 
     for (const dir of paths) {
       try {
-        const watcher = watch(dir, { recursive: true }, () => {
-          this.scheduleCallback();
+        const watcher = watch(dir, { recursive: true }, (_eventType, filename) => {
+          const changedPath = changedPathFromFilename(dir, filename);
+          this.scheduleCallback(changedPath);
         });
         watcher.on("error", () => {
           // Silently ignore per-watcher errors (e.g. dir removed at runtime)
@@ -34,13 +37,18 @@ export class FileWatcher implements vscode.Disposable {
     }
   }
 
-  private scheduleCallback(): void {
+  private scheduleCallback(changedPath: string | undefined): void {
+    if (changedPath) {
+      this.pendingPaths.add(changedPath);
+    }
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer);
     }
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
-      this.onChangeCallback();
+      const changedPaths = [...this.pendingPaths];
+      this.pendingPaths.clear();
+      this.onChangeCallback(changedPaths);
     }, this.debounceMs);
   }
 
@@ -49,9 +57,21 @@ export class FileWatcher implements vscode.Disposable {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
+    this.pendingPaths.clear();
     for (const watcher of this.watchers) {
       watcher.close();
     }
     this.watchers = [];
   }
+}
+
+function changedPathFromFilename(dir: string, filename: string | Buffer | null): string | undefined {
+  if (!filename) {
+    return undefined;
+  }
+  const name = filename.toString();
+  if (!name) {
+    return undefined;
+  }
+  return isAbsolute(name) ? name : join(dir, name);
 }

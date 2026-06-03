@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { scan, type SourceRoots } from "../../worker/discovery.js";
+import { scan, scanChanged, type SourceRoots } from "../../worker/discovery.js";
 
 suite("Permissions/missing-dir integration test", () => {
   let tmpDir: string;
@@ -69,5 +69,102 @@ suite("Permissions/missing-dir integration test", () => {
 
     const candidates = scan(roots);
     assert.strictEqual(candidates.length, 0, "Disabled source should not produce candidates");
+  });
+
+  test("Claude nested JSONL files are discovered", () => {
+    const claudeRoot = join(tmpDir, "claude-projects");
+    const nestedDir = join(claudeRoot, "project-a", "session-a", "subagents");
+    mkdirSync(nestedDir, { recursive: true });
+    writeFileSync(join(nestedDir, "agent-a.jsonl"), '{"type":"assistant"}\n');
+
+    const roots: SourceRoots = {
+      codex: { enabled: false, path: join(tmpDir, "no-codex") },
+      claude: { enabled: true, path: claudeRoot },
+    };
+
+    const candidates = scan(roots);
+    assert.strictEqual(candidates.length, 1);
+    assert.strictEqual(candidates[0].source, "claude");
+    assert.ok(candidates[0].filePath.endsWith("agent-a.jsonl"));
+  });
+
+  test("scanChanged returns only changed log candidates", () => {
+    const codexRoot = join(tmpDir, "codex-sessions");
+    const codexDir = join(codexRoot, "2026", "06", "03");
+    const claudeRoot = join(tmpDir, "claude-projects");
+    const claudeDir = join(claudeRoot, "project-a");
+    mkdirSync(codexDir, { recursive: true });
+    mkdirSync(claudeDir, { recursive: true });
+
+    const codexFile = join(codexDir, "rollout-live.jsonl");
+    const claudeFile = join(claudeDir, "session-live.jsonl");
+    const ignoredFile = join(codexDir, "notes.txt");
+    writeFileSync(codexFile, '{"type":"session_meta"}\n');
+    writeFileSync(claudeFile, '{"type":"assistant"}\n');
+    writeFileSync(ignoredFile, "ignore me\n");
+
+    const roots: SourceRoots = {
+      codex: { enabled: true, path: codexRoot },
+      claude: { enabled: true, path: claudeRoot },
+    };
+
+    const candidates = scanChanged([codexFile, ignoredFile], roots);
+    assert.strictEqual(candidates.length, 1);
+    assert.strictEqual(candidates[0].source, "codex");
+    assert.strictEqual(candidates[0].filePath, codexFile);
+  });
+
+  test("scanChanged accepts files inside dot-prefixed directories", () => {
+    const claudeRoot = join(tmpDir, "claude-projects");
+    const dotDir = join(claudeRoot, "..not-outside");
+    mkdirSync(dotDir, { recursive: true });
+
+    const claudeFile = join(dotDir, "session-live.jsonl");
+    writeFileSync(claudeFile, '{"type":"assistant"}\n');
+
+    const candidates = scanChanged([claudeFile], {
+      codex: { enabled: false, path: join(tmpDir, "no-codex") },
+      claude: { enabled: true, path: claudeRoot },
+    });
+
+    assert.strictEqual(candidates.length, 1);
+    assert.strictEqual(candidates[0].source, "claude");
+    assert.strictEqual(candidates[0].filePath, claudeFile);
+  });
+
+  test("scanChanged expands changed Codex directories", () => {
+    const codexRoot = join(tmpDir, "codex-sessions");
+    const dayDir = join(codexRoot, "2026", "06", "03");
+    mkdirSync(dayDir, { recursive: true });
+
+    const codexFile = join(dayDir, "rollout-live.jsonl");
+    writeFileSync(codexFile, '{"type":"session_meta"}\n');
+
+    const candidates = scanChanged([dayDir], {
+      codex: { enabled: true, path: codexRoot },
+      claude: { enabled: false, path: join(tmpDir, "no-claude") },
+    });
+
+    assert.strictEqual(candidates.length, 1);
+    assert.strictEqual(candidates[0].source, "codex");
+    assert.strictEqual(candidates[0].filePath, codexFile);
+  });
+
+  test("scanChanged expands changed Claude directories", () => {
+    const claudeRoot = join(tmpDir, "claude-projects");
+    const sessionDir = join(claudeRoot, "project-a", "session-a");
+    mkdirSync(sessionDir, { recursive: true });
+
+    const claudeFile = join(sessionDir, "session-live.jsonl");
+    writeFileSync(claudeFile, '{"type":"assistant"}\n');
+
+    const candidates = scanChanged([sessionDir], {
+      codex: { enabled: false, path: join(tmpDir, "no-codex") },
+      claude: { enabled: true, path: claudeRoot },
+    });
+
+    assert.strictEqual(candidates.length, 1);
+    assert.strictEqual(candidates[0].source, "claude");
+    assert.strictEqual(candidates[0].filePath, claudeFile);
   });
 });
