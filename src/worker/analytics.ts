@@ -64,8 +64,9 @@ export class AnalyticsService {
     const variants = queries.variantBreakdown(this.db, q);
     const allSessions = queries.sessionLeaderboard(this.db, q);
     const sessions = allSessions.slice(0, 20);
+    const tools = queries.toolUsage(this.db, q);
 
-    return { view: "dashboard", series, variants, sessions };
+    return { view: "dashboard", series, variants, sessions, tools };
   }
 
   /**

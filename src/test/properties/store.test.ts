@@ -8,7 +8,7 @@ import { dailySeries, variantBreakdown } from "../../worker/store/queries.js";
 import { totalTokens } from "../../shared/types.js";
 import { makeVariantId, baseModelOf } from "../../shared/variant.js";
 import type { UsageRecord, ToolEvent, Source } from "../../shared/types.js";
-import type { StoreBatch, FileContribution } from "../../shared/storeTypes.js";
+import type { StoreBatch, FileContribution, FileCursor } from "../../shared/storeTypes.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -447,4 +447,117 @@ suite("Store property tests (in-memory sql.js)", () => {
       { numRuns: 100 },
     );
   });
+
+  test("File catalog returns hot current-week paths before cold history", async () => {
+    const db = await freshDb();
+    const store = storeFromDb(db);
+    const now = new Date("2026-06-04T12:00:00Z").getTime();
+    const coldNow = new Date("2026-01-01T12:00:00Z").getTime();
+    const hotCandidate = {
+      filePath: "/tmp/hot-rollout.jsonl",
+      fileId: "hot-file",
+      source: "codex" as Source,
+      size: 100,
+      mtimeMs: now - 60_000,
+    };
+    const coldCandidate = {
+      filePath: "/tmp/cold-rollout.jsonl",
+      fileId: "cold-file",
+      source: "codex" as Source,
+      size: 100,
+      mtimeMs: coldNow,
+    };
+
+    store.recordDiscoveredFiles([coldCandidate], coldNow);
+    store.putCursor(catalogCursor(coldCandidate, "2026-01-01"));
+    store.recordFileCatalogIngestResult(coldCandidate, "firstRead", coldNow);
+
+    store.recordDiscoveredFiles([hotCandidate], now);
+    store.putCursor(catalogCursor(hotCandidate, "2026-06-04"));
+    store.recordFileCatalogIngestResult(hotCandidate, "firstRead", now);
+    store.recordFileCatalogPriorities([{ filePath: hotCandidate.filePath, priorityScore: 10_000 }]);
+
+    const hotPaths = store.hotCatalogFilePaths(now, 10);
+
+    assert.ok(hotPaths.includes(hotCandidate.filePath), "current-week file should be hot");
+    assert.ok(!hotPaths.includes(coldCandidate.filePath), "old unchanged history should not be hot");
+    db.close();
+  });
+
+  test("Unmapped models are auto-registered with fallback pricing without resetting first_seen", async () => {
+    const db = await freshDb();
+    const store = storeFromDb(db);
+    const fallbackRate = {
+      inputPer1K: 0.003,
+      cachedInputPer1K: 0.0015,
+      outputPer1K: 0.012,
+    };
+    const model = "gpt-9.9-codex-surprise";
+
+    store.recordUnmappedModels([model], fallbackRate);
+    const firstSeen = singleNumber(db, "SELECT first_seen_utc FROM unmapped_model WHERE model = ?", [model]);
+    const ratesJson = singleString(db, "SELECT rates_json FROM pricing WHERE model = ?", [model]);
+
+    assert.ok(firstSeen > 0, "unmapped model should be recorded");
+    assert.deepStrictEqual(JSON.parse(ratesJson), fallbackRate);
+
+    store.recordUnmappedModels([model], fallbackRate);
+    const firstSeenAgain = singleNumber(db, "SELECT first_seen_utc FROM unmapped_model WHERE model = ?", [model]);
+
+    assert.strictEqual(firstSeenAgain, firstSeen, "first_seen_utc should be stable across repeated records");
+    db.close();
+  });
 });
+
+function singleNumber(db: Database, sql: string, params: Array<string | number>): number {
+  const result = db.exec(sql, params);
+  assert.ok(result.length > 0 && result[0].values.length > 0, `Expected one row for ${sql}`);
+  return Number(result[0].values[0][0]);
+}
+
+function singleString(db: Database, sql: string, params: Array<string | number>): string {
+  const result = db.exec(sql, params);
+  assert.ok(result.length > 0 && result[0].values.length > 0, `Expected one row for ${sql}`);
+  const value = result[0].values[0][0];
+  assert.strictEqual(typeof value, "string");
+  return String(value);
+}
+
+function catalogCursor(
+  candidate: { filePath: string; fileId: string; source: Source; size: number; mtimeMs: number },
+  day: string,
+): FileCursor {
+  return {
+    filePath: candidate.filePath,
+    fileId: candidate.fileId,
+    source: candidate.source,
+    size: candidate.size,
+    mtimeMs: candidate.mtimeMs,
+    lastByteOffset: candidate.size,
+    headHash: "head",
+    tailAnchorHash: "tail",
+    runningTotals: {},
+    recentRequestIds: [],
+    contribution: {
+      daily: [{
+        day,
+        source: candidate.source,
+        variantId: "gpt-5-codex",
+        workspace: "",
+        sums: {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          reasoningTokens: 0,
+        },
+        turns: 1,
+        costUsd: 0,
+        unknownTurns: 0,
+      }],
+      sessions: [],
+      recordKeys: [],
+      toolEventCount: 0,
+    },
+  };
+}

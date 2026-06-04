@@ -4,7 +4,7 @@ import { writeFileSync, unlinkSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { decideAction } from "../../worker/ingest.js";
+import { candidatePriorityScore, decideAction, orderCandidatesForIngestion } from "../../worker/ingest.js";
 import { computeHeadHash, computeTailAnchorHash } from "../../worker/cursor.js";
 import { CodexParser } from "../../worker/parsers/codex.js";
 import type { ParseOutput } from "../../worker/parsers/types.js";
@@ -423,4 +423,98 @@ suite("Ingestion example tests", () => {
       unlinkSync(file);
     }
   });
+
+  test("Recent files are ingested before old small files", () => {
+    const now = new Date("2026-06-04T12:00:00Z").getTime();
+    const oldSmall: CandidateFile = {
+      filePath: "/tmp/old-small.jsonl",
+      source: "codex",
+      size: 1024,
+      mtimeMs: now - 3 * 24 * 60 * 60 * 1000,
+      fileId: "old-small",
+    };
+    const recentLarge: CandidateFile = {
+      filePath: "/tmp/recent-large.jsonl",
+      source: "codex",
+      size: 8 * 1024 * 1024,
+      mtimeMs: now - 60_000,
+      fileId: "recent-large",
+    };
+    const oldLarge: CandidateFile = {
+      filePath: "/tmp/old-large.jsonl",
+      source: "codex",
+      size: 8 * 1024 * 1024,
+      mtimeMs: now - 4 * 24 * 60 * 60 * 1000,
+      fileId: "old-large",
+    };
+
+    const ordered = orderCandidatesForIngestion([oldSmall, oldLarge, recentLarge], now);
+
+    assert.deepStrictEqual(
+      ordered.map((c) => c.fileId),
+      ["recent-large", "old-small", "old-large"],
+    );
+  });
+
+  test("Known files overlapping today outrank unchanged cold history", () => {
+    const now = new Date("2026-06-04T12:00:00Z").getTime();
+    const todayCandidate: CandidateFile = {
+      filePath: "/tmp/today.jsonl",
+      source: "codex",
+      size: 4096,
+      mtimeMs: now - 60_000,
+      fileId: "today",
+    };
+    const coldCandidate: CandidateFile = {
+      filePath: "/tmp/cold.jsonl",
+      source: "codex",
+      size: 1024,
+      mtimeMs: new Date("2026-01-01T00:00:00Z").getTime(),
+      fileId: "cold",
+    };
+    const todayCursor = cursorForCandidate(todayCandidate, "2026-06-04");
+    const coldCursor = cursorForCandidate(coldCandidate, "2026-01-01");
+
+    assert.ok(
+      candidatePriorityScore(todayCandidate, todayCursor, now) >
+        candidatePriorityScore(coldCandidate, coldCursor, now),
+      "today-overlapping files should have higher ingest priority than unchanged cold history",
+    );
+  });
 });
+
+function cursorForCandidate(candidate: CandidateFile, day: string): FileCursor {
+  return {
+    filePath: candidate.filePath,
+    fileId: candidate.fileId,
+    source: candidate.source,
+    size: candidate.size,
+    mtimeMs: candidate.mtimeMs,
+    lastByteOffset: candidate.size,
+    headHash: "head",
+    tailAnchorHash: "tail",
+    runningTotals: {},
+    recentRequestIds: [],
+    contribution: {
+      daily: [{
+        day,
+        source: candidate.source,
+        variantId: "gpt-5-codex",
+        workspace: "",
+        sums: {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          reasoningTokens: 0,
+        },
+        turns: 1,
+        costUsd: 0,
+        unknownTurns: 0,
+      }],
+      sessions: [],
+      recordKeys: [],
+      toolEventCount: 0,
+    },
+  };
+}

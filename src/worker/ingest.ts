@@ -36,6 +36,11 @@ export interface IngestOptions {
   backfillMonths: number;
 }
 
+const SMALL_FILE_THRESHOLD_BYTES = 5 * 1024 * 1024;
+const RECENT_FILE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const STORED_PRIORITY_LIMIT = 500;
+
 /**
  * Pure decision function — no I/O. Determines what action to take for a
  * candidate file given its current cursor state.
@@ -200,13 +205,13 @@ export async function ingestFile(
 }
 
 /**
- * Ingest all candidate files with a two-phase strategy for fast time-to-first-data:
+ * Ingest all candidate files with a recency-first strategy for fresh data:
  *
- * Phase 1 (fast): Process small files (< 5 MB) first — these are quick to parse
- * and give the user data within seconds. Sorted by mtime desc (most recent first).
+ * Phase 1 (fresh): Process files modified in the recent window first, newest
+ * first, even when they are large active sessions.
  *
- * Phase 2 (background): Process large files (>= 5 MB) after, also mtime desc.
- * These can take minutes for 100+ MB files but the dashboard already has data.
+ * Phase 2 (backfill): Process older small files before older large files so
+ * historical backfill remains responsive.
  */
 export async function ingestAll(
   candidates: CandidateFile[],
@@ -223,19 +228,21 @@ export async function ingestAll(
     firstReads: 0,
   };
 
-  // Two-phase: small files first for fast time-to-first-data
-  const SMALL_THRESHOLD = 5 * 1024 * 1024; // 5 MB
-  const small = candidates.filter((c) => c.size < SMALL_THRESHOLD);
-  const large = candidates.filter((c) => c.size >= SMALL_THRESHOLD);
-
-  const ordered = [...small, ...large];
+  const ranked = rankCandidatesForIngestion(candidates, store);
+  store.recordFileCatalogPriorities(ranked.slice(0, STORED_PRIORITY_LIMIT).map(({ candidate, priorityScore }) => ({
+    filePath: candidate.filePath,
+    priorityScore,
+  })));
+  const ordered = ranked.map(({ candidate }) => candidate);
   const total = ordered.length;
 
   let totalMalformed = 0;
   let totalOversized = 0;
 
   for (let i = 0; i < total; i++) {
-    const fileResult = await ingestFile(ordered[i], store, pricing, options);
+    const candidate = ordered[i];
+    const fileResult = await ingestFile(candidate, store, pricing, options);
+    store.recordFileCatalogIngestResult(candidate, fileResult.decision);
     result.processed++;
     switch (fileResult.decision) {
       case "skip": result.skipped++; break;
@@ -258,9 +265,88 @@ export async function ingestAll(
   // Record unmapped models — evaluate against ALL models in the store, not just
   // those parsed this run, so a watch tick on one file doesn't clobber the set.
   const unmapped = pricing.unmappedModels(store.distinctModels());
-  store.recordUnmappedModels(unmapped);
+  store.recordUnmappedModels(unmapped, pricing.fallbackModelRate());
 
   return result;
+}
+
+export function orderCandidatesForIngestion(candidates: CandidateFile[], now = Date.now()): CandidateFile[] {
+  return rankCandidatesForIngestion(candidates, undefined, now).map(({ candidate }) => candidate);
+}
+
+export function rankCandidatesForIngestion(
+  candidates: CandidateFile[],
+  store?: UsageStore,
+  now = Date.now(),
+): Array<{ candidate: CandidateFile; priorityScore: number }> {
+  return candidates
+    .map((candidate) => ({
+      candidate,
+      priorityScore: candidatePriorityScore(candidate, store?.getCursor(candidate.filePath), now),
+    }))
+    .sort((a, b) =>
+      b.priorityScore - a.priorityScore ||
+      b.candidate.mtimeMs - a.candidate.mtimeMs ||
+      a.candidate.filePath.localeCompare(b.candidate.filePath)
+    );
+}
+
+export function candidatePriorityScore(
+  candidate: CandidateFile,
+  cursor: FileCursor | undefined,
+  now = Date.now(),
+): number {
+  const todayStart = startOfLocalDayMs(now);
+  const weekStartDay = localDay(new Date(todayStart - 6 * DAY_MS));
+  const today = localDay(new Date(now));
+  const recentCutoff = now - RECENT_FILE_WINDOW_MS;
+  const dayRange = cursor ? dayRangeFromContribution(cursor.contribution) : undefined;
+  const isNew = !cursor;
+  const changed = cursor
+    ? candidate.fileId !== cursor.fileId || candidate.size !== cursor.size || candidate.mtimeMs !== cursor.mtimeMs
+    : false;
+  const overlapsToday = dayRange ? dayRange.minDay <= today && dayRange.maxDay >= today : false;
+  const overlapsWeek = dayRange ? dayRange.maxDay >= weekStartDay && dayRange.minDay <= today : false;
+
+  let score = 0;
+  if (isNew) { score += 20_000; }
+  if (changed) { score += 15_000; }
+  if (candidate.mtimeMs >= todayStart) { score += 10_000; }
+  if (overlapsToday) { score += 8_000; }
+  if (overlapsWeek) { score += 4_000; }
+  if (candidate.mtimeMs >= recentCutoff) { score += 3_000; }
+  if (candidate.size < SMALL_FILE_THRESHOLD_BYTES) { score += 200; }
+  score += recencyScore(candidate.mtimeMs, now);
+
+  if (!isNew && !changed && dayRange && dayRange.maxDay < weekStartDay) {
+    score -= 5_000;
+  }
+
+  return score;
+}
+
+function recencyScore(mtimeMs: number, now: number): number {
+  const ageHours = Math.max(0, (now - mtimeMs) / (60 * 60 * 1000));
+  return Math.max(0, 1_000 - ageHours);
+}
+
+function startOfLocalDayMs(now: number): number {
+  const d = new Date(now);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function dayRangeFromContribution(contribution: FileContribution): { minDay: string; maxDay: string } | undefined {
+  let minDay: string | undefined;
+  let maxDay: string | undefined;
+  for (const daily of contribution.daily) {
+    if (!minDay || daily.day < minDay) {
+      minDay = daily.day;
+    }
+    if (!maxDay || daily.day > maxDay) {
+      maxDay = daily.day;
+    }
+  }
+  return minDay && maxDay ? { minDay, maxDay } : undefined;
 }
 
 /** Result from processing a single file. */

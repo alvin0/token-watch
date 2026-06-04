@@ -17,10 +17,24 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
+import type { ModelRate } from "../../shared/types.js";
 import type { FileCursor, FileContribution, StoreBatch } from "../../shared/storeTypes.js";
 import { totalTokens } from "../../shared/types.js";
 import { baseModelOf } from "../../shared/variant.js";
 import { localDay } from "../../shared/time.js";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const FULL_DISCOVERY_META_KEY = "last_full_discovery_utc";
+
+interface FileCatalogCandidate {
+  filePath: string;
+  fileId: string;
+  source: FileCursor["source"];
+  size: number;
+  mtimeMs: number;
+}
+
+type CatalogIngestDecision = "skip" | "append" | "reingest" | "firstRead";
 
 export class UsageStore {
   private db: Database | null = null;
@@ -54,6 +68,7 @@ export class UsageStore {
   async migrateOrRebuild(): Promise<"migrated" | "rebuilt" | "ok"> {
     const current = this.schemaVersion();
     if (current === SCHEMA_VERSION) {
+      this.ensureAuxiliarySchema();
       return "ok";
     }
 
@@ -74,6 +89,7 @@ export class UsageStore {
     db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)", [
       String(SCHEMA_VERSION),
     ]);
+    this.ensureAuxiliarySchema();
 
     return "rebuilt";
   }
@@ -135,6 +151,127 @@ export class UsageStore {
         JSON.stringify(cursor.contribution),
       ]
     );
+  }
+
+  recordDiscoveredFiles(candidates: FileCatalogCandidate[], now = Date.now()): void {
+    if (candidates.length === 0) { return; }
+    const db = this.getDb();
+    db.run("BEGIN TRANSACTION");
+    try {
+      for (const c of candidates) {
+        db.run(
+          `INSERT INTO file_catalog
+           (file_path, file_id, source, size, mtime_ms, first_seen_utc,
+            last_seen_utc, last_changed_utc, state)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'discovered')
+           ON CONFLICT(file_path) DO UPDATE SET
+             file_id = excluded.file_id,
+             source = excluded.source,
+             size = excluded.size,
+             mtime_ms = excluded.mtime_ms,
+             last_seen_utc = excluded.last_seen_utc,
+             last_changed_utc = CASE
+               WHEN file_catalog.file_id != excluded.file_id
+                 OR file_catalog.size != excluded.size
+                 OR file_catalog.mtime_ms != excluded.mtime_ms
+               THEN excluded.last_changed_utc
+               ELSE file_catalog.last_changed_utc
+             END,
+             state = CASE
+               WHEN file_catalog.file_id != excluded.file_id
+                 OR file_catalog.size != excluded.size
+                 OR file_catalog.mtime_ms != excluded.mtime_ms
+               THEN 'changed'
+               ELSE file_catalog.state
+             END`,
+          [c.filePath, c.fileId, c.source, c.size, c.mtimeMs, now, now, now],
+        );
+      }
+      db.run("COMMIT");
+    } catch (e) {
+      db.run("ROLLBACK");
+      throw e;
+    }
+  }
+
+  recordFileCatalogPriorities(scores: Array<{ filePath: string; priorityScore: number }>): void {
+    if (scores.length === 0) { return; }
+    const db = this.getDb();
+    db.run("BEGIN TRANSACTION");
+    try {
+      for (const score of scores) {
+        db.run(
+          "UPDATE file_catalog SET priority_score = ? WHERE file_path = ?",
+          [score.priorityScore, score.filePath],
+        );
+      }
+      db.run("COMMIT");
+    } catch (e) {
+      db.run("ROLLBACK");
+      throw e;
+    }
+  }
+
+  recordFileCatalogIngestResult(
+    candidate: FileCatalogCandidate,
+    decision: CatalogIngestDecision,
+    now = Date.now(),
+  ): void {
+    const cursor = this.getCursor(candidate.filePath);
+    const range = cursor ? dayRangeFromContribution(cursor.contribution) : undefined;
+    const didReadFile = decision !== "skip";
+    const state = cursor ? "complete" : "ignored";
+
+    this.getDb().run(
+      `UPDATE file_catalog SET
+         last_checked_utc = ?,
+         last_ingested_utc = CASE WHEN ? THEN ? ELSE last_ingested_utc END,
+         min_day = ?,
+         max_day = ?,
+         state = ?
+       WHERE file_path = ?`,
+      [
+        now,
+        didReadFile ? 1 : 0,
+        now,
+        range?.minDay ?? null,
+        range?.maxDay ?? null,
+        state,
+        candidate.filePath,
+      ],
+    );
+  }
+
+  hotCatalogFilePaths(now = Date.now(), limit = 200): string[] {
+    const recentCutoff = now - DAY_MS;
+    const weekStart = localDay(new Date(now - 6 * DAY_MS));
+    const db = this.getDb();
+    const result = db.exec(
+      `SELECT file_path
+       FROM file_catalog
+       WHERE state != 'ignored'
+         AND (
+           last_changed_utc >= ?
+           OR mtime_ms >= ?
+           OR max_day >= ?
+         )
+       ORDER BY priority_score DESC, last_changed_utc DESC, mtime_ms DESC
+       LIMIT ?`,
+      [recentCutoff, recentCutoff, weekStart, limit],
+    );
+    if (result.length === 0) { return []; }
+    return result[0].values
+      .map((row) => row[0])
+      .filter((value): value is string => typeof value === "string");
+  }
+
+  shouldRunFullDiscovery(now = Date.now(), minIntervalMs: number): boolean {
+    const lastRun = this.getMetaNumber(FULL_DISCOVERY_META_KEY);
+    return lastRun === undefined || now - lastRun >= minIntervalMs;
+  }
+
+  markFullDiscoveryRun(now = Date.now()): void {
+    this.setMeta(FULL_DISCOVERY_META_KEY, String(now));
   }
 
   applyFileResult(fileId: string, batch: StoreBatch): void {
@@ -447,18 +584,42 @@ export class UsageStore {
     );
   }
 
-  /** Record unmapped models into the unmapped_model table (replaces previous set). */
-  recordUnmappedModels(models: string[]): void {
+  /**
+   * Record currently unmapped models and auto-register them with fallback rates.
+   *
+   * `unmapped_model` remains the warning surface: it tracks models whose pricing
+   * is not in the bundled/user table. `pricing` is a local registry so newly
+   * observed models are not invisible to the database while users decide whether
+   * to add explicit rates.
+   */
+  recordUnmappedModels(models: string[], fallbackRate?: ModelRate): void {
     const db = this.getDb();
-    // Clear previous unmapped set and replace with current
-    db.run("DELETE FROM unmapped_model");
-    if (models.length === 0) { return; }
     const now = Date.now();
-    for (const model of models) {
-      db.run(
-        `INSERT OR IGNORE INTO unmapped_model (model, first_seen_utc) VALUES (?, ?)`,
-        [model, now],
-      );
+    const uniqueModels = [...new Set(models)].sort();
+    db.run("BEGIN TRANSACTION");
+    try {
+      if (uniqueModels.length === 0) {
+        db.run("DELETE FROM unmapped_model");
+      } else {
+        const placeholders = uniqueModels.map(() => "?").join(",");
+        db.run(`DELETE FROM unmapped_model WHERE model NOT IN (${placeholders})`, uniqueModels);
+        for (const model of uniqueModels) {
+          db.run(
+            `INSERT OR IGNORE INTO unmapped_model (model, first_seen_utc) VALUES (?, ?)`,
+            [model, now],
+          );
+          if (fallbackRate) {
+            db.run(
+              `INSERT OR IGNORE INTO pricing (model, rates_json) VALUES (?, ?)`,
+              [model, JSON.stringify(fallbackRate)],
+            );
+          }
+        }
+      }
+      db.run("COMMIT");
+    } catch (e) {
+      db.run("ROLLBACK");
+      throw e;
     }
   }
 
@@ -480,4 +641,57 @@ export class UsageStore {
     }
     return this.db;
   }
+
+  private ensureAuxiliarySchema(): void {
+    this.getDb().exec(`
+      CREATE TABLE IF NOT EXISTS file_catalog (
+        file_path         TEXT PRIMARY KEY,
+        file_id           TEXT NOT NULL,
+        source            TEXT NOT NULL,
+        size              INTEGER NOT NULL,
+        mtime_ms          INTEGER NOT NULL,
+        first_seen_utc    INTEGER NOT NULL,
+        last_seen_utc     INTEGER NOT NULL,
+        last_changed_utc  INTEGER NOT NULL,
+        last_checked_utc  INTEGER,
+        last_ingested_utc INTEGER,
+        min_day           TEXT,
+        max_day           TEXT,
+        state             TEXT NOT NULL,
+        priority_score    REAL NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_file_catalog_hot
+        ON file_catalog(source, state, priority_score, last_changed_utc, mtime_ms);
+      CREATE INDEX IF NOT EXISTS idx_file_catalog_days
+        ON file_catalog(max_day, min_day);
+    `);
+  }
+
+  private getMetaNumber(key: string): number | undefined {
+    const result = this.getDb().exec("SELECT value FROM meta WHERE key = ?", [key]);
+    if (result.length === 0 || result[0].values.length === 0) {
+      return undefined;
+    }
+    const value = Number(result[0].values[0][0]);
+    return Number.isFinite(value) ? value : undefined;
+  }
+}
+
+function dayRangeFromContribution(contribution: FileContribution): { minDay: string; maxDay: string } | undefined {
+  let minDay: string | undefined;
+  let maxDay: string | undefined;
+
+  for (const daily of contribution.daily) {
+    if (!minDay || daily.day < minDay) {
+      minDay = daily.day;
+    }
+    if (!maxDay || daily.day > maxDay) {
+      maxDay = daily.day;
+    }
+  }
+
+  if (minDay && maxDay) {
+    return { minDay, maxDay };
+  }
+  return undefined;
 }

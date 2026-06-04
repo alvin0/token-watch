@@ -58,6 +58,66 @@ function interleave(validLines: string[], noiseLines: string[], positions: numbe
 }
 
 suite("Parser robustness property tests", () => {
+  test("Codex image generation is tracked as a tool without inventing a model", async () => {
+    const parser = new CodexParser();
+    const tmpFile = join(tmpdir(), `pbt-image-generation-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "image-session", cwd: "/tmp", cli_version: "1.0.0" },
+      }),
+      JSON.stringify({
+        type: "turn_context",
+        payload: { model: "gpt-5.5", effort: "high" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-05-30T07:05:51.000Z",
+        payload: {
+          type: "image_generation_call",
+          id: "ig_001",
+          status: "completed",
+          result: "redacted",
+        },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "token_count" },
+        timestamp: "2026-05-30T07:05:52.000Z",
+        info: {
+          last_token_usage: {
+            input_tokens: 100,
+            output_tokens: 25,
+            total_tokens: 125,
+          },
+          total_token_usage: {
+            input_tokens: 100,
+            output_tokens: 25,
+            total_tokens: 125,
+          },
+        },
+      }),
+    ];
+    writeFileSync(tmpFile, lines.join("\n"), "utf8");
+
+    try {
+      let output: ParseOutput | undefined;
+      await parser.parse(
+        { filePath: tmpFile, startOffset: 0, maxLineBytes: MAX_LINE_BYTES },
+        (batch) => { output = batch; },
+      );
+
+      assert.ok(output, "Parser should emit output");
+      assert.strictEqual(output.rawTurns.length, 1);
+      assert.strictEqual(output.rawTurns[0].model, "gpt-5.5");
+      assert.strictEqual(output.toolEvents.length, 1);
+      assert.strictEqual(output.toolEvents[0].toolName, "image_generation");
+      assert.strictEqual(output.toolEvents[0].recordDedupKey, output.rawTurns[0].dedupKey);
+    } finally {
+      try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    }
+  });
+
   // Feature: token-tracking, Property 5: malformed/oversized/irrelevant lines don't change emitted raw turns
   test("Property 5: malformed/oversized/irrelevant lines don't change emitted raw turns; counters accurate", async () => {
     const parser = new CodexParser();

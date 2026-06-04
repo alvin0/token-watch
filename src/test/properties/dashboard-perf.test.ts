@@ -6,7 +6,7 @@
 // (no content/sentinel).
 
 import * as assert from "assert";
-import * as fs from "node:fs";
+import fs = require("node:fs");
 import initSqlJs from "sql.js";
 
 import { SCHEMA_SQL, SCHEMA_VERSION } from "../../worker/store/schema.js";
@@ -243,5 +243,28 @@ suite("Dashboard-from-store performance + aggregated-payload regression", () => 
         `Raw field found in ${view} result`,
       );
     }
+  });
+
+  test("Dashboard result includes filtered tool usage summary", () => {
+    const result = analytics.query({
+      view: "dashboard",
+      granularity: "day",
+      range: {
+        fromUtc: new Date("2025-01-01T00:00:00Z").getTime(),
+        toUtc: new Date("2025-01-31T23:59:59Z").getTime(),
+      },
+      models: ["gpt-5-codex"],
+      workspaces: ["/project"],
+    });
+
+    assert.strictEqual(result.view, "dashboard");
+    const totalCalls = result.tools.reduce((sum, row) => sum + row.count, 0);
+    const shareSum = result.tools.reduce((sum, row) => sum + row.sharePct, 0);
+    assert.strictEqual(totalCalls, 10, "Codex model filter should keep only codex tool events");
+    assert.ok(result.tools.length > 0, "Dashboard should include tool rows");
+    assert.ok(
+      Math.abs(shareSum - 100) < 0.01,
+      `Tool shares should sum to ~100%, got ${shareSum}`,
+    );
   });
 });

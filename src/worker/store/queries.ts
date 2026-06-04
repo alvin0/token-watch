@@ -102,6 +102,14 @@ function buildRecordWhere(q: AnalyticsQuery, tablePrefix = ""): WhereClause {
     conditions.push(`${tablePrefix}source IN (${placeholders(q.sources.length)})`);
     params.push(...q.sources);
   }
+  if (q.models && q.models.length > 0) {
+    conditions.push(`${tablePrefix}model IN (${placeholders(q.models.length)})`);
+    params.push(...q.models);
+  }
+  if (q.efforts && q.efforts.length > 0) {
+    conditions.push(`${tablePrefix}effort IN (${placeholders(q.efforts.length)})`);
+    params.push(...q.efforts);
+  }
   if (q.workspaces && q.workspaces.length > 0) {
     conditions.push(`${tablePrefix}workspace IN (${placeholders(q.workspaces.length)})`);
     params.push(...q.workspaces);
@@ -351,14 +359,15 @@ export function sessionLeaderboard(db: Database, q: AnalyticsQuery): SessionAggr
  * 4. toolUsage — SELECT from tool_event grouped by tool_name.
  */
 export function toolUsage(db: Database, q: AnalyticsQuery): ToolUsageRow[] {
-  const where = buildRecordWhere(q);
+  const where = buildRecordWhere(q, "r.");
 
   const sql = `
-    SELECT tool_name, source, COUNT(*) as cnt
-    FROM tool_event
+    SELECT t.tool_name, r.source, COUNT(*) as cnt
+    FROM tool_event t
+    JOIN usage_record r ON r.dedup_key = t.record_dedup_key
     ${where.sql}
-    GROUP BY tool_name, source
-    ORDER BY cnt DESC`;
+    GROUP BY t.tool_name, r.source
+    ORDER BY cnt DESC, t.tool_name ASC`;
 
   const results = db.exec(sql, where.params);
   if (results.length === 0) return [];

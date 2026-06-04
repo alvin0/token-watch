@@ -9,6 +9,7 @@ import { isAbsolute, join } from "node:path";
 export class FileWatcher implements vscode.Disposable {
   private watchers: FSWatcher[] = [];
   private debounceTimer: NodeJS.Timeout | null = null;
+  private pollTimer: NodeJS.Timeout | null = null;
   private pendingPaths = new Set<string>();
   private readonly debounceMs: number;
   private readonly onChangeCallback: (changedPaths: string[]) => void;
@@ -35,6 +36,17 @@ export class FileWatcher implements vscode.Disposable {
         // Path doesn't exist or watch not supported — skip gracefully
       }
     }
+
+    // `fs.watch` can miss recursive events depending on the VS Code runtime,
+    // OS, and whether source roots appear after activation. Periodic empty-path
+    // scans give the worker a cheap stat-only fallback without requiring users
+    // to press manual refresh.
+    if (paths.length > 0) {
+      const pollMs = Math.max(30_000, this.debounceMs * 4);
+      this.pollTimer = setInterval(() => {
+        this.scheduleCallback(undefined);
+      }, pollMs);
+    }
   }
 
   private scheduleCallback(changedPath: string | undefined): void {
@@ -56,6 +68,10 @@ export class FileWatcher implements vscode.Disposable {
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
+    }
+    if (this.pollTimer !== null) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
     }
     this.pendingPaths.clear();
     for (const watcher of this.watchers) {

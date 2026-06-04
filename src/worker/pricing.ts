@@ -53,6 +53,10 @@ export class PricingEngine {
     return result;
   }
 
+  fallbackModelRate(): ModelRate {
+    return { ...this.fallbackRate };
+  }
+
   private compute(model: string, t: CumulativeTotals | TokenSums): CostBreakdown {
     let rate: ModelRate | undefined = Object.hasOwn(this.table, model) ? this.table[model] : undefined;
     let unknown = false;

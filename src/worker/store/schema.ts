@@ -100,6 +100,27 @@ CREATE TABLE IF NOT EXISTS file_cursor (
   contribution     TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS file_catalog (
+  file_path         TEXT PRIMARY KEY,
+  file_id           TEXT NOT NULL,
+  source            TEXT NOT NULL,
+  size              INTEGER NOT NULL,
+  mtime_ms          INTEGER NOT NULL,
+  first_seen_utc    INTEGER NOT NULL,
+  last_seen_utc     INTEGER NOT NULL,
+  last_changed_utc  INTEGER NOT NULL,
+  last_checked_utc  INTEGER,
+  last_ingested_utc INTEGER,
+  min_day           TEXT,
+  max_day           TEXT,
+  state             TEXT NOT NULL,
+  priority_score    REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_file_catalog_hot
+  ON file_catalog(source, state, priority_score, last_changed_utc, mtime_ms);
+CREATE INDEX IF NOT EXISTS idx_file_catalog_days
+  ON file_catalog(max_day, min_day);
+
 CREATE TABLE IF NOT EXISTS pricing (
   model      TEXT PRIMARY KEY,
   rates_json TEXT NOT NULL

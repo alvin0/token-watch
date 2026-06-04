@@ -27,8 +27,11 @@ let pricing: PricingEngine | undefined;
 let analytics: AnalyticsService | undefined;
 let config: IngestConfig | undefined;
 let scanInProgress = false;
+let activeScan: ScanRequest | undefined;
 let pendingScan: ScanRequest | undefined;
 let pendingPricing: PricingTable | undefined;
+
+const FULL_DISCOVERY_MIN_INTERVAL_MS = 2 * 60 * 1000;
 
 function post(event: WorkerEvent): void {
   parentPort!.postMessage(event);
@@ -112,6 +115,10 @@ function mergeScanRequests(existing: ScanRequest | undefined, incoming: ScanRequ
 }
 
 function enqueueScan(req: ScanRequest): void {
+  if (isRedundantFullWatchScan(req, activeScan) || isRedundantFullWatchScan(req, pendingScan)) {
+    return;
+  }
+
   if (scanInProgress) {
     pendingScan = mergeScanRequests(pendingScan, req);
     return;
@@ -128,12 +135,15 @@ async function runScanQueue(first: ScanRequest): Promise<void> {
     while (current || pendingPricing) {
       if (current) {
         pendingScan = undefined;
+        activeScan = current;
         try {
           await handleScanAndIngest(current);
         } catch (err: unknown) {
           const scope = classifyErrorScope(err, current.type);
           const message = sanitizeErrorMessage(err);
           post({ type: "error", scope, message });
+        } finally {
+          activeScan = undefined;
         }
         current = pendingScan;
       } else if (pendingPricing) {
@@ -159,6 +169,18 @@ async function runScanQueue(first: ScanRequest): Promise<void> {
   }
 }
 
+function isRedundantFullWatchScan(incoming: ScanRequest, existing: ScanRequest | undefined): boolean {
+  return isFullWatchScan(incoming) && existing !== undefined && scanCoversAllSources(existing);
+}
+
+function isFullWatchScan(req: ScanRequest): boolean {
+  return req.reason === "watch" && !req.forceFull && !req.changedPaths?.length;
+}
+
+function scanCoversAllSources(req: ScanRequest): boolean {
+  return req.forceFull === true || req.reason !== "watch" || !req.changedPaths?.length;
+}
+
 async function handleScanAndIngest(req: ScanRequest): Promise<void> {
   if (!store || !pricing || !analytics || !config) {
     post({ type: "error", scope: "scanAndIngest", message: "Worker not initialized" });
@@ -176,12 +198,27 @@ async function handleScanAndIngest(req: ScanRequest): Promise<void> {
   };
   if (req.reason === "watch" && req.changedPaths && req.changedPaths.length > 0) {
     const changedCandidates = scanChanged(req.changedPaths, sourceRoots);
-    const candidates = changedCandidates.length > 0 ? changedCandidates : scan(sourceRoots);
+    const candidates = changedCandidates.length > 0 ? changedCandidates : fullDiscovery(sourceRoots);
     await ingestCandidates(req, candidates);
     return;
   }
 
-  await ingestCandidates(req, scan(sourceRoots));
+  const now = Date.now();
+  const isEmptyWatchScan = req.reason === "watch" && !req.changedPaths?.length && !req.forceFull;
+  const canUseHotCatalog = !req.forceFull && (req.reason === "activation" || isEmptyWatchScan);
+
+  if (canUseHotCatalog) {
+    const hotCandidates = scanChanged(store.hotCatalogFilePaths(now), sourceRoots);
+    if (hotCandidates.length > 0) {
+      await ingestCandidates(req, hotCandidates);
+    }
+
+    if (isEmptyWatchScan && !store.shouldRunFullDiscovery(now, FULL_DISCOVERY_MIN_INTERVAL_MS)) {
+      return;
+    }
+  }
+
+  await ingestCandidates(req, fullDiscovery(sourceRoots, now));
 }
 
 async function ingestCandidates(req: ScanRequest, candidates: ReturnType<typeof scan>): Promise<void> {
@@ -189,6 +226,8 @@ async function ingestCandidates(req: ScanRequest, candidates: ReturnType<typeof 
     post({ type: "error", scope: "scanAndIngest", message: "Worker not initialized" });
     return;
   }
+
+  store.recordDiscoveredFiles(candidates);
 
   // forceFull (manual rescan): wipe existing data, parse from offset 0
   if (req.forceFull) {
@@ -230,6 +269,12 @@ async function ingestCandidates(req: ScanRequest, candidates: ReturnType<typeof 
   });
 }
 
+function fullDiscovery(sourceRoots: Parameters<typeof scan>[0], now = Date.now()): ReturnType<typeof scan> {
+  const candidates = scan(sourceRoots);
+  store?.markFullDiscoveryRun(now);
+  return candidates;
+}
+
 function handleUpdatePricing(table: PricingTable): void {
   if (!store || !pricing || !analytics) {
     post({ type: "error", scope: "updatePricing", message: "Worker not initialized" });
@@ -240,7 +285,7 @@ function handleUpdatePricing(table: PricingTable): void {
   analytics = new AnalyticsService(store.database, pricing);
   queries.recomputeCosts(store.database, stripMetaKeys(mergedTable));
   // Recompute unmapped models with new pricing table
-  store.recordUnmappedModels(pricing.unmappedModels(store.distinctModels()));
+  store.recordUnmappedModels(pricing.unmappedModels(store.distinctModels()), pricing.fallbackModelRate());
   store.flush();
   post({
     type: "ingestComplete",
@@ -265,6 +310,7 @@ async function handleInit(req: Extract<WorkerRequest, { type: "init" }>): Promis
   pricing = new PricingEngine(stripMetaKeys(mergedTable), buildFallbackRate(mergedTable));
 
   analytics = new AnalyticsService(store.database, pricing);
+  store.recordUnmappedModels(pricing.unmappedModels(store.distinctModels()), pricing.fallbackModelRate());
 
   post({ type: "ready", schema });
 }

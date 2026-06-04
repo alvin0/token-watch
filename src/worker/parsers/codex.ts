@@ -16,7 +16,7 @@ export class CodexParser implements SourceParser {
     const { filePath, startOffset, maxLineBytes, resumeState } = input;
 
     // State
-    let currentSessionId = "";
+    let currentSessionId = resumeSessionId(resumeState);
     let currentModel = "unknown";
     let currentEffort: Effort | undefined;
     let currentApprovalPolicy: string | undefined;
@@ -39,7 +39,8 @@ export class CodexParser implements SourceParser {
           !line.includes('"session_meta"') &&
           !line.includes('"turn_context"') &&
           !line.includes('"token_count"') &&
-          !line.includes('"function_call"')
+          !line.includes('"function_call"') &&
+          !line.includes('"image_generation_call"')
         ) {
           return;
         }
@@ -89,8 +90,13 @@ export class CodexParser implements SourceParser {
           return;
         }
 
+        if (type === "response_item" && parsed.payload?.type === "image_generation_call") {
+          pendingToolNames.push("image_generation");
+          return;
+        }
+
         if (type === "event_msg" && parsed.payload?.type === "token_count") {
-          const info = parsed.payload.info;
+          const info = parsed.info ?? parsed.payload.info;
           if (!info) { return; }
 
           // Skip turns with no model context or zero tokens (empty/compacted sessions)
@@ -155,7 +161,7 @@ export class CodexParser implements SourceParser {
           if (currentSandboxMode) {
             meta.sandboxMode = currentSandboxMode;
           }
-          const rateLimits = parsed.payload.rate_limits;
+          const rateLimits = parsed.rate_limits ?? parsed.payload.rate_limits;
           if (rateLimits?.primary?.used_percent != null) {
             meta.rateLimitPrimaryPct = rateLimits.primary.used_percent;
           }
@@ -213,4 +219,9 @@ export class CodexParser implements SourceParser {
       sessionMeta,
     });
   }
+}
+
+function resumeSessionId(resumeState: ResumeState | undefined): string {
+  const ids = Object.keys(resumeState?.runningTotals ?? {});
+  return ids.length === 1 ? ids[0] : "";
 }
