@@ -35,7 +35,7 @@ const READ_BUF_SIZE = 256 * 1024;
  */
 export async function readLines(
   opts: LineReaderOptions,
-  onLine: (line: string, byteOffset: number) => void,
+  onLine: (line: string, byteOffset: number, isCompleteLine: boolean) => void | boolean,
 ): Promise<LineReaderStats> {
   const { filePath, startOffset, maxLineBytes } = opts;
 
@@ -55,7 +55,9 @@ export async function readLines(
     while (filePos < fileSize) {
       const toRead = Math.min(READ_BUF_SIZE, fileSize - filePos);
       const bytesRead = readSync(fd, readBuf, 0, toRead, filePos);
-      if (bytesRead === 0) break;
+      if (bytesRead === 0) {
+        break;
+      }
 
       let chunkStart = 0;
 
@@ -79,14 +81,14 @@ export async function readLines(
             if (fullLine.length > maxLineBytes) {
               oversizedCount++;
             } else {
-              emitLine(fullLine, lineStartOffset, onLine);
+              emitLine(fullLine, lineStartOffset, true, onLine);
             }
           } else {
             // Entire line is within this chunk
             if (segment.length > maxLineBytes) {
               oversizedCount++;
             } else {
-              emitLine(segment, lineStartOffset, onLine);
+              emitLine(segment, lineStartOffset, true, onLine);
             }
           }
 
@@ -126,7 +128,10 @@ export async function readLines(
     if (oversized) {
       oversizedCount++;
     } else if (pending !== null && pending.length > 0) {
-      emitLine(pending, lineStartOffset, onLine);
+      const accepted = emitLine(pending, lineStartOffset, false, onLine);
+      if (accepted === false) {
+        return { endOffset: lineStartOffset, oversizedCount };
+      }
     }
 
     return { endOffset: filePos, oversizedCount };
@@ -139,11 +144,14 @@ export async function readLines(
 function emitLine(
   buf: Buffer,
   byteOffset: number,
-  onLine: (line: string, byteOffset: number) => void,
-): void {
+  isCompleteLine: boolean,
+  onLine: (line: string, byteOffset: number, isCompleteLine: boolean) => void | boolean,
+): void | boolean {
   // Strip trailing \r
   const len = buf.length > 0 && buf[buf.length - 1] === 0x0d ? buf.length - 1 : buf.length;
-  if (len === 0) return;
+  if (len === 0) {
+    return;
+  }
   const line = buf.toString("utf8", 0, len);
-  onLine(line, byteOffset);
+  return onLine(line, byteOffset, isCompleteLine);
 }

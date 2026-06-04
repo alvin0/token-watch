@@ -45,7 +45,7 @@ export class ClaudeParser implements SourceParser {
       bufferedTools = [];
     }
 
-    const stats = await readLines({ filePath, startOffset, maxLineBytes }, (line, _byteOffset) => {
+    const stats = await readLines({ filePath, startOffset, maxLineBytes }, (line, _byteOffset, isCompleteLine) => {
       // Fast substring check: only parse lines with both "assistant" and "usage"
       if (!line.includes('"assistant"') || !line.includes('"usage"')) {
         return;
@@ -55,6 +55,10 @@ export class ClaudeParser implements SourceParser {
       try {
         parsed = JSON.parse(line);
       } catch {
+        if (!isCompleteLine) {
+          malformedCount++;
+          return false;
+        }
         malformedCount++;
         return;
       }

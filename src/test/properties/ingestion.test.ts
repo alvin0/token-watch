@@ -360,12 +360,81 @@ suite("Ingestion example tests", () => {
         tailAnchorHash: "irrelevant-because-skip",
         runningTotals: {},
         recentRequestIds: [],
-        contribution: { daily: [], sessions: [], recordKeys: [], toolEventCount: 0 },
+        contribution: oneDayContribution("2026-06-04"),
       };
 
       // decideAction is pure — no I/O. If it returns "skip", no fs.open occurs.
       const decision = decideAction(candidate, cursor);
       assert.strictEqual(decision, "skip");
+    } finally {
+      unlinkSync(file);
+    }
+  });
+
+  test("Changed non-empty file with empty cursor contribution is reingested from the start", () => {
+    const file = tmpFile("empty-cursor-reingest");
+    writeFileSync(file, "AAAA\n", "utf8");
+
+    try {
+      const stat = statSync(file);
+      const cursor: FileCursor = {
+        filePath: file,
+        fileId: "test:empty",
+        source: "codex",
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        lastByteOffset: stat.size,
+        headHash: computeHeadHash(file, stat.size),
+        tailAnchorHash: computeTailAnchorHash(file, stat.size),
+        runningTotals: {},
+        recentRequestIds: [],
+        contribution: { daily: [], sessions: [], recordKeys: [], toolEventCount: 0 },
+      };
+
+      writeFileSync(file, "AAAA\nBBBB\n", "utf8");
+      const newStat = statSync(file);
+      const candidate: CandidateFile = {
+        filePath: file,
+        source: "codex",
+        size: newStat.size,
+        mtimeMs: newStat.mtimeMs,
+        fileId: "test:empty",
+      };
+
+      assert.strictEqual(decideAction(candidate, cursor), "reingest");
+    } finally {
+      unlinkSync(file);
+    }
+  });
+
+  test("Unchanged non-empty file with empty cursor contribution is reingested from the start", () => {
+    const file = tmpFile("unchanged-empty-cursor-reingest");
+    writeFileSync(file, "AAAA\n", "utf8");
+
+    try {
+      const stat = statSync(file);
+      const candidate: CandidateFile = {
+        filePath: file,
+        source: "codex",
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        fileId: "test:unchanged-empty",
+      };
+      const cursor: FileCursor = {
+        filePath: file,
+        fileId: candidate.fileId,
+        source: "codex",
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        lastByteOffset: stat.size,
+        headHash: computeHeadHash(file, stat.size),
+        tailAnchorHash: computeTailAnchorHash(file, stat.size),
+        runningTotals: {},
+        recentRequestIds: [],
+        contribution: { daily: [], sessions: [], recordKeys: [], toolEventCount: 0 },
+      };
+
+      assert.strictEqual(decideAction(candidate, cursor), "reingest");
     } finally {
       unlinkSync(file);
     }
@@ -394,7 +463,7 @@ suite("Ingestion example tests", () => {
         tailAnchorHash,
         runningTotals: {},
         recentRequestIds: [],
-        contribution: { daily: [], sessions: [], recordKeys: [], toolEventCount: 0 },
+        contribution: oneDayContribution("2026-06-04"),
       };
 
       // Overwrite file keeping first line but changing tail
@@ -495,26 +564,30 @@ function cursorForCandidate(candidate: CandidateFile, day: string): FileCursor {
     tailAnchorHash: "tail",
     runningTotals: {},
     recentRequestIds: [],
-    contribution: {
-      daily: [{
-        day,
-        source: candidate.source,
-        variantId: "gpt-5-codex",
-        workspace: "",
-        sums: {
-          inputTokens: 1,
-          outputTokens: 1,
-          cacheReadTokens: 0,
-          cacheCreationTokens: 0,
-          reasoningTokens: 0,
-        },
-        turns: 1,
-        costUsd: 0,
-        unknownTurns: 0,
-      }],
-      sessions: [],
-      recordKeys: [],
-      toolEventCount: 0,
-    },
+    contribution: oneDayContribution(day),
+  };
+}
+
+function oneDayContribution(day: string): FileCursor["contribution"] {
+  return {
+    daily: [{
+      day,
+      source: "codex",
+      variantId: "gpt-5-codex",
+      workspace: "",
+      sums: {
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        reasoningTokens: 0,
+      },
+      turns: 1,
+      costUsd: 0,
+      unknownTurns: 0,
+    }],
+    sessions: [],
+    recordKeys: ["record"],
+    toolEventCount: 0,
   };
 }

@@ -8,6 +8,8 @@ import { StatusBarController } from "./host/StatusBarController";
 import { getConfig, toIngestConfig, loadPricingFromFile } from "./host/config";
 
 let coordinator: IngestionCoordinator | undefined;
+const PERIODIC_SCAN_MS = 2 * 60 * 1000;
+const STARTUP_CATCHUP_SCAN_MS = 10_000;
 
 export async function activate(context: vscode.ExtensionContext) {
   const config = getConfig();
@@ -69,6 +71,15 @@ export async function activate(context: vscode.ExtensionContext) {
   });
   context.subscriptions.push(fileWatcher);
 
+  const periodicScan = setInterval(() => {
+    coordinator?.scanAndIngest("watch");
+  }, PERIODIC_SCAN_MS);
+  context.subscriptions.push({
+    dispose: () => {
+      clearInterval(periodicScan);
+    },
+  });
+
   // Config change listener (apply without restart, Req 10.6)
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -87,8 +98,16 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  // Trigger initial scan
+  // Trigger startup scans: one immediately, one shortly after VS Code settles.
   coordinator.scanAndIngest("activation");
+  const startupCatchupScan = setTimeout(() => {
+    coordinator?.scanAndIngest("watch");
+  }, STARTUP_CATCHUP_SCAN_MS);
+  context.subscriptions.push({
+    dispose: () => {
+      clearTimeout(startupCatchupScan);
+    },
+  });
 
   // Push coordinator to subscriptions for dispose
   context.subscriptions.push(coordinator);

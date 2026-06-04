@@ -74,6 +74,12 @@ export interface ToolUsageRow {
   isSidechain?: boolean;
 }
 
+/** Daily tool-call count used by current-period summaries. */
+export interface ToolCallsByDay {
+  day: string;
+  count: number;
+}
+
 /** One cell of the local day-of-week × hour activity heatmap (Req 11.13). */
 export interface HeatmapCell {
   dow: number;        // 0–6, local day of week

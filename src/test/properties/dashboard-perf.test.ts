@@ -259,8 +259,10 @@ suite("Dashboard-from-store performance + aggregated-payload regression", () => 
 
     assert.strictEqual(result.view, "dashboard");
     const totalCalls = result.tools.reduce((sum, row) => sum + row.count, 0);
+    const totalCallsByDay = result.toolCallsByDay.reduce((sum, row) => sum + row.count, 0);
     const shareSum = result.tools.reduce((sum, row) => sum + row.sharePct, 0);
     assert.strictEqual(totalCalls, 10, "Codex model filter should keep only codex tool events");
+    assert.strictEqual(totalCallsByDay, 10, "Daily tool-call rollup should match filtered tool total");
     assert.ok(result.tools.length > 0, "Dashboard should include tool rows");
     assert.ok(
       Math.abs(shareSum - 100) < 0.01,

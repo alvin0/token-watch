@@ -25,6 +25,23 @@ export interface PeriodRange {
   bucketCount: number;
 }
 
+export function currentRangeForPeriod(g: Period, now = new Date()): { from: string; to: string } {
+  const today = toLocalDayStr(now);
+  const y = now.getFullYear();
+  const m = now.getMonth();
+
+  if (g === "week") {
+    return { from: toLocalDayStr(weekStart(today)), to: today };
+  }
+  if (g === "month") {
+    return { from: monthStart(new Date(y, m, 1)), to: today };
+  }
+  if (g === "year") {
+    return { from: `${y}-01-01`, to: today };
+  }
+  return { from: today, to: today };
+}
+
 export function pRange(g: Period, now = new Date()): PeriodRange {
   const today = toLocalDayStr(now);
   const y = now.getFullYear();

@@ -1,7 +1,7 @@
 import { vscodeApi } from "../store";
 
 export function Header({ status }: { status: string }) {
-  const c = status === "Live" ? "#89d185" : status === "Scanning" ? "#cca700" : "#888";
+  const c = status === "Live" ? "#89d185" : status === "Scanning" || status === "Stale" ? "#cca700" : "#888";
   return (
     <div className="tw-shrink-0 tw-px-3 tw-pt-2 tw-pb-1 tw-flex tw-items-center tw-gap-2">
       <span className="tw-text-[13px] tw-font-bold tw-text-[var(--vscode-foreground)]">Token Watch</span>

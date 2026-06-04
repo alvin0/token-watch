@@ -33,7 +33,7 @@ export class CodexParser implements SourceParser {
 
     const stats = await readLines(
       { filePath, startOffset, maxLineBytes },
-      (line, byteOffset) => {
+      (line, byteOffset, isCompleteLine) => {
         // Fast substring check — only parse lines containing relevant keywords
         if (
           !line.includes('"session_meta"') &&
@@ -49,6 +49,10 @@ export class CodexParser implements SourceParser {
         try {
           parsed = JSON.parse(line);
         } catch {
+          if (!isCompleteLine) {
+            malformedCount++;
+            return false;
+          }
           malformedCount++;
           return;
         }

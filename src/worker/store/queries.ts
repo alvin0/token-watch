@@ -15,6 +15,7 @@ import type {
   VariantMetrics,
   SessionAggregate,
   ToolUsageRow,
+  ToolCallsByDay,
   HeatmapCell,
 } from "../../shared/storeTypes.js";
 import type {
@@ -387,6 +388,28 @@ export function toolUsage(db: Database, q: AnalyticsQuery): ToolUsageRow[] {
       sharePct: totalCount > 0 ? (count / totalCount) * 100 : 0,
     };
   });
+}
+
+export function toolCallsByDay(db: Database, q: AnalyticsQuery): ToolCallsByDay[] {
+  const where = buildRecordWhere(q, "r.");
+
+  const sql = `
+    SELECT r.day_local, COUNT(*) as cnt
+    FROM tool_event t
+    JOIN usage_record r ON r.dedup_key = t.record_dedup_key
+    ${where.sql}
+    GROUP BY r.day_local
+    ORDER BY r.day_local`;
+
+  const results = db.exec(sql, where.params);
+  if (results.length === 0) {
+    return [];
+  }
+
+  return results[0].values.map((row) => ({
+    day: str(row[0]),
+    count: num(row[1]),
+  }));
 }
 
 /**

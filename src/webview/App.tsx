@@ -2,6 +2,7 @@ import { useStore } from "./store";
 import { Header } from "./components/Header";
 import { PeriodTabs } from "./components/PeriodTabs";
 import { SourceTabs } from "./components/SourceTabs";
+import { CurrentPeriodCard } from "./components/CurrentPeriodCard";
 import { SummaryCard } from "./components/SummaryCard";
 import { InsightCards } from "./components/InsightCards";
 import { ToolCallsCard } from "./components/ToolCallsCard";
@@ -30,7 +31,7 @@ export function App() {
   }
   if (!hasData) { return <EmptyState />; }
 
-  const status = isLoading ? "Scanning" : freshness.latestRecordUtc ? "Live" : "Paused";
+  const status = isLoading ? "Scanning" : freshness.latestRecordUtc ? freshnessIsToday(freshness.latestRecordUtc) ? "Live" : "Stale" : "Paused";
   const activeSource = sources && sources.length === 1 ? sources[0] : "all";
 
   return (
@@ -42,6 +43,7 @@ export function App() {
       <PeriodTabs selected={granularity}
         onChange={(p) => setFilter({ granularity: p })} />
       <div className="tw-flex-1 tw-overflow-y-auto tw-px-3 tw-pb-3 tw-space-y-2.5">
+        <CurrentPeriodCard />
         <SummaryCard />
         <InsightCards />
         <ToolCallsCard />
@@ -53,4 +55,12 @@ export function App() {
       <FooterBar />
     </div>
   );
+}
+
+function freshnessIsToday(timestamp: number): boolean {
+  const date = new Date(timestamp);
+  const now = new Date();
+  return date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
 }

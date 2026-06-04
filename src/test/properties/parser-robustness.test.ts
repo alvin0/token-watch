@@ -58,6 +58,43 @@ function interleave(validLines: string[], noiseLines: string[], positions: numbe
 }
 
 suite("Parser robustness property tests", () => {
+  test("Codex parser does not advance past an incomplete JSONL line at EOF", async () => {
+    const parser = new CodexParser();
+    const tmpFile = join(tmpdir(), `pbt-partial-eof-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+    const prefixLines = buildValidSession("partial-session", 10, 5).slice(0, 2);
+    const completeTokenLine = buildValidSession("partial-session", 10, 5)[2];
+    const partialTokenLine = completeTokenLine.slice(0, Math.floor(completeTokenLine.length / 2));
+    const prefixContent = `${prefixLines.join("\n")}\n`;
+
+    writeFileSync(tmpFile, prefixContent + partialTokenLine, "utf8");
+
+    try {
+      let partialOutput: ParseOutput | undefined;
+      await parser.parse(
+        { filePath: tmpFile, startOffset: 0, maxLineBytes: MAX_LINE_BYTES },
+        (batch) => { partialOutput = batch; },
+      );
+
+      assert.ok(partialOutput, "Parser should emit output for metadata prefix");
+      assert.strictEqual(partialOutput.rawTurns.length, 0);
+      assert.strictEqual(partialOutput.malformedCount, 1);
+      assert.strictEqual(partialOutput.endOffset, Buffer.byteLength(prefixContent, "utf8"));
+
+      writeFileSync(tmpFile, prefixContent + completeTokenLine, "utf8");
+      let completedOutput: ParseOutput | undefined;
+      await parser.parse(
+        { filePath: tmpFile, startOffset: 0, maxLineBytes: MAX_LINE_BYTES },
+        (batch) => { completedOutput = batch; },
+      );
+
+      assert.ok(completedOutput, "Parser should emit output after partial line completes");
+      assert.strictEqual(completedOutput.rawTurns.length, 1);
+      assert.strictEqual((completedOutput.rawTurns[0] as RawCodexTurn).rawInputTokens, 10);
+    } finally {
+      try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    }
+  });
+
   test("Codex image generation is tracked as a tool without inventing a model", async () => {
     const parser = new CodexParser();
     const tmpFile = join(tmpdir(), `pbt-image-generation-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);

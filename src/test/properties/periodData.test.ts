@@ -1,6 +1,6 @@
 import * as assert from "assert";
 
-import { makeBuckets, pRange } from "../../webview/lib/periodData.js";
+import { currentRangeForPeriod, makeBuckets, pRange } from "../../webview/lib/periodData.js";
 
 suite("Webview period windows", () => {
   test("pRange uses the requested rolling comparison windows", () => {
@@ -53,5 +53,26 @@ suite("Webview period windows", () => {
     assert.strictEqual(makeBuckets([], "week").length, 7);
     assert.strictEqual(makeBuckets([], "month").length, 6);
     assert.strictEqual(makeBuckets([], "year").length, 2);
+  });
+
+  test("currentRangeForPeriod returns the active visible period", () => {
+    const now = new Date(2026, 5, 3, 12, 0, 0);
+
+    assert.deepStrictEqual(currentRangeForPeriod("day", now), {
+      from: "2026-06-03",
+      to: "2026-06-03",
+    });
+    assert.deepStrictEqual(currentRangeForPeriod("week", now), {
+      from: "2026-06-01",
+      to: "2026-06-03",
+    });
+    assert.deepStrictEqual(currentRangeForPeriod("month", now), {
+      from: "2026-06-01",
+      to: "2026-06-03",
+    });
+    assert.deepStrictEqual(currentRangeForPeriod("year", now), {
+      from: "2026-01-01",
+      to: "2026-06-03",
+    });
   });
 });

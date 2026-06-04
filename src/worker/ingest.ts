@@ -52,6 +52,9 @@ export function decideAction(
   if (!cursor) {
     return "firstRead";
   }
+  if (candidate.size > 0 && isEmptyContribution(cursor.contribution)) {
+    return "reingest";
+  }
   // Skip: size+mtime unchanged (Req 4.6)
   if (candidate.size === cursor.size && candidate.mtimeMs === cursor.mtimeMs) {
     return "skip";
@@ -156,6 +159,10 @@ export async function ingestFile(
       contribution: decision === "append" && cursor ? cursor.contribution : emptyContribution,
     });
     return empty(decision);
+  }
+
+  if (parseOutput.endOffset < candidate.size) {
+    return empty("skip");
   }
 
   // Normalize raw turns → UsageRecords
@@ -347,6 +354,13 @@ function dayRangeFromContribution(contribution: FileContribution): { minDay: str
     }
   }
   return minDay && maxDay ? { minDay, maxDay } : undefined;
+}
+
+function isEmptyContribution(contribution: FileContribution): boolean {
+  return contribution.daily.length === 0 &&
+    contribution.sessions.length === 0 &&
+    contribution.recordKeys.length === 0 &&
+    contribution.toolEventCount === 0;
 }
 
 /** Result from processing a single file. */

@@ -65,8 +65,9 @@ export class AnalyticsService {
     const allSessions = queries.sessionLeaderboard(this.db, q);
     const sessions = allSessions.slice(0, 20);
     const tools = queries.toolUsage(this.db, q);
+    const toolCallsByDay = queries.toolCallsByDay(this.db, q);
 
-    return { view: "dashboard", series, variants, sessions, tools };
+    return { view: "dashboard", series, variants, sessions, tools, toolCallsByDay };
   }
 
   /**
