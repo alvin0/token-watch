@@ -11,6 +11,58 @@ import { readLines } from "./lineReader.js";
 import type { ParseInput, ParseOutput, ResumeState, SessionMeta, SourceParser } from "./types.js";
 import type { RawCodexTurn, ToolEvent, TurnMeta, Effort, CumulativeTotals } from "../../shared/types.js";
 
+interface CodexTokenUsage {
+  input_tokens?: number;
+  cached_input_tokens?: number;
+  output_tokens?: number;
+  reasoning_output_tokens?: number;
+  total_tokens?: number;
+}
+
+interface CodexTokenInfo {
+  last_token_usage?: CodexTokenUsage;
+  total_token_usage?: CodexTokenUsage;
+  model_context_window?: number;
+}
+
+interface CodexRateLimit {
+  used_percent?: number;
+}
+
+interface CodexRateLimits {
+  primary?: CodexRateLimit;
+  secondary?: CodexRateLimit;
+}
+
+interface CodexPayload {
+  id?: string;
+  cwd?: string;
+  cli_version?: string;
+  source?: string;
+  git?: {
+    branch?: string;
+    repository_url?: string;
+  };
+  model?: string;
+  effort?: Effort;
+  approval_policy?: string;
+  sandbox_policy?: {
+    mode?: string;
+  };
+  type?: string;
+  name?: string;
+  info?: CodexTokenInfo;
+  rate_limits?: CodexRateLimits;
+}
+
+interface CodexLogLine {
+  type?: string;
+  payload?: CodexPayload;
+  info?: CodexTokenInfo;
+  timestamp?: string;
+  rate_limits?: CodexRateLimits;
+}
+
 export class CodexParser implements SourceParser {
   async parse(input: ParseInput, sink: (batch: ParseOutput) => void): Promise<void> {
     const { filePath, startOffset, maxLineBytes, resumeState } = input;
@@ -45,7 +97,7 @@ export class CodexParser implements SourceParser {
           return;
         }
 
-        let parsed: any;
+        let parsed: CodexLogLine;
         try {
           parsed = JSON.parse(line);
         } catch {
@@ -119,7 +171,7 @@ export class CodexParser implements SourceParser {
           const last = info.last_token_usage;
           const total = info.total_token_usage;
 
-          if (last && last.input_tokens != null) {
+          if (last && last.input_tokens !== null && last.input_tokens !== undefined) {
             inputTokens = last.input_tokens;
             cachedInputTokens = last.cached_input_tokens ?? 0;
             outputTokens = last.output_tokens ?? 0;
@@ -153,10 +205,10 @@ export class CodexParser implements SourceParser {
 
           // Build TurnMeta
           const meta: TurnMeta = {};
-          if (info.model_context_window != null) {
+          if (info.model_context_window !== null && info.model_context_window !== undefined) {
             meta.contextWindow = info.model_context_window;
           }
-          if (last?.input_tokens != null) {
+          if (last?.input_tokens !== null && last?.input_tokens !== undefined) {
             meta.contextUsedTokens = last.input_tokens;
           }
           if (currentApprovalPolicy) {
@@ -166,10 +218,10 @@ export class CodexParser implements SourceParser {
             meta.sandboxMode = currentSandboxMode;
           }
           const rateLimits = parsed.rate_limits ?? parsed.payload.rate_limits;
-          if (rateLimits?.primary?.used_percent != null) {
+          if (rateLimits?.primary?.used_percent !== null && rateLimits?.primary?.used_percent !== undefined) {
             meta.rateLimitPrimaryPct = rateLimits.primary.used_percent;
           }
-          if (rateLimits?.secondary?.used_percent != null) {
+          if (rateLimits?.secondary?.used_percent !== null && rateLimits?.secondary?.used_percent !== undefined) {
             meta.rateLimitSecondaryPct = rateLimits.secondary.used_percent;
           }
 

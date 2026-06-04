@@ -6,7 +6,7 @@
 // (no content/sentinel).
 
 import * as assert from "assert";
-import fs = require("node:fs");
+import * as fs from "node:fs";
 import initSqlJs from "sql.js";
 
 import { SCHEMA_SQL, SCHEMA_VERSION } from "../../worker/store/schema.js";
@@ -17,6 +17,12 @@ import { makeVariantId } from "../../shared/variant.js";
 import type { UsageRecord, ToolEvent, Source } from "../../shared/types.js";
 import type { StoreBatch, FileContribution } from "../../shared/storeTypes.js";
 import type { AnalyticsQuery, AnalyticsResult } from "../../shared/protocol.js";
+
+type FsPatches = {
+  open: typeof fs.open;
+  openSync: typeof fs.openSync;
+  createReadStream: typeof fs.createReadStream;
+};
 
 function toLocalDay(d: Date): string {
   const y = d.getFullYear();
@@ -170,15 +176,29 @@ suite("Dashboard-from-store performance + aggregated-payload regression", () => 
 
   test("Querying all views triggers ZERO raw-log file opens", () => {
     // Spy on fs.open, fs.openSync, fs.createReadStream
-    const originalOpen = fs.open;
-    const originalOpenSync = fs.openSync;
-    const originalCreateReadStream = fs.createReadStream;
+    const originals: FsPatches = {
+      open: fs.open,
+      openSync: fs.openSync,
+      createReadStream: fs.createReadStream,
+    };
     let fsOpenCalls = 0;
 
     // Monkey-patch to count calls
-    (fs as any).open = (...args: any[]) => { fsOpenCalls++; return originalOpen.apply(fs, args as any); };
-    (fs as any).openSync = (...args: any[]) => { fsOpenCalls++; return originalOpenSync.apply(fs, args as any); };
-    (fs as any).createReadStream = (...args: any[]) => { fsOpenCalls++; return originalCreateReadStream.apply(fs, args as any); };
+    const patches: FsPatches = {
+      open: ((...args: Parameters<typeof fs.open>) => {
+        fsOpenCalls++;
+        return originals.open(...args);
+      }) as typeof fs.open,
+      openSync: ((...args: Parameters<typeof fs.openSync>) => {
+        fsOpenCalls++;
+        return originals.openSync(...args);
+      }) as typeof fs.openSync,
+      createReadStream: ((...args: Parameters<typeof fs.createReadStream>) => {
+        fsOpenCalls++;
+        return originals.createReadStream(...args);
+      }) as typeof fs.createReadStream,
+    };
+    Object.assign(fs, patches);
 
     try {
       const baseQuery: AnalyticsQuery = {
@@ -201,9 +221,7 @@ suite("Dashboard-from-store performance + aggregated-payload regression", () => 
       assert.strictEqual(fsOpenCalls, 0, "No fs.open/createReadStream calls during queries");
     } finally {
       // Restore
-      (fs as any).open = originalOpen;
-      (fs as any).openSync = originalOpenSync;
-      (fs as any).createReadStream = originalCreateReadStream;
+      Object.assign(fs, originals);
     }
   });
 

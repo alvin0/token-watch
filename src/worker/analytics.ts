@@ -89,7 +89,7 @@ export class AnalyticsService {
       }
       entry.totalTokens += row.totalTokens;
       entry.costUsd += row.costUsd;
-      if (row.unknownCostTurns > 0) entry.costUnknown = true;
+      if (row.unknownCostTurns > 0) { entry.costUnknown = true; }
       entry.turns += row.turns;
       // dailySeries doesn't carry sessionId; use day+workspace as proxy for session count
       entry.sessions.add(`${row.day}:${row.workspace}`);

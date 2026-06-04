@@ -86,7 +86,7 @@ function walkCodex(root: string, out: CandidateFile[]): void {
     const name = basename(filePath);
     if (name.startsWith("rollout-") && name.endsWith(".jsonl")) {
       const candidate = statCandidate(filePath, "codex");
-      if (candidate) out.push(candidate);
+      if (candidate) { out.push(candidate); }
     }
   });
 }

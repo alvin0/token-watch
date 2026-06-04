@@ -237,7 +237,7 @@ suite("Analytics property tests", () => {
   test("Property 15: anomaly days exceed k*median(trailing)", () => {
     // Pure formula test: isAnomaly(dayCost, trailingCosts, k)
     function median(values: number[]): number {
-      if (values.length === 0) return 0;
+      if (values.length === 0) { return 0; }
       const sorted = [...values].sort((a, b) => a - b);
       const mid = Math.floor(sorted.length / 2);
       return sorted.length % 2 === 0
@@ -246,7 +246,7 @@ suite("Analytics property tests", () => {
     }
 
     function isAnomaly(dayCost: number, trailingCosts: number[], k: number): boolean {
-      if (trailingCosts.length === 0) return false;
+      if (trailingCosts.length === 0) { return false; }
       const med = median(trailingCosts);
       return dayCost > k * med;
     }

@@ -161,7 +161,7 @@ export function dailySeries(db: Database, q: AnalyticsQuery): DailyAggregate[] {
       ORDER BY day_local`;
 
     const results = db.exec(sql, where.params);
-    if (results.length === 0) return [];
+    if (results.length === 0) { return []; }
     return results[0].values.map((row) => ({
       day: str(row[0]),
       source: str(row[1]) as DailyAggregate["source"],
@@ -190,7 +190,7 @@ export function dailySeries(db: Database, q: AnalyticsQuery): DailyAggregate[] {
     ORDER BY day_local`;
 
   const results = db.exec(sql, where.params);
-  if (results.length === 0) return [];
+  if (results.length === 0) { return []; }
   return results[0].values.map((row) => ({
     day: str(row[0]),
     source: str(row[1]) as DailyAggregate["source"],
@@ -234,7 +234,7 @@ export function variantBreakdown(db: Database, q: AnalyticsQuery): VariantMetric
     ORDER BY cost_usd DESC`;
 
   const results = db.exec(sql, where.params);
-  if (results.length === 0) return [];
+  if (results.length === 0) { return []; }
 
   const rows = results[0].values;
 
@@ -335,7 +335,7 @@ export function sessionLeaderboard(db: Database, q: AnalyticsQuery): SessionAggr
     ORDER BY cost_usd DESC`;
 
   const results = db.exec(sql, params);
-  if (results.length === 0) return [];
+  if (results.length === 0) { return []; }
   return results[0].values.map((row) => {
     const result: SessionAggregate = {
       source: str(row[0]) as SessionAggregate["source"],
@@ -371,7 +371,7 @@ export function toolUsage(db: Database, q: AnalyticsQuery): ToolUsageRow[] {
     ORDER BY cnt DESC, t.tool_name ASC`;
 
   const results = db.exec(sql, where.params);
-  if (results.length === 0) return [];
+  if (results.length === 0) { return []; }
 
   const rows = results[0].values;
   let totalCount = 0;
@@ -437,7 +437,7 @@ export function heatmap(db: Database, q: AnalyticsQuery): HeatmapCell[] {
   // We'll compute cost from the heatmap tokens using a zero placeholder for now.
 
   const results = db.exec(sql, where.params);
-  if (results.length === 0) return [];
+  if (results.length === 0) { return []; }
   return results[0].values.map((row) => ({
     dow: num(row[0]),
     hour: num(row[1]),
@@ -458,13 +458,13 @@ export function freshness(db: Database): FreshnessInfo {
   );
   if (metaResult.length > 0 && metaResult[0].values.length > 0) {
     const val = metaResult[0].values[0][0];
-    if (val !== null) info.lastIngestRunUtc = Number(val);
+    if (val !== null) { info.lastIngestRunUtc = Number(val); }
   }
 
   const maxResult = db.exec("SELECT MAX(ts_utc) FROM usage_record");
   if (maxResult.length > 0 && maxResult[0].values.length > 0) {
     const val = maxResult[0].values[0][0];
-    if (val !== null) info.latestRecordUtc = num(val);
+    if (val !== null) { info.latestRecordUtc = num(val); }
   }
 
   return info;
@@ -483,7 +483,7 @@ export function warnings(db: Database): WarningInfo {
   );
   if (malformedResult.length > 0 && malformedResult[0].values.length > 0) {
     const val = malformedResult[0].values[0][0];
-    if (val !== null) malformedLineCount = Number(val);
+    if (val !== null) { malformedLineCount = Number(val); }
   }
 
   const oversizedResult = db.exec(
@@ -492,7 +492,7 @@ export function warnings(db: Database): WarningInfo {
   );
   if (oversizedResult.length > 0 && oversizedResult[0].values.length > 0) {
     const val = oversizedResult[0].values[0][0];
-    if (val !== null) oversizedLineCount = Number(val);
+    if (val !== null) { oversizedLineCount = Number(val); }
   }
 
   const unmappedResult = db.exec("SELECT model FROM unmapped_model");
@@ -514,10 +514,10 @@ export function latestRateLimit(db: Database): RateLimitInfo | undefined {
     "SELECT value FROM meta WHERE key = ?",
     ["rate_limit_codex"]
   );
-  if (result.length === 0 || result[0].values.length === 0) return undefined;
+  if (result.length === 0 || result[0].values.length === 0) { return undefined; }
 
   const val = result[0].values[0][0];
-  if (val === null || typeof val !== "string") return undefined;
+  if (val === null || typeof val !== "string") { return undefined; }
 
   try {
     const parsed = JSON.parse(val) as RateLimitInfo;

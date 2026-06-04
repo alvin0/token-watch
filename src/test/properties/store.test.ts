@@ -156,13 +156,13 @@ function buildBatch(records: UsageRecord[], toolEvents: ToolEvent[]): StoreBatch
 
 function countRows(db: Database, table: string): number {
   const result = db.exec(`SELECT COUNT(*) FROM ${table}`);
-  if (result.length === 0) return 0;
+  if (result.length === 0) { return 0; }
   return Number(result[0].values[0][0]);
 }
 
 function sumColumn(db: Database, table: string, col: string): number {
   const result = db.exec(`SELECT COALESCE(SUM(${col}), 0) FROM ${table}`);
-  if (result.length === 0) return 0;
+  if (result.length === 0) { return 0; }
   return Number(result[0].values[0][0]);
 }
 

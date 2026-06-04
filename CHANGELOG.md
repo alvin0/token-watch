@@ -2,6 +2,25 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.0.3]
+
+- Fixed live ingestion for active Codex/Claude logs when a JSONL line is still
+  being written: incomplete EOF lines no longer advance the cursor past data
+  that should be collected later.
+- Added recovery for older installations with empty per-file cursors, so
+  non-empty log files are reingested instead of being skipped forever.
+- Added startup and periodic background collection: Token Watch now scans on
+  extension activation, runs a short startup catch-up scan, and continues
+  polling every 2 minutes.
+- Improved stale-data signaling: the header now shows `Stale` instead of
+  `Live` when the newest collected record is not from today.
+- Updated current-period and summary cards with clearer token grouping, colored
+  input/cache/output token metrics, and delta colors for zero, negative, and
+  positive changes.
+- Removed the "of this tab's cost" label from overview cards.
+- Added regression coverage for partial JSONL EOF handling and empty-cursor
+  reingestion.
+
 ## [0.0.2]
 
 - Added a dedicated `today` period as the default dashboard view, with focused
