@@ -155,6 +155,42 @@ suite("Parser robustness property tests", () => {
     }
   });
 
+  test("Codex dedup keys are scoped by file identity", async () => {
+    const parser = new CodexParser();
+    const sessionId = "shared-parent-session";
+    const lines = buildValidSession(sessionId, 10, 5).join("\n");
+    const fileA = join(tmpdir(), `pbt-codex-scope-a-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+    const fileB = join(tmpdir(), `pbt-codex-scope-b-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+    writeFileSync(fileA, lines, "utf8");
+    writeFileSync(fileB, lines, "utf8");
+
+    try {
+      let outputA: ParseOutput | undefined;
+      let outputB: ParseOutput | undefined;
+      await parser.parse(
+        { filePath: fileA, fileId: "dev:ino-a", startOffset: 0, maxLineBytes: MAX_LINE_BYTES },
+        (batch) => { outputA = batch; },
+      );
+      await parser.parse(
+        { filePath: fileB, fileId: "dev:ino-b", startOffset: 0, maxLineBytes: MAX_LINE_BYTES },
+        (batch) => { outputB = batch; },
+      );
+
+      assert.ok(outputA, "First parser run should emit output");
+      assert.ok(outputB, "Second parser run should emit output");
+      assert.strictEqual(outputA.rawTurns.length, 1);
+      assert.strictEqual(outputB.rawTurns.length, 1);
+      assert.notStrictEqual(
+        outputA.rawTurns[0].dedupKey,
+        outputB.rawTurns[0].dedupKey,
+        "Same session and byte offset in different files must not collide",
+      );
+    } finally {
+      try { unlinkSync(fileA); } catch { /* ignore */ }
+      try { unlinkSync(fileB); } catch { /* ignore */ }
+    }
+  });
+
   // Feature: token-tracking, Property 5: malformed/oversized/irrelevant lines don't change emitted raw turns
   test("Property 5: malformed/oversized/irrelevant lines don't change emitted raw turns; counters accurate", async () => {
     const parser = new CodexParser();

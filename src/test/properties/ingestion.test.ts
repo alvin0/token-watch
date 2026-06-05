@@ -440,6 +440,39 @@ suite("Ingestion example tests", () => {
     }
   });
 
+  test("Same-path file identity changes are reingested from the start", () => {
+    const file = tmpFile("file-id-reingest");
+    writeFileSync(file, "AAAA\nBBBB\n", "utf8");
+
+    try {
+      const stat = statSync(file);
+      const candidate: CandidateFile = {
+        filePath: file,
+        source: "codex",
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        fileId: "test:new-file-id",
+      };
+      const cursor: FileCursor = {
+        filePath: file,
+        fileId: "test:old-file-id",
+        source: "codex",
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        lastByteOffset: stat.size,
+        headHash: computeHeadHash(file, stat.size),
+        tailAnchorHash: computeTailAnchorHash(file, stat.size),
+        runningTotals: {},
+        recentRequestIds: [],
+        contribution: oneDayContribution("2026-06-04"),
+      };
+
+      assert.strictEqual(decideAction(candidate, cursor), "reingest");
+    } finally {
+      unlinkSync(file);
+    }
+  });
+
   test("Rewrite detection: keeping first line but changed tail is classified as reingest via hash mismatch", () => {
     const file = tmpFile("rewrite-example");
     const originalContent = "AAAA\nBBBB\n";

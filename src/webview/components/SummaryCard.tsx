@@ -43,7 +43,6 @@ export function SummaryCard() {
       cost={formatCost(cur.cost)}
       delta={delta}
       deltaLabel={vs[g]}
-      sharePct={cur.cost > 0 ? 100 : 0}
       metrics={[
         { label: "Total tokens", value: fmtT(cur.tokens) },
         { label: "Input tokens", value: fmtT(cur.input), tone: "blue" },

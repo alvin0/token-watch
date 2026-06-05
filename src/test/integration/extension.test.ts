@@ -6,9 +6,11 @@
 import * as assert from "assert";
 import * as vscode from "vscode";
 
+const EXTENSION_ID = "alvin0-dinhai.token-watch";
+
 suite("Extension integration tests", () => {
   test("Extension activates without throwing", async () => {
-    const ext = vscode.extensions.getExtension("dinh-ai.token-watch");
+    const ext = vscode.extensions.getExtension(EXTENSION_ID);
     assert.ok(ext, "Extension should be found");
     // activate() should not throw
     await ext!.activate();
@@ -53,7 +55,7 @@ suite("Extension integration tests", () => {
     // verify the provider is registered and the view type exists.
     // The CSP is verified by checking the SidebarProvider source statically.
     // Here we do a basic structural check: the view is registered.
-    const ext = vscode.extensions.getExtension("dinh-ai.token-watch");
+    const ext = vscode.extensions.getExtension(EXTENSION_ID);
     assert.ok(ext, "Extension should be found");
 
     // Verify the webview view is contributed in package.json

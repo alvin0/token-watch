@@ -11,11 +11,9 @@ interface UsageOverviewCardProps {
   deltaLabel: string;
   metrics?: UsageOverviewMetric[];
   metricGroups?: UsageOverviewMetric[][];
-  sharePct: number;
 }
 
-export function UsageOverviewCard({ title, cost, delta, deltaLabel, metrics, metricGroups, sharePct }: UsageOverviewCardProps) {
-  const clampedShare = clampPct(sharePct);
+export function UsageOverviewCard({ title, cost, delta, deltaLabel, metrics, metricGroups }: UsageOverviewCardProps) {
   const deltaColor = delta === 0 ? "tw-text-[#f0d36a]" : delta < 0 ? "tw-text-[#f87171]" : "tw-text-[#89d185]";
   const deltaPrefix = delta > 0 ? "+" : delta < 0 ? "-" : "";
   const groups = metricGroups ?? chunkMetrics(metrics ?? [], 2);
@@ -47,20 +45,6 @@ export function UsageOverviewCard({ title, cost, delta, deltaLabel, metrics, met
             ))}
           </div>
         ))}
-      </div>
-
-      <div className="tw-mt-3 tw-border-t tw-border-[#2a2a3a] tw-pt-2">
-        <div className="tw-flex tw-justify-end">
-          <div className="tw-text-[12px] tw-font-semibold tw-tabular-nums tw-text-[var(--vscode-foreground)]">
-            {clampedShare.toFixed(1)}%
-          </div>
-        </div>
-        <div className="tw-mt-1.5 tw-h-1.5 tw-overflow-hidden tw-rounded-full tw-bg-[#0d0d1a]">
-          <div
-            className="tw-h-full tw-rounded-full tw-bg-[#50c8a8]"
-            style={{ width: `${clampedShare}%` }}
-          />
-        </div>
       </div>
     </div>
   );
@@ -98,9 +82,4 @@ function metricToneClass(tone: UsageOverviewMetric["tone"]): { label: string; va
   if (tone === "yellow") { return { label: "tw-text-[#f0d36a]", value: "tw-text-[#f0d36a]" }; }
   if (tone === "cyan") { return { label: "tw-text-[#4fc1ff]", value: "tw-text-[#4fc1ff]" }; }
   return { label: "tw-text-[var(--vscode-descriptionForeground)]", value: "tw-text-[var(--vscode-foreground)]" };
-}
-
-function clampPct(value: number): number {
-  if (!Number.isFinite(value)) { return 0; }
-  return Math.max(0, Math.min(100, value));
 }

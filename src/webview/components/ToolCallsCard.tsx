@@ -1,6 +1,10 @@
+import { useState } from "react";
 import { useQuery } from "../hooks/useQuery";
 
+const COLLAPSED_TOOL_LIMIT = 6;
+
 export function ToolCallsCard() {
+  const [showAll, setShowAll] = useState(false);
   const result = useQuery("dashboard");
   if (!result || result.view !== "dashboard") { return null; }
 
@@ -9,8 +13,9 @@ export function ToolCallsCard() {
   if (totalCalls === 0) { return null; }
 
   const uniqueTools = new Set(tools.map((row) => row.toolName)).size;
-  const topTools = tools.slice(0, 6);
-  const topTool = topTools[0];
+  const visibleTools = showAll ? tools : tools.slice(0, COLLAPSED_TOOL_LIMIT);
+  const topTool = tools[0];
+  const hasHiddenTools = tools.length > COLLAPSED_TOOL_LIMIT;
 
   return (
     <div className="tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e] tw-p-3">
@@ -28,8 +33,8 @@ export function ToolCallsCard() {
           </div>
         </div>
       </div>
-      <div className="tw-space-y-1.5">
-        {topTools.map((tool) => {
+      <div className={showAll && hasHiddenTools ? "tw-space-y-1.5 tw-max-h-[180px] tw-overflow-y-auto tw-pr-1" : "tw-space-y-1.5"}>
+        {visibleTools.map((tool) => {
           const pct = totalCalls > 0 ? (tool.count / totalCalls) * 100 : 0;
           return (
             <div key={`${tool.source}:${tool.toolName}`} className="tw-flex tw-items-center tw-gap-2">
@@ -51,13 +56,18 @@ export function ToolCallsCard() {
               <span className="tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)] tw-tabular-nums tw-w-[34px] tw-text-right">
                 {tool.count.toLocaleString()}
               </span>
-              <span className="tw-text-[9px] tw-font-medium tw-text-[#50c8a8] tw-tabular-nums tw-w-[34px] tw-text-right">
-                {pct.toFixed(1)}%
-              </span>
             </div>
           );
         })}
       </div>
+      {hasHiddenTools && (
+        <button
+          onClick={() => setShowAll(!showAll)}
+          className="tw-mt-2 tw-text-[9px] tw-text-[var(--vscode-textLink-foreground)] hover:tw-underline tw-cursor-pointer"
+        >
+          {showAll ? "Show less" : `Show all ${tools.length.toLocaleString()} tools`}
+        </button>
+      )}
     </div>
   );
 }

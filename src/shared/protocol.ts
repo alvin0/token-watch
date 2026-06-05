@@ -15,6 +15,7 @@ import {
   SessionAggregate,
   ToolUsageRow,
   ToolCallsByDay,
+  HourlyAggregate,
   HeatmapCell,
 } from "./storeTypes";
 
@@ -48,7 +49,7 @@ export interface SourceComparison {
  * views. No `id` lives here — it is correlated on the message envelope.
  */
 export type AnalyticsResult =
-  | { view: "dashboard"; series: DailyAggregate[]; variants: VariantMetrics[]; sessions: SessionAggregate[]; tools: ToolUsageRow[]; toolCallsByDay: ToolCallsByDay[] }
+  | { view: "dashboard"; series: DailyAggregate[]; variants: VariantMetrics[]; sessions: SessionAggregate[]; tools: ToolUsageRow[]; toolCallsByDay: ToolCallsByDay[]; hourlySeries: HourlyAggregate[] }
   | { view: "series"; series: DailyAggregate[] }
   | { view: "variants"; variants: VariantMetrics[] }
   | { view: "sessions"; sessions: SessionAggregate[] }
