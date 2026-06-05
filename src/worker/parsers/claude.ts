@@ -16,6 +16,30 @@ import type { RawClaudeTurn, ToolEvent, TurnMeta } from "../../shared/types";
 /** Max recent requestIds to carry in endState for resume boundary detection. */
 const MAX_RECENT_IDS = 10;
 
+interface ClaudeLogLine {
+  type?: string;
+  message?: {
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+    model?: string;
+    stop_reason?: string;
+    content?: Array<{ type?: string; name?: string }>;
+  };
+  sessionId?: string;
+  requestId?: string;
+  uuid?: string;
+  timestamp?: string | number;
+  cwd?: string;
+  version?: string;
+  gitBranch?: string;
+  isSidechain?: boolean | null;
+  entrypoint?: string;
+}
+
 export class ClaudeParser implements SourceParser {
   async parse(input: ParseInput, sink: (batch: ParseOutput) => void): Promise<void> {
     const { filePath, startOffset, maxLineBytes, resumeState } = input;
@@ -51,9 +75,9 @@ export class ClaudeParser implements SourceParser {
         return;
       }
 
-      let parsed: any;
+      let parsed: ClaudeLogLine;
       try {
-        parsed = JSON.parse(line);
+        parsed = JSON.parse(line) as ClaudeLogLine;
       } catch {
         if (!isCompleteLine) {
           malformedCount++;
@@ -63,13 +87,13 @@ export class ClaudeParser implements SourceParser {
         return;
       }
 
+      const msg = parsed.message;
+      const usage = msg?.usage;
+
       // Must be assistant type with message.usage
-      if (parsed.type !== "assistant" || !parsed.message?.usage) {
+      if (parsed.type !== "assistant" || !msg || !usage) {
         return;
       }
-
-      const msg = parsed.message;
-      const usage = msg.usage;
 
       // Skip synthetic/internal responses — not real API usage
       const model: string = msg.model ?? "";
@@ -94,7 +118,7 @@ export class ClaudeParser implements SourceParser {
       // Build meta
       const meta: TurnMeta = {};
       if (msg.stop_reason) { meta.stopReason = msg.stop_reason; }
-      if (parsed.isSidechain != null) { meta.isSidechain = parsed.isSidechain; }
+      if (isPresent(parsed.isSidechain)) { meta.isSidechain = parsed.isSidechain; }
       if (parsed.entrypoint) { meta.entrypoint = parsed.entrypoint; }
       if (parsed.version) { meta.version = parsed.version; }
 
@@ -181,4 +205,8 @@ export class ClaudeParser implements SourceParser {
       sessionMeta,
     });
   }
+}
+
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
 }

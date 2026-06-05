@@ -4,7 +4,8 @@ import initSqlJs, { Database } from "sql.js";
 
 import { SCHEMA_SQL, SCHEMA_VERSION } from "../../worker/store/schema.js";
 import { UsageStore } from "../../worker/store/UsageStore.js";
-import { dailySeries, variantBreakdown } from "../../worker/store/queries.js";
+import { dailySeries, rebuildAggregates, variantBreakdown } from "../../worker/store/queries.js";
+import { PricingEngine } from "../../worker/pricing.js";
 import { totalTokens } from "../../shared/types.js";
 import { makeVariantId, baseModelOf } from "../../shared/variant.js";
 import type { UsageRecord, ToolEvent, Source } from "../../shared/types.js";
@@ -156,13 +157,17 @@ function buildBatch(records: UsageRecord[], toolEvents: ToolEvent[]): StoreBatch
 
 function countRows(db: Database, table: string): number {
   const result = db.exec(`SELECT COUNT(*) FROM ${table}`);
-  if (result.length === 0) return 0;
+  if (result.length === 0) {
+    return 0;
+  }
   return Number(result[0].values[0][0]);
 }
 
 function sumColumn(db: Database, table: string, col: string): number {
   const result = db.exec(`SELECT COALESCE(SUM(${col}), 0) FROM ${table}`);
-  if (result.length === 0) return 0;
+  if (result.length === 0) {
+    return 0;
+  }
   return Number(result[0].values[0][0]);
 }
 
@@ -171,7 +176,7 @@ function sumColumn(db: Database, table: string, col: string): number {
 // ---------------------------------------------------------------------------
 
 suite("Store property tests (in-memory sql.js)", () => {
-  test("Property 7: idempotence + last-wins + tool event stability", async () => {
+  test("Property 7: canonical aggregate rebuild repairs repeated apply and keeps rows stable", async () => {
     await fc.assert(
       fc.asyncProperty(
         fc.array(arbRecord(), { minLength: 1, maxLength: 5 }),
@@ -192,18 +197,18 @@ suite("Store property tests (in-memory sql.js)", () => {
           }));
 
           const batch = buildBatch(records, toolEvents);
+          const uniqueRecordCount = new Set(records.map((rec) => rec.dedupKey)).size;
+          const uniqueToolEventCount = new Set(toolEvents.map((event) => event.eventKey)).size;
 
           // Apply once
           store.applyFileResult(fileId, batch);
           const recordCountAfterFirst = countRows(db, "usage_record");
           const toolCountAfterFirst = countRows(db, "tool_event");
-          const totalAfterFirst = sumColumn(db, "daily_aggregate", "total_tokens");
 
           // Apply again (idempotent upsert via dedupKey)
           store.applyFileResult(fileId, batch);
           const recordCountAfterSecond = countRows(db, "usage_record");
           const toolCountAfterSecond = countRows(db, "tool_event");
-          const totalAfterSecond = sumColumn(db, "daily_aggregate", "total_tokens");
 
           // Record count stays the same (not doubled)
           assert.strictEqual(
@@ -219,21 +224,17 @@ suite("Store property tests (in-memory sql.js)", () => {
             "Tool events should not duplicate on re-apply",
           );
 
-          // Daily aggregates DO double because contribution is additive.
-          // But record/tool rows are idempotent. The key property is that
-          // usage_record and tool_event rows are stable.
-          // NOTE: daily_aggregate doubles because it's additive by design
-          // (the subtract path handles revert). The core idempotence property
-          // is on the record and tool_event tables.
-          assert.strictEqual(recordCountAfterFirst, records.length);
-          assert.strictEqual(toolCountAfterFirst, toolEvents.length);
+          assert.strictEqual(recordCountAfterFirst, uniqueRecordCount);
+          assert.strictEqual(toolCountAfterFirst, uniqueToolEventCount);
 
-          // daily_aggregate is additive by design: re-applying the same batch
-          // doubles the token totals (the subtract path handles revert).
+          rebuildAggregates(db, new PricingEngine({}));
+          const totalAfterRebuild = sumColumn(db, "daily_aggregate", "total_tokens");
+          const directTotal = sumColumn(db, "usage_record", "total_tokens");
+
           assert.strictEqual(
-            totalAfterSecond,
-            totalAfterFirst * 2,
-            "Daily aggregate totals are additive on re-apply",
+            totalAfterRebuild,
+            directTotal,
+            "Canonical aggregate rebuild should match usage_record totals",
           );
 
           db.close();

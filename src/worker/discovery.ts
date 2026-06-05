@@ -30,8 +30,7 @@ export function scan(roots: SourceRoots): CandidateFile[] {
     walkClaude(roots.claude.path, results);
   }
 
-  results.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return results;
+  return dedupeCandidates(results).sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
 /**
@@ -44,11 +43,23 @@ export function scanChanged(paths: string[], roots: SourceRoots): CandidateFile[
   for (const filePath of paths) {
     const scoped = candidatesForChangedPath(filePath, roots);
     for (const candidate of scoped) {
-      results.set(candidate.filePath, candidate);
+      results.set(candidateIdentity(candidate), candidate);
     }
   }
 
   return [...results.values()].sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+function dedupeCandidates(candidates: CandidateFile[]): CandidateFile[] {
+  const unique = new Map<string, CandidateFile>();
+  for (const candidate of candidates) {
+    unique.set(candidateIdentity(candidate), candidate);
+  }
+  return [...unique.values()];
+}
+
+function candidateIdentity(candidate: CandidateFile): string {
+  return `${candidate.source}:${candidate.fileId}`;
 }
 
 function candidatesForChangedPath(filePath: string, roots: SourceRoots): CandidateFile[] {
@@ -86,7 +97,9 @@ function walkCodex(root: string, out: CandidateFile[]): void {
     const name = basename(filePath);
     if (name.startsWith("rollout-") && name.endsWith(".jsonl")) {
       const candidate = statCandidate(filePath, "codex");
-      if (candidate) out.push(candidate);
+      if (candidate) {
+        out.push(candidate);
+      }
     }
   });
 }
@@ -169,6 +182,11 @@ function isDirSafe(p: string): boolean {
 }
 
 function isInside(filePath: string, root: string): boolean {
-  const rel = relative(resolve(root), resolve(filePath));
+  const resolvedRoot = resolve(root);
+  const resolvedPath = resolve(filePath);
+  if (resolvedPath === resolvedRoot) {
+    return true;
+  }
+  const rel = relative(resolvedRoot, resolvedPath);
   return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }

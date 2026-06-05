@@ -20,6 +20,8 @@ import type { Source } from "../shared/types.js";
 import * as queries from "./store/queries.js";
 import { PricingEngine } from "./pricing.js";
 
+const HOURLY_SERIES_MAX_RANGE_MS = 2 * 24 * 60 * 60 * 1000;
+
 export class AnalyticsService {
   constructor(private db: Database, private pricing: PricingEngine) {}
 
@@ -66,8 +68,11 @@ export class AnalyticsService {
     const sessions = allSessions.slice(0, 20);
     const tools = queries.toolUsage(this.db, q);
     const toolCallsByDay = queries.toolCallsByDay(this.db, q);
+    const hourlySeries = q.range.toUtc - q.range.fromUtc <= HOURLY_SERIES_MAX_RANGE_MS
+      ? queries.hourlySeries(this.db, q, this.pricing)
+      : [];
 
-    return { view: "dashboard", series, variants, sessions, tools, toolCallsByDay };
+    return { view: "dashboard", series, variants, sessions, tools, toolCallsByDay, hourlySeries };
   }
 
   /**
@@ -89,7 +94,9 @@ export class AnalyticsService {
       }
       entry.totalTokens += row.totalTokens;
       entry.costUsd += row.costUsd;
-      if (row.unknownCostTurns > 0) entry.costUnknown = true;
+      if (row.unknownCostTurns > 0) {
+        entry.costUnknown = true;
+      }
       entry.turns += row.turns;
       // dailySeries doesn't carry sessionId; use day+workspace as proxy for session count
       entry.sessions.add(`${row.day}:${row.workspace}`);

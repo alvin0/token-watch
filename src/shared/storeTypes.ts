@@ -80,6 +80,16 @@ export interface ToolCallsByDay {
   count: number;
 }
 
+/** Hourly usage rollup for current-day trend charts. */
+export interface HourlyAggregate extends TokenSums {
+  day: string;            // local calendar day, "YYYY-MM-DD"
+  hour: number;           // local hour, 0-23
+  totalTokens: number;
+  turns: number;
+  costUsd: number;
+  unknownCostTurns: number;
+}
+
 /** One cell of the local day-of-week × hour activity heatmap (Req 11.13). */
 export interface HeatmapCell {
   dow: number;        // 0–6, local day of week

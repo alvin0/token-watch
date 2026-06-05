@@ -17,7 +17,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
-import type { ModelRate } from "../../shared/types.js";
+import type { ModelRate, Source } from "../../shared/types.js";
 import type { FileCursor, FileContribution, StoreBatch } from "../../shared/storeTypes.js";
 import { totalTokens } from "../../shared/types.js";
 import { baseModelOf } from "../../shared/variant.js";
@@ -240,6 +240,24 @@ export class UsageStore {
         candidate.filePath,
       ],
     );
+  }
+
+  clearIngestedData(): void {
+    const db = this.getDb();
+    db.run("BEGIN TRANSACTION");
+    try {
+      db.run("DELETE FROM tool_event");
+      db.run("DELETE FROM usage_record");
+      db.run("DELETE FROM daily_aggregate");
+      db.run("DELETE FROM session_aggregate");
+      db.run("DELETE FROM file_cursor");
+      db.run("DELETE FROM file_catalog");
+      db.run("DELETE FROM unmapped_model");
+      db.run("COMMIT");
+    } catch (e) {
+      db.run("ROLLBACK");
+      throw e;
+    }
   }
 
   hotCatalogFilePaths(now = Date.now(), limit = 200): string[] {
@@ -582,6 +600,38 @@ export class UsageStore {
       "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
       [key, value],
     );
+  }
+
+  getMeta(key: string): string | undefined {
+    const result = this.getDb().exec("SELECT value FROM meta WHERE key = ?", [key]);
+    if (result.length === 0 || result[0].values.length === 0) {
+      return undefined;
+    }
+    const value = result[0].values[0][0];
+    return typeof value === "string" ? value : undefined;
+  }
+
+  usageRecordCount(): number {
+    const result = this.getDb().exec("SELECT COUNT(*) FROM usage_record");
+    if (result.length === 0 || result[0].values.length === 0) {
+      return 0;
+    }
+    return Number(result[0].values[0][0]);
+  }
+
+  usageRecordSources(): Set<Source> {
+    const result = this.getDb().exec("SELECT DISTINCT source FROM usage_record");
+    const sources = new Set<Source>();
+    if (result.length === 0) {
+      return sources;
+    }
+    for (const row of result[0].values) {
+      const value = row[0];
+      if (value === "codex" || value === "claude") {
+        sources.add(value);
+      }
+    }
+    return sources;
   }
 
   /**

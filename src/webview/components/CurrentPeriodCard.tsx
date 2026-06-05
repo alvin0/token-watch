@@ -37,7 +37,6 @@ export function CurrentPeriodCard() {
   const { cur } = computePeriods(result.series, period);
   const averageCost = cur.cost / tabBucketCount(period);
   const delta = averageCost > 0 ? ((current.cost - averageCost) / averageCost) * 100 : current.cost > 0 ? 100 : 0;
-  const share = cur.cost > 0 ? (current.cost / cur.cost) * 100 : 0;
   const toolCalls = result.toolCallsByDay.reduce((sum, row) => {
     if (row.day < range.from || row.day > range.to) { return sum; }
     return sum + row.count;
@@ -50,7 +49,6 @@ export function CurrentPeriodCard() {
       cost={formatCost(current.cost)}
       delta={delta}
       deltaLabel={averageLabels[period]}
-      sharePct={share}
       metricGroups={[
         [
           { label: "Total tokens", value: fmtT(current.tokens) },

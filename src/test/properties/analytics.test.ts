@@ -8,7 +8,8 @@ import initSqlJs, { Database } from "sql.js";
 
 import { SCHEMA_SQL, SCHEMA_VERSION } from "../../worker/store/schema.js";
 import { UsageStore } from "../../worker/store/UsageStore.js";
-import { variantBreakdown, toolUsage } from "../../worker/store/queries.js";
+import { variantBreakdown, toolUsage, hourlySeries } from "../../worker/store/queries.js";
+import { PricingEngine } from "../../worker/pricing.js";
 import { totalTokens } from "../../shared/types.js";
 import type { UsageRecord, ToolEvent, Source } from "../../shared/types.js";
 import type { StoreBatch, FileContribution } from "../../shared/storeTypes.js";
@@ -237,7 +238,9 @@ suite("Analytics property tests", () => {
   test("Property 15: anomaly days exceed k*median(trailing)", () => {
     // Pure formula test: isAnomaly(dayCost, trailingCosts, k)
     function median(values: number[]): number {
-      if (values.length === 0) return 0;
+      if (values.length === 0) {
+        return 0;
+      }
       const sorted = [...values].sort((a, b) => a - b);
       const mid = Math.floor(sorted.length / 2);
       return sorted.length % 2 === 0
@@ -246,7 +249,9 @@ suite("Analytics property tests", () => {
     }
 
     function isAnomaly(dayCost: number, trailingCosts: number[], k: number): boolean {
-      if (trailingCosts.length === 0) return false;
+      if (trailingCosts.length === 0) {
+        return false;
+      }
       const med = median(trailingCosts);
       return dayCost > k * med;
     }
@@ -270,6 +275,77 @@ suite("Analytics property tests", () => {
       ),
       { numRuns: 100 },
     );
+  });
+
+  test("hourlySeries groups current-day usage by local hour", async () => {
+    const db = await freshDb();
+    const store = storeFromDb(db);
+    const model = "gpt-hourly";
+
+    const records: UsageRecord[] = [
+      {
+        source: "codex" as Source,
+        sessionId: "sess-hourly",
+        dedupKey: "codex:sess-hourly:1",
+        timestamp: new Date(2025, 1, 1, 9, 10, 0).getTime(),
+        model,
+        variantId: model,
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheReadTokens: 100,
+        cacheCreationTokens: 0,
+        reasoningTokens: 50,
+      },
+      {
+        source: "codex" as Source,
+        sessionId: "sess-hourly",
+        dedupKey: "codex:sess-hourly:2",
+        timestamp: new Date(2025, 1, 1, 9, 45, 0).getTime(),
+        model,
+        variantId: model,
+        inputTokens: 2000,
+        outputTokens: 100,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        reasoningTokens: 0,
+      },
+      {
+        source: "codex" as Source,
+        sessionId: "sess-hourly",
+        dedupKey: "codex:sess-hourly:3",
+        timestamp: new Date(2025, 1, 1, 15, 0, 0).getTime(),
+        model,
+        variantId: model,
+        inputTokens: 300,
+        outputTokens: 700,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        reasoningTokens: 0,
+      },
+    ];
+
+    store.applyFileResult("file-hourly", buildBatch(records, []));
+
+    const pricing = new PricingEngine({
+      [model]: { inputPer1K: 0.01, cachedInputPer1K: 0.005, outputPer1K: 0.03 },
+    });
+    const rows = hourlySeries(db, {
+      view: "dashboard",
+      granularity: "day",
+      range: {
+        fromUtc: new Date(2025, 1, 1, 0, 0, 0).getTime(),
+        toUtc: new Date(2025, 1, 1, 23, 59, 59).getTime(),
+      },
+    }, pricing);
+
+    assert.deepStrictEqual(rows.map((row) => row.hour), [9, 15]);
+    assert.strictEqual(rows[0].turns, 2);
+    assert.strictEqual(rows[0].totalTokens, 3750);
+    assert.strictEqual(rows[1].turns, 1);
+    assert.strictEqual(rows[1].totalTokens, 1000);
+    assert.ok(rows[0].costUsd > rows[1].costUsd, "Larger token hour should cost more");
+
+    db.close();
   });
 
   // ---------------------------------------------------------------------------

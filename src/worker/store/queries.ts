@@ -16,6 +16,7 @@ import type {
   SessionAggregate,
   ToolUsageRow,
   ToolCallsByDay,
+  HourlyAggregate,
   HeatmapCell,
 } from "../../shared/storeTypes.js";
 import type {
@@ -161,7 +162,9 @@ export function dailySeries(db: Database, q: AnalyticsQuery): DailyAggregate[] {
       ORDER BY day_local`;
 
     const results = db.exec(sql, where.params);
-    if (results.length === 0) return [];
+    if (results.length === 0) {
+      return [];
+    }
     return results[0].values.map((row) => ({
       day: str(row[0]),
       source: str(row[1]) as DailyAggregate["source"],
@@ -190,7 +193,9 @@ export function dailySeries(db: Database, q: AnalyticsQuery): DailyAggregate[] {
     ORDER BY day_local`;
 
   const results = db.exec(sql, where.params);
-  if (results.length === 0) return [];
+  if (results.length === 0) {
+    return [];
+  }
   return results[0].values.map((row) => ({
     day: str(row[0]),
     source: str(row[1]) as DailyAggregate["source"],
@@ -234,7 +239,9 @@ export function variantBreakdown(db: Database, q: AnalyticsQuery): VariantMetric
     ORDER BY cost_usd DESC`;
 
   const results = db.exec(sql, where.params);
-  if (results.length === 0) return [];
+  if (results.length === 0) {
+    return [];
+  }
 
   const rows = results[0].values;
 
@@ -335,7 +342,9 @@ export function sessionLeaderboard(db: Database, q: AnalyticsQuery): SessionAggr
     ORDER BY cost_usd DESC`;
 
   const results = db.exec(sql, params);
-  if (results.length === 0) return [];
+  if (results.length === 0) {
+    return [];
+  }
   return results[0].values.map((row) => {
     const result: SessionAggregate = {
       source: str(row[0]) as SessionAggregate["source"],
@@ -371,7 +380,9 @@ export function toolUsage(db: Database, q: AnalyticsQuery): ToolUsageRow[] {
     ORDER BY cnt DESC, t.tool_name ASC`;
 
   const results = db.exec(sql, where.params);
-  if (results.length === 0) return [];
+  if (results.length === 0) {
+    return [];
+  }
 
   const rows = results[0].values;
   let totalCount = 0;
@@ -412,6 +423,80 @@ export function toolCallsByDay(db: Database, q: AnalyticsQuery): ToolCallsByDay[
   }));
 }
 
+export function hourlySeries(db: Database, q: AnalyticsQuery, pricing: PricingEngine): HourlyAggregate[] {
+  const where = buildRecordWhere(q);
+
+  const sql = `
+    SELECT day_local, hour_local, model,
+           SUM(input_tokens) as input_tokens,
+           SUM(output_tokens) as output_tokens,
+           SUM(cache_read_tokens) as cache_read_tokens,
+           SUM(cache_creation_tokens) as cache_creation_tokens,
+           SUM(reasoning_tokens) as reasoning_tokens,
+           SUM(total_tokens) as total_tokens,
+           COUNT(*) as turns
+    FROM usage_record
+    ${where.sql}
+    GROUP BY day_local, hour_local, model
+    ORDER BY day_local, hour_local`;
+
+  const results = db.exec(sql, where.params);
+  if (results.length === 0) {
+    return [];
+  }
+
+  const buckets = new Map<string, HourlyAggregate>();
+  for (const row of results[0].values) {
+    const day = str(row[0]);
+    const hour = num(row[1]);
+    const model = str(row[2]);
+    const key = `${day}\0${hour}`;
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = {
+        day,
+        hour,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 0,
+        turns: 0,
+        costUsd: 0,
+        unknownCostTurns: 0,
+      };
+      buckets.set(key, bucket);
+    }
+
+    const sums = {
+      inputTokens: num(row[3]),
+      outputTokens: num(row[4]),
+      cacheReadTokens: num(row[5]),
+      cacheCreationTokens: num(row[6]),
+      reasoningTokens: num(row[7]),
+    };
+    const turns = num(row[9]);
+    const cost = pricing.costOfAggregate(model, sums);
+
+    bucket.inputTokens += sums.inputTokens;
+    bucket.outputTokens += sums.outputTokens;
+    bucket.cacheReadTokens += sums.cacheReadTokens;
+    bucket.cacheCreationTokens += sums.cacheCreationTokens;
+    bucket.reasoningTokens += sums.reasoningTokens;
+    bucket.totalTokens += num(row[8]);
+    bucket.turns += turns;
+    bucket.costUsd += cost.usd;
+    if (cost.unknown) {
+      bucket.unknownCostTurns += turns;
+    }
+  }
+
+  return Array.from(buckets.values()).sort((a, b) => (
+    a.day === b.day ? a.hour - b.hour : a.day.localeCompare(b.day)
+  ));
+}
+
 /**
  * 5. heatmap — SELECT from usage_record GROUP BY dow_local, hour_local.
  */
@@ -437,7 +522,9 @@ export function heatmap(db: Database, q: AnalyticsQuery): HeatmapCell[] {
   // We'll compute cost from the heatmap tokens using a zero placeholder for now.
 
   const results = db.exec(sql, where.params);
-  if (results.length === 0) return [];
+  if (results.length === 0) {
+    return [];
+  }
   return results[0].values.map((row) => ({
     dow: num(row[0]),
     hour: num(row[1]),
@@ -458,13 +545,17 @@ export function freshness(db: Database): FreshnessInfo {
   );
   if (metaResult.length > 0 && metaResult[0].values.length > 0) {
     const val = metaResult[0].values[0][0];
-    if (val !== null) info.lastIngestRunUtc = Number(val);
+    if (val !== null) {
+      info.lastIngestRunUtc = Number(val);
+    }
   }
 
   const maxResult = db.exec("SELECT MAX(ts_utc) FROM usage_record");
   if (maxResult.length > 0 && maxResult[0].values.length > 0) {
     const val = maxResult[0].values[0][0];
-    if (val !== null) info.latestRecordUtc = num(val);
+    if (val !== null) {
+      info.latestRecordUtc = num(val);
+    }
   }
 
   return info;
@@ -483,7 +574,9 @@ export function warnings(db: Database): WarningInfo {
   );
   if (malformedResult.length > 0 && malformedResult[0].values.length > 0) {
     const val = malformedResult[0].values[0][0];
-    if (val !== null) malformedLineCount = Number(val);
+    if (val !== null) {
+      malformedLineCount = Number(val);
+    }
   }
 
   const oversizedResult = db.exec(
@@ -492,7 +585,9 @@ export function warnings(db: Database): WarningInfo {
   );
   if (oversizedResult.length > 0 && oversizedResult[0].values.length > 0) {
     const val = oversizedResult[0].values[0][0];
-    if (val !== null) oversizedLineCount = Number(val);
+    if (val !== null) {
+      oversizedLineCount = Number(val);
+    }
   }
 
   const unmappedResult = db.exec("SELECT model FROM unmapped_model");
@@ -514,16 +609,178 @@ export function latestRateLimit(db: Database): RateLimitInfo | undefined {
     "SELECT value FROM meta WHERE key = ?",
     ["rate_limit_codex"]
   );
-  if (result.length === 0 || result[0].values.length === 0) return undefined;
+  if (result.length === 0 || result[0].values.length === 0) {
+    return undefined;
+  }
 
   const val = result[0].values[0][0];
-  if (val === null || typeof val !== "string") return undefined;
+  if (val === null || typeof val !== "string") {
+    return undefined;
+  }
 
   try {
     const parsed = JSON.parse(val) as RateLimitInfo;
     return parsed;
   } catch {
     return undefined;
+  }
+}
+
+export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
+  const dailyRows = db.exec(
+    `SELECT day_local, source, variant_id, model, workspace,
+            SUM(input_tokens) as input_tokens,
+            SUM(output_tokens) as output_tokens,
+            SUM(cache_read_tokens) as cache_read_tokens,
+            SUM(cache_creation_tokens) as cache_creation_tokens,
+            SUM(reasoning_tokens) as reasoning_tokens,
+            COUNT(*) as turns
+     FROM usage_record
+     GROUP BY day_local, source, variant_id, model, workspace`
+  );
+  const sessionRows = db.exec(
+    `SELECT source, session_id, model,
+            MAX(CASE WHEN workspace != '' THEN workspace ELSE '' END) as workspace,
+            MIN(ts_utc) as first_ts_utc,
+            MAX(ts_utc) as last_ts_utc,
+            COUNT(*) as turns,
+            SUM(total_tokens) as total_tokens,
+            SUM(CASE WHEN is_sidechain = 1 THEN total_tokens ELSE 0 END) as sidechain_tokens,
+            SUM(input_tokens) as input_tokens,
+            SUM(output_tokens) as output_tokens,
+            SUM(cache_read_tokens) as cache_read_tokens,
+            SUM(cache_creation_tokens) as cache_creation_tokens,
+            SUM(reasoning_tokens) as reasoning_tokens
+     FROM usage_record
+     GROUP BY source, session_id, model`
+  );
+
+  db.run("BEGIN TRANSACTION");
+  try {
+    db.run("DELETE FROM daily_aggregate");
+    db.run("DELETE FROM session_aggregate");
+
+    if (dailyRows.length > 0) {
+      const dailyStmt = db.prepare(
+        `INSERT INTO daily_aggregate
+         (day_local, source, variant_id, base_model, workspace,
+          input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+          reasoning_tokens, total_tokens, turns, cost_usd, unknown_cost_turns)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+
+      for (const row of dailyRows[0].values) {
+        const model = str(row[3]);
+        const sums = {
+          inputTokens: num(row[5]),
+          outputTokens: num(row[6]),
+          cacheReadTokens: num(row[7]),
+          cacheCreationTokens: num(row[8]),
+          reasoningTokens: num(row[9]),
+        };
+        const total = sums.inputTokens + sums.outputTokens + sums.cacheReadTokens +
+          sums.cacheCreationTokens + sums.reasoningTokens;
+        const turns = num(row[10]);
+        const cost = pricing.costOfAggregate(model, sums);
+
+        dailyStmt.run([
+          str(row[0]),
+          str(row[1]),
+          str(row[2]),
+          model || baseModelOf(str(row[2])),
+          str(row[4]),
+          sums.inputTokens,
+          sums.outputTokens,
+          sums.cacheReadTokens,
+          sums.cacheCreationTokens,
+          sums.reasoningTokens,
+          total,
+          turns,
+          cost.usd,
+          cost.unknown ? turns : 0,
+        ]);
+      }
+      dailyStmt.free();
+    }
+
+    const sessions = new Map<string, {
+      source: string;
+      sessionId: string;
+      workspace: string;
+      firstTsUtc: number;
+      lastTsUtc: number;
+      turns: number;
+      totalTokens: number;
+      costUsd: number;
+      sidechainTokens: number;
+    }>();
+
+    if (sessionRows.length > 0) {
+      for (const row of sessionRows[0].values) {
+        const source = str(row[0]);
+        const sessionId = str(row[1]);
+        const model = str(row[2]);
+        const key = `${source}\0${sessionId}`;
+        const sums = {
+          inputTokens: num(row[9]),
+          outputTokens: num(row[10]),
+          cacheReadTokens: num(row[11]),
+          cacheCreationTokens: num(row[12]),
+          reasoningTokens: num(row[13]),
+        };
+        const cost = pricing.costOfAggregate(model, sums);
+        const existing = sessions.get(key);
+        if (existing) {
+          existing.workspace = existing.workspace || str(row[3]);
+          existing.firstTsUtc = Math.min(existing.firstTsUtc, num(row[4]));
+          existing.lastTsUtc = Math.max(existing.lastTsUtc, num(row[5]));
+          existing.turns += num(row[6]);
+          existing.totalTokens += num(row[7]);
+          existing.costUsd += cost.usd;
+          existing.sidechainTokens += num(row[8]);
+        } else {
+          sessions.set(key, {
+            source,
+            sessionId,
+            workspace: str(row[3]),
+            firstTsUtc: num(row[4]),
+            lastTsUtc: num(row[5]),
+            turns: num(row[6]),
+            totalTokens: num(row[7]),
+            costUsd: cost.usd,
+            sidechainTokens: num(row[8]),
+          });
+        }
+      }
+    }
+
+    if (sessions.size > 0) {
+      const sessionStmt = db.prepare(
+        `INSERT INTO session_aggregate
+         (source, session_id, workspace, first_ts_utc, last_ts_utc,
+          turns, total_tokens, cost_usd, sidechain_tokens)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const session of sessions.values()) {
+        sessionStmt.run([
+          session.source,
+          session.sessionId,
+          session.workspace,
+          session.firstTsUtc,
+          session.lastTsUtc,
+          session.turns,
+          session.totalTokens,
+          session.costUsd,
+          session.sidechainTokens,
+        ]);
+      }
+      sessionStmt.free();
+    }
+
+    db.run("COMMIT");
+  } catch (e) {
+    db.run("ROLLBACK");
+    throw e;
   }
 }
 

@@ -48,8 +48,10 @@ export interface UsageRecord {
    * promised unique within a contiguous group, not globally — Req 2.8):
    *   Claude:  `${source}:${sessionId}:${requestId}`  (fallback when no
    *            requestId: `${source}:${sessionId}:${uuid}`)
-   *   Codex:   `${source}:${sessionId}:${lineByteOffset}` (each token_count line
-   *            is a distinct turn; offset is stable within a file)
+   *   Codex:   `${source}:${sessionId}:${fileScope}:${lineByteOffset}` (each
+   *            token_count line is a distinct turn; offset is stable only within
+   *            one physical file, so the file scope prevents cross-rollout
+   *            collisions for shared parent session ids)
    * The store upserts (REPLACES) by this key, so a later streamed update for the
    * same request overwrites the earlier provisional row instead of adding to it.
    */

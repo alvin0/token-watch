@@ -16,6 +16,7 @@ import { AnalyticsService } from "./analytics.js";
 import { DEFAULT_PRICING, FALLBACK_RATE } from "../shared/defaultPricing.js";
 import { scan, scanChanged } from "./discovery.js";
 import { ingestAll } from "./ingest.js";
+import { dedupMigrationCanRebuild } from "./migration.js";
 import * as queries from "./store/queries.js";
 import type { WorkerRequest, WorkerEvent, IngestConfig } from "../shared/workerProtocol.js";
 import type { PricingTable, ModelRate } from "../shared/types.js";
@@ -30,8 +31,10 @@ let scanInProgress = false;
 let activeScan: ScanRequest | undefined;
 let pendingScan: ScanRequest | undefined;
 let pendingPricing: PricingTable | undefined;
+let needsDedupKeyMigration = false;
 
 const FULL_DISCOVERY_MIN_INTERVAL_MS = 2 * 60 * 1000;
+const CODEX_FILE_SCOPE_DEDUP_META_KEY = "codex_file_scoped_dedup_v1";
 
 function post(event: WorkerEvent): void {
   parentPort!.postMessage(event);
@@ -196,6 +199,24 @@ async function handleScanAndIngest(req: ScanRequest): Promise<void> {
       ? { enabled: true, path: config.sources.claude.path ?? "" }
       : undefined,
   };
+  if (needsDedupKeyMigration) {
+    const migrationCandidates = fullDiscovery(sourceRoots);
+    if (!dedupMigrationCanRebuild(store.usageRecordSources(), migrationCandidates)) {
+      post({
+        type: "ingestComplete",
+        freshness: analytics.freshness(),
+        warnings: analytics.warnings(),
+      });
+      return;
+    }
+    const migrationReq: ScanRequest = { type: "scanAndIngest", reason: "manual", forceFull: true };
+    await ingestCandidates(migrationReq, migrationCandidates);
+    store.setMeta(CODEX_FILE_SCOPE_DEDUP_META_KEY, "1");
+    store.flush();
+    needsDedupKeyMigration = false;
+    return;
+  }
+
   if (req.reason === "watch" && req.changedPaths && req.changedPaths.length > 0) {
     const changedCandidates = scanChanged(req.changedPaths, sourceRoots);
     const candidates = changedCandidates.length > 0 ? changedCandidates : fullDiscovery(sourceRoots);
@@ -227,21 +248,14 @@ async function ingestCandidates(req: ScanRequest, candidates: ReturnType<typeof 
     return;
   }
 
-  store.recordDiscoveredFiles(candidates);
-
   // forceFull (manual rescan): wipe existing data, parse from offset 0
   if (req.forceFull) {
-    for (const c of candidates) {
-      const cursor = store.getCursor(c.filePath);
-      if (cursor) {
-        store.subtractFileContribution(cursor.fileId);
-        store.deleteFileRows(cursor.fileId);
-        store.deleteCursor(c.filePath);
-      }
-    }
+    store.clearIngestedData();
     // Reset quality counters — forceFull re-parses everything from scratch
     store.resetQualityCounters();
   }
+
+  store.recordDiscoveredFiles(candidates);
 
   const options = {
     maxLineBytes: config.ingestion.maxLineBytes,
@@ -260,6 +274,7 @@ async function ingestCandidates(req: ScanRequest, candidates: ReturnType<typeof 
     }
   });
 
+  queries.rebuildAggregates(store.database, pricing);
   store.flush();
   post({ type: "progress", processed: candidates.length, total: candidates.length, partial: false });
   post({
@@ -283,7 +298,7 @@ function handleUpdatePricing(table: PricingTable): void {
   const mergedTable = { ...DEFAULT_PRICING, ...table };
   pricing = new PricingEngine(stripMetaKeys(mergedTable), buildFallbackRate(mergedTable));
   analytics = new AnalyticsService(store.database, pricing);
-  queries.recomputeCosts(store.database, stripMetaKeys(mergedTable));
+  queries.rebuildAggregates(store.database, pricing);
   // Recompute unmapped models with new pricing table
   store.recordUnmappedModels(pricing.unmappedModels(store.distinctModels()), pricing.fallbackModelRate());
   store.flush();
@@ -310,7 +325,16 @@ async function handleInit(req: Extract<WorkerRequest, { type: "init" }>): Promis
   pricing = new PricingEngine(stripMetaKeys(mergedTable), buildFallbackRate(mergedTable));
 
   analytics = new AnalyticsService(store.database, pricing);
+  const usageRecordCount = store.usageRecordCount();
+  needsDedupKeyMigration =
+    usageRecordCount > 0 && store.getMeta(CODEX_FILE_SCOPE_DEDUP_META_KEY) !== "1";
+  if (usageRecordCount === 0 && store.getMeta(CODEX_FILE_SCOPE_DEDUP_META_KEY) !== "1") {
+    store.setMeta(CODEX_FILE_SCOPE_DEDUP_META_KEY, "1");
+  } else if (!needsDedupKeyMigration) {
+    queries.rebuildAggregates(store.database, pricing);
+  }
   store.recordUnmappedModels(pricing.unmappedModels(store.distinctModels()), pricing.fallbackModelRate());
+  store.flush();
 
   post({ type: "ready", schema });
 }

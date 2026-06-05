@@ -52,6 +52,9 @@ export function decideAction(
   if (!cursor) {
     return "firstRead";
   }
+  if (candidate.fileId !== cursor.fileId) {
+    return "reingest";
+  }
   if (candidate.size > 0 && isEmptyContribution(cursor.contribution)) {
     return "reingest";
   }
@@ -134,7 +137,7 @@ export async function ingestFile(
   let parseOutput: ParseOutput | undefined;
 
   await parser.parse(
-    { filePath: candidate.filePath, startOffset, maxLineBytes: options.maxLineBytes, resumeState },
+    { filePath: candidate.filePath, fileId: candidate.fileId, startOffset, maxLineBytes: options.maxLineBytes, resumeState },
     (batch) => { parseOutput = batch; },
   );
 
@@ -167,11 +170,12 @@ export async function ingestFile(
 
   // Normalize raw turns → UsageRecords
   // Drop turns with no valid timestamp (would land in 1970-01-01 bucket)
-  const records: UsageRecord[] = parseOutput.rawTurns
+  const parsedRecords: UsageRecord[] = parseOutput.rawTurns
     .map(normalize)
     .filter((r) => r.timestamp > 0);
-  const toolEvents: ToolEvent[] = parseOutput.toolEvents
+  const parsedToolEvents: ToolEvent[] = parseOutput.toolEvents
     .filter((e) => e.timestamp > 0);
+  const { records, toolEvents } = dedupeParsedRecords(parsedRecords, parsedToolEvents);
 
   // Build contribution (daily + session aggregates)
   const contribution = buildContribution(records, toolEvents, pricing);
@@ -361,6 +365,36 @@ function isEmptyContribution(contribution: FileContribution): boolean {
     contribution.sessions.length === 0 &&
     contribution.recordKeys.length === 0 &&
     contribution.toolEventCount === 0;
+}
+
+function dedupeParsedRecords(
+  records: UsageRecord[],
+  toolEvents: ToolEvent[],
+): { records: UsageRecord[]; toolEvents: ToolEvent[] } {
+  const latestRecords = new Map<string, UsageRecord>();
+  for (const rec of records) {
+    latestRecords.delete(rec.dedupKey);
+    latestRecords.set(rec.dedupKey, rec);
+  }
+
+  const recordTimestamps = new Map<string, number>();
+  for (const rec of latestRecords.values()) {
+    recordTimestamps.set(rec.dedupKey, rec.timestamp);
+  }
+
+  const latestToolEvents = new Map<string, ToolEvent>();
+  for (const event of toolEvents) {
+    if (recordTimestamps.get(event.recordDedupKey) !== event.timestamp) {
+      continue;
+    }
+    latestToolEvents.delete(event.eventKey);
+    latestToolEvents.set(event.eventKey, event);
+  }
+
+  return {
+    records: [...latestRecords.values()],
+    toolEvents: [...latestToolEvents.values()],
+  };
 }
 
 /** Result from processing a single file. */

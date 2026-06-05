@@ -7,10 +7,11 @@ import { isAbsolute, join } from "node:path";
  * and debounces all change events into a single callback invocation.
  */
 export class FileWatcher implements vscode.Disposable {
-  private watchers: FSWatcher[] = [];
+  private watchers = new Map<string, FSWatcher>();
   private debounceTimer: NodeJS.Timeout | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
   private pendingPaths = new Set<string>();
+  private readonly watchRoots: string[];
   private readonly debounceMs: number;
   private readonly onChangeCallback: (changedPaths: string[]) => void;
 
@@ -19,39 +20,55 @@ export class FileWatcher implements vscode.Disposable {
     debounceMs: number,
     onChangeCallback: (changedPaths: string[]) => void,
   ) {
+    this.watchRoots = [...new Set(paths)];
     this.debounceMs = debounceMs;
     this.onChangeCallback = onChangeCallback;
 
-    for (const dir of paths) {
-      try {
-        const watcher = watch(dir, { recursive: true }, (_eventType, filename) => {
-          const changedPath = changedPathFromFilename(dir, filename);
-          this.scheduleCallback(changedPath);
-        });
-        watcher.on("error", () => {
-          // Silently ignore per-watcher errors (e.g. dir removed at runtime)
-        });
-        this.watchers.push(watcher);
-      } catch {
-        // Path doesn't exist or watch not supported — skip gracefully
-      }
+    for (const dir of this.watchRoots) {
+      this.tryWatch(dir);
     }
 
     // `fs.watch` can miss recursive events depending on the VS Code runtime,
-    // OS, and whether source roots appear after activation. Periodic empty-path
-    // scans give the worker a cheap stat-only fallback without requiring users
-    // to press manual refresh.
-    if (paths.length > 0) {
-      const pollMs = Math.max(30_000, this.debounceMs * 4);
+    // OS, and whether source roots appear after activation. Periodic empty scans
+    // use the worker's throttled hot-catalog/full-discovery path.
+    if (this.watchRoots.length > 0) {
+      const pollMs = Math.max(10_000, this.debounceMs * 10);
       this.pollTimer = setInterval(() => {
+        for (const dir of this.watchRoots) {
+          this.tryWatch(dir);
+        }
         this.scheduleCallback(undefined);
       }, pollMs);
     }
   }
 
-  private scheduleCallback(changedPath: string | undefined): void {
-    if (changedPath) {
-      this.pendingPaths.add(changedPath);
+  private tryWatch(dir: string): void {
+    if (this.watchers.has(dir)) {
+      return;
+    }
+    try {
+      const watcher = watch(dir, { recursive: true }, (_eventType, filename) => {
+        const changedPath = changedPathFromFilename(dir, filename);
+        this.scheduleCallback(changedPath);
+      });
+      watcher.on("error", () => {
+        this.watchers.delete(dir);
+        try {
+          watcher.close();
+        } catch {
+          // Best-effort cleanup for watcher errors.
+        }
+      });
+      this.watchers.set(dir, watcher);
+    } catch {
+      // Path doesn't exist or watch not supported — polling will retry later.
+    }
+  }
+
+  private scheduleCallback(changedPath: string | string[] | undefined): void {
+    const paths = Array.isArray(changedPath) ? changedPath : changedPath ? [changedPath] : [];
+    for (const path of paths) {
+      this.pendingPaths.add(path);
     }
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer);
@@ -74,20 +91,20 @@ export class FileWatcher implements vscode.Disposable {
       this.pollTimer = null;
     }
     this.pendingPaths.clear();
-    for (const watcher of this.watchers) {
+    for (const watcher of this.watchers.values()) {
       watcher.close();
     }
-    this.watchers = [];
+    this.watchers.clear();
   }
 }
 
-function changedPathFromFilename(dir: string, filename: string | Buffer | null): string | undefined {
+function changedPathFromFilename(dir: string, filename: string | Buffer | null): string {
   if (!filename) {
-    return undefined;
+    return dir;
   }
   const name = filename.toString();
   if (!name) {
-    return undefined;
+    return dir;
   }
   return isAbsolute(name) ? name : join(dir, name);
 }

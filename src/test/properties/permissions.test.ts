@@ -150,6 +150,24 @@ suite("Permissions/missing-dir integration test", () => {
     assert.strictEqual(candidates[0].filePath, codexFile);
   });
 
+  test("scanChanged expands the Codex source root", () => {
+    const codexRoot = join(tmpDir, "codex-sessions");
+    const dayDir = join(codexRoot, "2026", "06", "03");
+    mkdirSync(dayDir, { recursive: true });
+
+    const codexFile = join(dayDir, "rollout-live.jsonl");
+    writeFileSync(codexFile, '{"type":"session_meta"}\n');
+
+    const candidates = scanChanged([codexRoot], {
+      codex: { enabled: true, path: codexRoot },
+      claude: { enabled: false, path: join(tmpDir, "no-claude") },
+    });
+
+    assert.strictEqual(candidates.length, 1);
+    assert.strictEqual(candidates[0].source, "codex");
+    assert.strictEqual(candidates[0].filePath, codexFile);
+  });
+
   test("scanChanged expands changed Claude directories", () => {
     const claudeRoot = join(tmpDir, "claude-projects");
     const sessionDir = join(claudeRoot, "project-a", "session-a");
@@ -159,6 +177,24 @@ suite("Permissions/missing-dir integration test", () => {
     writeFileSync(claudeFile, '{"type":"assistant"}\n');
 
     const candidates = scanChanged([sessionDir], {
+      codex: { enabled: false, path: join(tmpDir, "no-codex") },
+      claude: { enabled: true, path: claudeRoot },
+    });
+
+    assert.strictEqual(candidates.length, 1);
+    assert.strictEqual(candidates[0].source, "claude");
+    assert.strictEqual(candidates[0].filePath, claudeFile);
+  });
+
+  test("scanChanged expands the Claude source root", () => {
+    const claudeRoot = join(tmpDir, "claude-projects");
+    const sessionDir = join(claudeRoot, "project-a", "session-a");
+    mkdirSync(sessionDir, { recursive: true });
+
+    const claudeFile = join(sessionDir, "session-live.jsonl");
+    writeFileSync(claudeFile, '{"type":"assistant"}\n');
+
+    const candidates = scanChanged([claudeRoot], {
       codex: { enabled: false, path: join(tmpDir, "no-codex") },
       claude: { enabled: true, path: claudeRoot },
     });

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { IngestionCoordinator } from "./IngestionCoordinator";
+import type { AnalyticsResult } from "../shared/protocol";
 
 /**
  * Manages the status bar item showing today's token usage and cost.
@@ -9,6 +10,8 @@ export class StatusBarController implements vscode.Disposable {
   private item: vscode.StatusBarItem;
   private disposables: vscode.Disposable[] = [];
   private enabled: boolean;
+  private disposed = false;
+  private refreshVersion = 0;
 
   constructor(
     private readonly coordinator: IngestionCoordinator,
@@ -29,15 +32,28 @@ export class StatusBarController implements vscode.Disposable {
   }
 
   async refresh(): Promise<void> {
+    const version = ++this.refreshVersion;
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const endOfDay = new Date(startOfDay.getTime() + 86_400_000 - 1);
 
-    const result = await this.coordinator.query({
-      view: "dashboard",
-      granularity: "day",
-      range: { fromUtc: startOfDay.getTime(), toUtc: endOfDay.getTime() },
-    });
+    let result: AnalyticsResult;
+    try {
+      result = await this.coordinator.query({
+        view: "dashboard",
+        granularity: "day",
+        range: { fromUtc: startOfDay.getTime(), toUtc: endOfDay.getTime() },
+      });
+    } catch (err) {
+      if (!this.disposed && version === this.refreshVersion) {
+        console.error("[TokenWatch] status bar refresh failed:", err);
+      }
+      return;
+    }
+
+    if (this.disposed || version !== this.refreshVersion) {
+      return;
+    }
 
     let tokens = 0;
     let cost = 0;
@@ -93,6 +109,7 @@ export class StatusBarController implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.item.dispose();
     for (const d of this.disposables) {
       d.dispose();

@@ -10,10 +10,53 @@
 import { readLines } from "./lineReader.js";
 import type { ParseInput, ParseOutput, ResumeState, SessionMeta, SourceParser } from "./types.js";
 import type { RawCodexTurn, ToolEvent, TurnMeta, Effort, CumulativeTotals } from "../../shared/types.js";
+import { createHash } from "node:crypto";
+
+interface CodexTokenUsage {
+  input_tokens?: number | null;
+  cached_input_tokens?: number | null;
+  output_tokens?: number | null;
+  reasoning_output_tokens?: number | null;
+  total_tokens?: number | null;
+}
+
+interface CodexTokenInfo {
+  last_token_usage?: CodexTokenUsage | null;
+  total_token_usage?: CodexTokenUsage | null;
+  model_context_window?: number | null;
+}
+
+interface CodexRateLimits {
+  primary?: { used_percent?: number | null };
+  secondary?: { used_percent?: number | null };
+}
+
+interface CodexLogLine {
+  type?: string;
+  payload?: {
+    id?: string;
+    cwd?: string;
+    cli_version?: string;
+    source?: string;
+    git?: { branch?: string; repository_url?: string };
+    model?: string;
+    effort?: Effort;
+    approval_policy?: string;
+    sandbox_policy?: { mode?: string };
+    type?: string;
+    name?: string;
+    info?: CodexTokenInfo;
+    rate_limits?: CodexRateLimits;
+  };
+  info?: CodexTokenInfo;
+  timestamp?: string | number;
+  rate_limits?: CodexRateLimits;
+}
 
 export class CodexParser implements SourceParser {
   async parse(input: ParseInput, sink: (batch: ParseOutput) => void): Promise<void> {
-    const { filePath, startOffset, maxLineBytes, resumeState } = input;
+    const { filePath, fileId, startOffset, maxLineBytes, resumeState } = input;
+    const fileScope = scopedFileId(fileId ?? filePath);
 
     // State
     let currentSessionId = resumeSessionId(resumeState);
@@ -45,9 +88,9 @@ export class CodexParser implements SourceParser {
           return;
         }
 
-        let parsed: any;
+        let parsed: CodexLogLine;
         try {
-          parsed = JSON.parse(line);
+          parsed = JSON.parse(line) as CodexLogLine;
         } catch {
           if (!isCompleteLine) {
             malformedCount++;
@@ -106,7 +149,7 @@ export class CodexParser implements SourceParser {
           // Skip turns with no model context or zero tokens (empty/compacted sessions)
           if (currentModel === "unknown") { return; }
 
-          const dedupKey = `codex:${currentSessionId}:${byteOffset}`;
+          const dedupKey = `codex:${currentSessionId}:${fileScope}:${byteOffset}`;
           const timestamp = parsed.timestamp ? new Date(parsed.timestamp).getTime() : 0;
 
           // Determine token usage: prefer last_token_usage, else derive delta
@@ -119,7 +162,7 @@ export class CodexParser implements SourceParser {
           const last = info.last_token_usage;
           const total = info.total_token_usage;
 
-          if (last && last.input_tokens != null) {
+          if (last && isPresent(last.input_tokens)) {
             inputTokens = last.input_tokens;
             cachedInputTokens = last.cached_input_tokens ?? 0;
             outputTokens = last.output_tokens ?? 0;
@@ -153,10 +196,10 @@ export class CodexParser implements SourceParser {
 
           // Build TurnMeta
           const meta: TurnMeta = {};
-          if (info.model_context_window != null) {
+          if (isPresent(info.model_context_window)) {
             meta.contextWindow = info.model_context_window;
           }
-          if (last?.input_tokens != null) {
+          if (isPresent(last?.input_tokens)) {
             meta.contextUsedTokens = last.input_tokens;
           }
           if (currentApprovalPolicy) {
@@ -166,10 +209,10 @@ export class CodexParser implements SourceParser {
             meta.sandboxMode = currentSandboxMode;
           }
           const rateLimits = parsed.rate_limits ?? parsed.payload.rate_limits;
-          if (rateLimits?.primary?.used_percent != null) {
+          if (isPresent(rateLimits?.primary?.used_percent)) {
             meta.rateLimitPrimaryPct = rateLimits.primary.used_percent;
           }
-          if (rateLimits?.secondary?.used_percent != null) {
+          if (isPresent(rateLimits?.secondary?.used_percent)) {
             meta.rateLimitSecondaryPct = rateLimits.secondary.used_percent;
           }
 
@@ -228,4 +271,12 @@ export class CodexParser implements SourceParser {
 function resumeSessionId(resumeState: ResumeState | undefined): string {
   const ids = Object.keys(resumeState?.runningTotals ?? {});
   return ids.length === 1 ? ids[0] : "";
+}
+
+function scopedFileId(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
 }

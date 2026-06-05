@@ -174,11 +174,25 @@ suite("Dashboard-from-store performance + aggregated-payload regression", () => 
     const originalOpenSync = fs.openSync;
     const originalCreateReadStream = fs.createReadStream;
     let fsOpenCalls = 0;
+    const patchedFs = fs as typeof fs & {
+      open: typeof originalOpen;
+      openSync: typeof originalOpenSync;
+      createReadStream: typeof originalCreateReadStream;
+    };
 
     // Monkey-patch to count calls
-    (fs as any).open = (...args: any[]) => { fsOpenCalls++; return originalOpen.apply(fs, args as any); };
-    (fs as any).openSync = (...args: any[]) => { fsOpenCalls++; return originalOpenSync.apply(fs, args as any); };
-    (fs as any).createReadStream = (...args: any[]) => { fsOpenCalls++; return originalCreateReadStream.apply(fs, args as any); };
+    patchedFs.open = ((...args: unknown[]) => {
+      fsOpenCalls++;
+      return Reflect.apply(originalOpen, fs, args);
+    }) as typeof originalOpen;
+    patchedFs.openSync = ((...args: unknown[]) => {
+      fsOpenCalls++;
+      return Reflect.apply(originalOpenSync, fs, args);
+    }) as typeof originalOpenSync;
+    patchedFs.createReadStream = ((...args: unknown[]) => {
+      fsOpenCalls++;
+      return Reflect.apply(originalCreateReadStream, fs, args);
+    }) as typeof originalCreateReadStream;
 
     try {
       const baseQuery: AnalyticsQuery = {
@@ -201,9 +215,9 @@ suite("Dashboard-from-store performance + aggregated-payload regression", () => 
       assert.strictEqual(fsOpenCalls, 0, "No fs.open/createReadStream calls during queries");
     } finally {
       // Restore
-      (fs as any).open = originalOpen;
-      (fs as any).openSync = originalOpenSync;
-      (fs as any).createReadStream = originalCreateReadStream;
+      patchedFs.open = originalOpen;
+      patchedFs.openSync = originalOpenSync;
+      patchedFs.createReadStream = originalCreateReadStream;
     }
   });
 
