@@ -2,6 +2,23 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.0.4]
+
+- Added an hourly `Usage trend` chart to the `today` view, with Tokens, Cost,
+  and Turns modes plus peak-hour and active-hour summaries.
+- Improved the Tool Calls card so it shows the top tools first and can expand
+  to the full tool list.
+- Made live updates more reliable while Codex or Claude is writing logs,
+  including nested folders and log folders that appear after VS Code starts.
+- Made `Rescan logs` lighter by scanning incrementally instead of forcing a
+  full rebuild every time.
+- Fixed inaccurate Codex totals caused by shared session IDs across files,
+  replaced files at the same path, or duplicate streamed records.
+- Recalculated dashboard totals after ingest and pricing changes so totals and
+  costs stay in sync.
+- Hardened the status bar refresh so older or failed refreshes do not overwrite
+  newer usage data.
+
 ## [0.0.3]
 
 - Fixed live ingestion for active Codex/Claude logs when a JSONL line is still
@@ -20,20 +37,6 @@ All notable changes to the "token-watch" extension will be documented in this fi
 - Removed the "of this tab's cost" label from overview cards.
 - Added regression coverage for partial JSONL EOF handling and empty-cursor
   reingestion.
-- Added an hourly `Usage trend` chart to the `today` view, with Tokens, Cost,
-  and Turns modes plus peak-hour and active-hour summaries.
-- Improved the Tool Calls card so it shows the top tools first and can expand
-  to the full tool list.
-- Made live updates more reliable while Codex or Claude is writing logs,
-  including nested folders and log folders that appear after VS Code starts.
-- Made `Rescan logs` lighter by scanning incrementally instead of forcing a
-  full rebuild every time.
-- Fixed inaccurate Codex totals caused by shared session IDs across files,
-  replaced files at the same path, or duplicate streamed records.
-- Recalculated dashboard totals after ingest and pricing changes so totals and
-  costs stay in sync.
-- Hardened the status bar refresh so older or failed refreshes do not overwrite
-  newer usage data.
 
 ## [0.0.2]
 
