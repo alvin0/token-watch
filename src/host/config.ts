@@ -62,7 +62,7 @@ export function getConfig(): TokenWatchConfig {
     ingestion: {
       watchDebounceMs: clamp(cfg.get<number>("ingestion.watchDebounceMs", 500), 250, 60000),
       maxLineBytes: Math.max(cfg.get<number>("ingestion.maxLineBytes", 1048576), 4096),
-      backfillMonths: Math.max(cfg.get<number>("ingestion.backfillMonths", 6), 0),
+      backfillMonths: Math.max(cfg.get<number>("ingestion.backfillMonths", 0), 0),
     },
     analytics: {
       anomalyMultiplier: Math.max(cfg.get<number>("analytics.anomalyMultiplier", 2), 1),

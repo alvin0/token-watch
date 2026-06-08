@@ -2,7 +2,7 @@
   "name": "token-watch",
   "displayName": "Token Watch",
   "description": "Track AI coding token usage and cost across Codex and Claude sessions, in a sidebar dashboard and the status bar.",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "alvin0-dinhai",
   "license": "MIT",
   "repository": {
@@ -37,6 +37,11 @@
       {
         "command": "token-watch.rescan",
         "title": "Rescan Logs",
+        "category": "Token Watch"
+      },
+      {
+        "command": "token-watch.resetDatabase",
+        "title": "Reset Database",
         "category": "Token Watch"
       }
     ],
@@ -111,8 +116,8 @@
         },
         "tokenWatch.ingestion.backfillMonths": {
           "type": "number",
-          "default": 6,
-          "description": "Historical backfill cap in months. 0 = unlimited. Bounds first-time reads only."
+          "default": 0,
+          "description": "Historical backfill cap in months. 0 = unlimited. Bounds first-time reads only and depends on file mtimes."
         },
         "tokenWatch.analytics.anomalyMultiplier": {
           "type": "number",

@@ -88,6 +88,7 @@ export type WebviewRequest =
   | { type: "ready" }
   | { type: "query"; id: string; query: AnalyticsQuery }
   | { type: "rescan" }
+  | { type: "resetDatabase" }
   | { type: "updatePricing"; table: PricingTable }
   | { type: "openSetting"; key: string };
 

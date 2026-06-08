@@ -1,12 +1,15 @@
 import * as assert from "assert";
 import fc from "fast-check";
-import { writeFileSync, unlinkSync, statSync } from "node:fs";
+import initSqlJs from "sql.js";
+import { appendFileSync, writeFileSync, unlinkSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { candidatePriorityScore, decideAction, orderCandidatesForIngestion } from "../../worker/ingest.js";
+import { candidatePriorityScore, decideAction, ingestFile, orderCandidatesForIngestion } from "../../worker/ingest.js";
 import { computeHeadHash, computeTailAnchorHash } from "../../worker/cursor.js";
 import { CodexParser } from "../../worker/parsers/codex.js";
+import { PricingEngine } from "../../worker/pricing.js";
+import { UsageStore } from "../../worker/store/UsageStore.js";
 import type { ParseOutput } from "../../worker/parsers/types.js";
 import type { FileCursor } from "../../shared/storeTypes.js";
 import type { CandidateFile } from "../../worker/discovery.js";
@@ -83,6 +86,40 @@ function buildSession(sessionId: string, turns: Array<{ input: number; output: n
 
 function tmpFile(prefix: string): string {
   return join(tmpdir(), `pbt-ingest-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+}
+
+function candidateFor(filePath: string, source: CandidateFile["source"]): CandidateFile {
+  const stat = statSync(filePath);
+  const fileId = stat.ino > 0 ? `${stat.dev}:${stat.ino}` : `${stat.birthtimeMs}:${filePath}`;
+  return { filePath, source, size: stat.size, mtimeMs: stat.mtimeMs, fileId };
+}
+
+function claudeLine(requestId: string, inputTokens: number, outputTokens: number, timestamp: string): string {
+  return JSON.stringify({
+    type: "assistant",
+    timestamp,
+    sessionId: "claude-linux-session",
+    requestId,
+    cwd: "/home/user/project",
+    version: "1.0.0",
+    message: {
+      model: "claude-sonnet-4-20250514",
+      stop_reason: "end_turn",
+      usage: {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+      },
+      content: [],
+    },
+  });
+}
+
+async function freshStore(dbPath: string): Promise<UsageStore> {
+  const SQL = await initSqlJs();
+  const store = new UsageStore();
+  await store.open(dbPath, SQL);
+  await store.migrateOrRebuild();
+  return store;
 }
 
 suite("Ingestion property tests", () => {
@@ -582,6 +619,75 @@ suite("Ingestion example tests", () => {
         candidatePriorityScore(coldCandidate, coldCursor, now),
       "today-overlapping files should have higher ingest priority than unchanged cold history",
     );
+  });
+
+  test("Claude append replacing a recent requestId rebuilds instead of double-counting aggregates", async () => {
+    const file = tmpFile("claude-overlap");
+    const dbPath = tmpFile("claude-overlap-db").replace(/\.jsonl$/, ".db");
+    const store = await freshStore(dbPath);
+    const pricing = new PricingEngine({});
+    const options = { maxLineBytes: MAX_LINE_BYTES, backfillMonths: 0 };
+
+    try {
+      writeFileSync(
+        file,
+        `${claudeLine("req-1", 100, 50, "2026-06-04T10:00:00Z")}\n`,
+        "utf8",
+      );
+      await ingestFile(candidateFor(file, "claude"), store, pricing, options);
+
+      appendFileSync(
+        file,
+        `${claudeLine("req-1", 200, 100, "2026-06-04T10:00:01Z")}\n`,
+        "utf8",
+      );
+      const appendResult = await ingestFile(candidateFor(file, "claude"), store, pricing, options);
+
+      const usage = store.database.exec("SELECT COUNT(*), SUM(total_tokens) FROM usage_record")[0].values[0];
+      const daily = store.database.exec("SELECT SUM(turns), SUM(total_tokens) FROM daily_aggregate")[0].values[0];
+      const session = store.database.exec("SELECT SUM(turns), SUM(total_tokens) FROM session_aggregate")[0].values[0];
+
+      assert.strictEqual(appendResult.decision, "reingest");
+      assert.deepStrictEqual(usage, [1, 300]);
+      assert.deepStrictEqual(daily, [1, 300]);
+      assert.deepStrictEqual(session, [1, 300]);
+    } finally {
+      store.close();
+      try { unlinkSync(file); } catch { /* ignore */ }
+      try { unlinkSync(dbPath); } catch { /* ignore */ }
+    }
+  });
+
+  test("Claude non-contiguous repeated requestIds remain separate turns", async () => {
+    const file = tmpFile("claude-repeat-request");
+    const dbPath = tmpFile("claude-repeat-request-db").replace(/\.jsonl$/, ".db");
+    const store = await freshStore(dbPath);
+    const pricing = new PricingEngine({});
+    const options = { maxLineBytes: MAX_LINE_BYTES, backfillMonths: 0 };
+
+    try {
+      writeFileSync(
+        file,
+        [
+          claudeLine("req-1", 100, 50, "2026-06-04T10:00:00Z"),
+          claudeLine("req-2", 10, 5, "2026-06-04T10:00:01Z"),
+          claudeLine("req-1", 200, 100, "2026-06-04T10:00:02Z"),
+        ].join("\n") + "\n",
+        "utf8",
+      );
+
+      await ingestFile(candidateFor(file, "claude"), store, pricing, options);
+
+      const usage = store.database.exec("SELECT COUNT(*), SUM(total_tokens), COUNT(DISTINCT dedup_key) FROM usage_record")[0].values[0];
+      const daily = store.database.exec("SELECT SUM(turns), SUM(total_tokens) FROM daily_aggregate")[0].values[0];
+
+      assert.deepStrictEqual(usage, [3, 465, 3]);
+      assert.deepStrictEqual(daily, [3, 465]);
+    } finally {
+      store.close();
+      try { unlinkSync(file); } catch { /* ignore */ }
+      try { unlinkSync(dbPath); } catch { /* ignore */ }
+    }
   });
 });
 

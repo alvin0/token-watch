@@ -9,7 +9,7 @@
  * This module MUST NOT import `vscode`.
  */
 
-import type { RawTurn, ToolEvent, CumulativeTotals } from "../../shared/types.js";
+import type { RawTurn, ToolEvent, CumulativeTotals, Effort } from "../../shared/types.js";
 
 /** Input to a streaming parser invocation. */
 export interface ParseInput {
@@ -35,6 +35,16 @@ export interface ParseOutput {
 export interface ResumeState {
   runningTotals: Record<string /*sessionId*/, CumulativeTotals>; // Codex (Req 4.11)
   recentRequestIds: string[];                                     // Claude (Req 4.12)
+  codex?: CodexResumeContext;
+}
+
+export interface CodexResumeContext {
+  sessionId: string;
+  model: string;
+  effort?: Effort;
+  approvalPolicy?: string;
+  sandboxMode?: string;
+  pendingToolNames: string[];
 }
 
 /** Session-level metadata captured from session_meta lines (Codex) or first assistant line (Claude). */

@@ -46,8 +46,8 @@ export interface UsageRecord {
   /**
    * Idempotency / replacement key. Scoped per session (a requestId is only
    * promised unique within a contiguous group, not globally — Req 2.8):
-   *   Claude:  `${source}:${sessionId}:${requestId}`  (fallback when no
-   *            requestId: `${source}:${sessionId}:${uuid}`)
+   *   Claude:  `${source}:${sessionId}:${fileScope}:${requestId}:${groupStartOffset}`
+   *            because requestId is only unique within a contiguous group
    *   Codex:   `${source}:${sessionId}:${fileScope}:${lineByteOffset}` (each
    *            token_count line is a distinct turn; offset is stable only within
    *            one physical file, so the file scope prevents cross-rollout

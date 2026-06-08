@@ -8,9 +8,11 @@
  */
 
 import { readLines } from "./lineReader.js";
-import type { ParseInput, ParseOutput, ResumeState, SessionMeta, SourceParser } from "./types.js";
+import type { CodexResumeContext, ParseInput, ParseOutput, ResumeState, SessionMeta, SourceParser } from "./types.js";
 import type { RawCodexTurn, ToolEvent, TurnMeta, Effort, CumulativeTotals } from "../../shared/types.js";
 import { createHash } from "node:crypto";
+
+const CODEX_RESUME_PREFIX = "codex-context:";
 
 interface CodexTokenUsage {
   input_tokens?: number | null;
@@ -57,14 +59,15 @@ export class CodexParser implements SourceParser {
   async parse(input: ParseInput, sink: (batch: ParseOutput) => void): Promise<void> {
     const { filePath, fileId, startOffset, maxLineBytes, resumeState } = input;
     const fileScope = scopedFileId(fileId ?? filePath);
+    const resumeContext = resumeState?.codex ?? decodeCodexResumeContext(resumeState?.recentRequestIds);
 
     // State
-    let currentSessionId = resumeSessionId(resumeState);
-    let currentModel = "unknown";
-    let currentEffort: Effort | undefined;
-    let currentApprovalPolicy: string | undefined;
-    let currentSandboxMode: string | undefined;
-    let pendingToolNames: string[] = [];
+    let currentSessionId = resumeContext?.sessionId || resumeSessionId(resumeState);
+    let currentModel = resumeContext?.model ?? "unknown";
+    let currentEffort: Effort | undefined = resumeContext?.effort;
+    let currentApprovalPolicy: string | undefined = resumeContext?.approvalPolicy;
+    let currentSandboxMode: string | undefined = resumeContext?.sandboxMode;
+    let pendingToolNames: string[] = resumeContext?.pendingToolNames.slice() ?? [];
     const runningTotals: Record<string, CumulativeTotals> = resumeState?.runningTotals
       ? { ...resumeState.runningTotals }
       : {};
@@ -249,11 +252,19 @@ export class CodexParser implements SourceParser {
       },
     );
 
-    // Discard any unflushed pendingToolNames (per spec)
+    const codexContext = buildCodexResumeContext({
+      sessionId: currentSessionId,
+      model: currentModel,
+      effort: currentEffort,
+      approvalPolicy: currentApprovalPolicy,
+      sandboxMode: currentSandboxMode,
+      pendingToolNames,
+    });
 
     const endState: ResumeState = {
       runningTotals,
-      recentRequestIds: resumeState?.recentRequestIds ?? [],
+      recentRequestIds: [encodeCodexResumeContext(codexContext)],
+      codex: codexContext,
     };
 
     sink({
@@ -275,6 +286,47 @@ function resumeSessionId(resumeState: ResumeState | undefined): string {
 
 function scopedFileId(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function buildCodexResumeContext(context: CodexResumeContext): CodexResumeContext {
+  return {
+    sessionId: context.sessionId,
+    model: context.model,
+    ...(context.effort ? { effort: context.effort } : {}),
+    ...(context.approvalPolicy ? { approvalPolicy: context.approvalPolicy } : {}),
+    ...(context.sandboxMode ? { sandboxMode: context.sandboxMode } : {}),
+    pendingToolNames: context.pendingToolNames.filter((name) => name.length > 0),
+  };
+}
+
+function encodeCodexResumeContext(context: CodexResumeContext): string {
+  return `${CODEX_RESUME_PREFIX}${JSON.stringify(context)}`;
+}
+
+function decodeCodexResumeContext(values: string[] | undefined): CodexResumeContext | undefined {
+  const encoded = values?.find((value) => value.startsWith(CODEX_RESUME_PREFIX));
+  if (!encoded) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(encoded.slice(CODEX_RESUME_PREFIX.length)) as Partial<CodexResumeContext>;
+    if (typeof parsed.sessionId !== "string" || typeof parsed.model !== "string") {
+      return undefined;
+    }
+    return buildCodexResumeContext({
+      sessionId: parsed.sessionId,
+      model: parsed.model,
+      effort: typeof parsed.effort === "string" ? parsed.effort : undefined,
+      approvalPolicy: typeof parsed.approvalPolicy === "string" ? parsed.approvalPolicy : undefined,
+      sandboxMode: typeof parsed.sandboxMode === "string" ? parsed.sandboxMode : undefined,
+      pendingToolNames: Array.isArray(parsed.pendingToolNames)
+        ? parsed.pendingToolNames.filter((name): name is string => typeof name === "string")
+        : [],
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 function isPresent<T>(value: T | null | undefined): value is T {

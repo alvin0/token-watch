@@ -260,6 +260,26 @@ export class UsageStore {
     }
   }
 
+  resetDatabase(): void {
+    const db = this.getDb();
+    db.run("BEGIN TRANSACTION");
+    try {
+      db.run("DELETE FROM tool_event");
+      db.run("DELETE FROM usage_record");
+      db.run("DELETE FROM daily_aggregate");
+      db.run("DELETE FROM session_aggregate");
+      db.run("DELETE FROM file_cursor");
+      db.run("DELETE FROM file_catalog");
+      db.run("DELETE FROM pricing");
+      db.run("DELETE FROM unmapped_model");
+      db.run("DELETE FROM meta WHERE key != 'schema_version'");
+      db.run("COMMIT");
+    } catch (e) {
+      db.run("ROLLBACK");
+      throw e;
+    }
+  }
+
   hotCatalogFilePaths(now = Date.now(), limit = 200): string[] {
     const recentCutoff = now - DAY_MS;
     const weekStart = localDay(new Date(now - 6 * DAY_MS));

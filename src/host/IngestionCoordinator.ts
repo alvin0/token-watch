@@ -64,7 +64,11 @@ export class IngestionCoordinator implements vscode.Disposable {
   }
 
   rescan(): void {
-    this.send({ type: "scanAndIngest", reason: "manual" });
+    this.send({ type: "scanAndIngest", reason: "manual", forceFull: true });
+  }
+
+  resetDatabase(): void {
+    this.send({ type: "resetDatabase" });
   }
 
   updatePricing(table: PricingTable): void {

@@ -508,6 +508,78 @@ suite("Store property tests (in-memory sql.js)", () => {
     assert.strictEqual(firstSeenAgain, firstSeen, "first_seen_utc should be stable across repeated records");
     db.close();
   });
+
+  test("resetDatabase clears stored data and preserves schema version", async () => {
+    const db = await freshDb();
+    const store = storeFromDb(db);
+    const timestamp = new Date("2025-01-15T10:00:00.000Z").getTime();
+    const record: UsageRecord = {
+      source: "codex",
+      sessionId: "sess-reset",
+      dedupKey: "codex:sess-reset:0",
+      timestamp,
+      model: "gpt-5-codex",
+      variantId: "gpt-5-codex",
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadTokens: 2,
+      cacheCreationTokens: 1,
+      reasoningTokens: 0,
+    };
+    const toolEvent: ToolEvent = {
+      source: "codex",
+      sessionId: record.sessionId,
+      timestamp,
+      toolName: "exec_command",
+      isSidechain: false,
+      recordDedupKey: record.dedupKey,
+      eventKey: `${record.dedupKey}#tool`,
+    };
+    const candidate = {
+      filePath: "/tmp/reset-rollout.jsonl",
+      fileId: "reset-file",
+      source: "codex" as Source,
+      size: 100,
+      mtimeMs: timestamp,
+    };
+
+    store.recordDiscoveredFiles([candidate], timestamp);
+    store.putCursor(catalogCursor(candidate, "2025-01-15"));
+    store.applyFileResult(candidate.fileId, buildBatch([record], [toolEvent]));
+    store.recordUnmappedModels(["gpt-reset-unknown"], {
+      inputPer1K: 0.003,
+      cachedInputPer1K: 0.0015,
+      outputPer1K: 0.012,
+    });
+    store.setMeta("last_ingest_run_utc", String(timestamp));
+
+    assert.ok(countRows(db, "usage_record") > 0);
+    assert.ok(countRows(db, "tool_event") > 0);
+    assert.ok(countRows(db, "file_cursor") > 0);
+    assert.ok(countRows(db, "file_catalog") > 0);
+    assert.ok(countRows(db, "daily_aggregate") > 0);
+    assert.ok(countRows(db, "session_aggregate") > 0);
+    assert.ok(countRows(db, "pricing") > 0);
+    assert.ok(countRows(db, "unmapped_model") > 0);
+
+    store.resetDatabase();
+
+    for (const table of [
+      "usage_record",
+      "tool_event",
+      "file_cursor",
+      "file_catalog",
+      "daily_aggregate",
+      "session_aggregate",
+      "pricing",
+      "unmapped_model",
+    ]) {
+      assert.strictEqual(countRows(db, table), 0, `${table} should be empty after reset`);
+    }
+    assert.strictEqual(store.schemaVersion(), SCHEMA_VERSION);
+    assert.strictEqual(store.getMeta("last_ingest_run_utc"), undefined);
+    db.close();
+  });
 });
 
 function singleNumber(db: Database, sql: string, params: Array<string | number>): number {

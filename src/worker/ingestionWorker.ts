@@ -31,6 +31,7 @@ let scanInProgress = false;
 let activeScan: ScanRequest | undefined;
 let pendingScan: ScanRequest | undefined;
 let pendingPricing: PricingTable | undefined;
+let pendingReset = false;
 let needsDedupKeyMigration = false;
 
 const FULL_DISCOVERY_MIN_INTERVAL_MS = 2 * 60 * 1000;
@@ -130,12 +131,21 @@ function enqueueScan(req: ScanRequest): void {
   void runScanQueue(req);
 }
 
-async function runScanQueue(first: ScanRequest): Promise<void> {
+function enqueueResetDatabase(): void {
+  pendingReset = true;
+  pendingScan = undefined;
+
+  if (!scanInProgress) {
+    void runScanQueue();
+  }
+}
+
+async function runScanQueue(first?: ScanRequest): Promise<void> {
   scanInProgress = true;
   let current: ScanRequest | undefined = first;
 
   try {
-    while (current || pendingPricing) {
+    while (current || pendingReset || pendingPricing) {
       if (current) {
         pendingScan = undefined;
         activeScan = current;
@@ -147,6 +157,22 @@ async function runScanQueue(first: ScanRequest): Promise<void> {
           post({ type: "error", scope, message });
         } finally {
           activeScan = undefined;
+        }
+        if (pendingReset) {
+          pendingScan = undefined;
+          current = undefined;
+        } else {
+          current = pendingScan;
+        }
+      } else if (pendingReset) {
+        pendingReset = false;
+        pendingScan = undefined;
+        try {
+          await handleResetDatabase();
+        } catch (err: unknown) {
+          const scope = classifyErrorScope(err, "resetDatabase");
+          const message = sanitizeErrorMessage(err);
+          post({ type: "error", scope, message });
         }
         current = pendingScan;
       } else if (pendingPricing) {
@@ -219,8 +245,15 @@ async function handleScanAndIngest(req: ScanRequest): Promise<void> {
 
   if (req.reason === "watch" && req.changedPaths && req.changedPaths.length > 0) {
     const changedCandidates = scanChanged(req.changedPaths, sourceRoots);
-    const candidates = changedCandidates.length > 0 ? changedCandidates : fullDiscovery(sourceRoots);
-    await ingestCandidates(req, candidates);
+    if (changedCandidates.length > 0) {
+      await ingestCandidates(req, changedCandidates);
+      return;
+    }
+    const now = Date.now();
+    if (!store.shouldRunFullDiscovery(now, FULL_DISCOVERY_MIN_INTERVAL_MS)) {
+      return;
+    }
+    await ingestCandidates(req, fullDiscovery(sourceRoots, now));
     return;
   }
 
@@ -309,6 +342,30 @@ function handleUpdatePricing(table: PricingTable): void {
   });
 }
 
+async function handleResetDatabase(): Promise<void> {
+  if (!store || !pricing || !analytics || !config) {
+    post({ type: "error", scope: "resetDatabase", message: "Worker not initialized" });
+    return;
+  }
+
+  store.resetDatabase();
+  store.setMeta(CODEX_FILE_SCOPE_DEDUP_META_KEY, "1");
+  needsDedupKeyMigration = false;
+  analytics = new AnalyticsService(store.database, pricing);
+  store.flush();
+
+  const sourceRoots = {
+    codex: config.sources.codex.enabled
+      ? { enabled: true, path: config.sources.codex.path ?? "" }
+      : undefined,
+    claude: config.sources.claude.enabled
+      ? { enabled: true, path: config.sources.claude.path ?? "" }
+      : undefined,
+  };
+  const req: ScanRequest = { type: "scanAndIngest", reason: "manual", forceFull: true };
+  await ingestCandidates(req, fullDiscovery(sourceRoots));
+}
+
 async function handleInit(req: Extract<WorkerRequest, { type: "init" }>): Promise<void> {
   const SQL = await initSqlJs({
     locateFile: (file: string) => join(__dirname, file),
@@ -369,6 +426,11 @@ parentPort!.on("message", (req: WorkerRequest) => {
 
       case "scanAndIngest": {
         enqueueScan(req);
+        break;
+      }
+
+      case "resetDatabase": {
+        enqueueResetDatabase();
         break;
       }
 

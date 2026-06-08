@@ -95,6 +95,98 @@ suite("Parser robustness property tests", () => {
     }
   });
 
+  test("Codex append resumes model context split before token_count", async () => {
+    const parser = new CodexParser();
+    const tmpFile = join(tmpdir(), `pbt-codex-context-resume-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+    const lines = buildValidSession("context-resume-session", 10, 5);
+    const prefixContent = `${lines.slice(0, 2).join("\n")}\n`;
+    const fullContent = `${prefixContent}${lines[2]}\n`;
+
+    writeFileSync(tmpFile, prefixContent, "utf8");
+
+    try {
+      let prefixOutput: ParseOutput | undefined;
+      await parser.parse(
+        { filePath: tmpFile, fileId: "dev:context-resume", startOffset: 0, maxLineBytes: MAX_LINE_BYTES },
+        (batch) => { prefixOutput = batch; },
+      );
+
+      assert.ok(prefixOutput, "Parser should emit context-only prefix state");
+      assert.strictEqual(prefixOutput.rawTurns.length, 0);
+
+      writeFileSync(tmpFile, fullContent, "utf8");
+      let suffixOutput: ParseOutput | undefined;
+      await parser.parse(
+        {
+          filePath: tmpFile,
+          fileId: "dev:context-resume",
+          startOffset: prefixOutput.endOffset,
+          maxLineBytes: MAX_LINE_BYTES,
+          resumeState: prefixOutput.endState,
+        },
+        (batch) => { suffixOutput = batch; },
+      );
+
+      assert.ok(suffixOutput, "Parser should emit suffix token_count");
+      assert.strictEqual(suffixOutput.rawTurns.length, 1);
+      const turn = suffixOutput.rawTurns[0] as RawCodexTurn;
+      assert.strictEqual(turn.model, "gpt-5-codex");
+      assert.strictEqual(turn.effort, "high");
+      assert.strictEqual(turn.rawInputTokens, 10);
+    } finally {
+      try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    }
+  });
+
+  test("Codex append resumes pending tool calls split before token_count", async () => {
+    const parser = new CodexParser();
+    const tmpFile = join(tmpdir(), `pbt-codex-tool-resume-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+    const lines = [
+      ...buildValidSession("tool-resume-session", 10, 5).slice(0, 2),
+      JSON.stringify({
+        type: "response_item",
+        payload: { type: "function_call", name: "shell" },
+      }),
+      buildValidSession("tool-resume-session", 10, 5)[2],
+    ];
+    const prefixContent = `${lines.slice(0, 3).join("\n")}\n`;
+    const fullContent = `${prefixContent}${lines[3]}\n`;
+
+    writeFileSync(tmpFile, prefixContent, "utf8");
+
+    try {
+      let prefixOutput: ParseOutput | undefined;
+      await parser.parse(
+        { filePath: tmpFile, fileId: "dev:tool-resume", startOffset: 0, maxLineBytes: MAX_LINE_BYTES },
+        (batch) => { prefixOutput = batch; },
+      );
+
+      assert.ok(prefixOutput, "Parser should emit tool-only prefix state");
+      assert.strictEqual(prefixOutput.rawTurns.length, 0);
+
+      writeFileSync(tmpFile, fullContent, "utf8");
+      let suffixOutput: ParseOutput | undefined;
+      await parser.parse(
+        {
+          filePath: tmpFile,
+          fileId: "dev:tool-resume",
+          startOffset: prefixOutput.endOffset,
+          maxLineBytes: MAX_LINE_BYTES,
+          resumeState: prefixOutput.endState,
+        },
+        (batch) => { suffixOutput = batch; },
+      );
+
+      assert.ok(suffixOutput, "Parser should emit suffix token_count");
+      assert.strictEqual(suffixOutput.rawTurns.length, 1);
+      assert.strictEqual(suffixOutput.toolEvents.length, 1);
+      assert.strictEqual(suffixOutput.toolEvents[0].toolName, "shell");
+      assert.strictEqual(suffixOutput.toolEvents[0].recordDedupKey, (suffixOutput.rawTurns[0] as RawCodexTurn).dedupKey);
+    } finally {
+      try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    }
+  });
+
   test("Codex image generation is tracked as a tool without inventing a model", async () => {
     const parser = new CodexParser();
     const tmpFile = join(tmpdir(), `pbt-image-generation-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);

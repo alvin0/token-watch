@@ -12,9 +12,11 @@
 import { readLines } from "./lineReader";
 import type { ParseInput, ParseOutput, ResumeState, SessionMeta, SourceParser } from "./types";
 import type { RawClaudeTurn, ToolEvent, TurnMeta } from "../../shared/types";
+import { createHash } from "node:crypto";
 
 /** Max recent requestIds to carry in endState for resume boundary detection. */
 const MAX_RECENT_IDS = 10;
+const RECENT_REQUEST_SEPARATOR = "\u0000";
 
 interface ClaudeLogLine {
   type?: string;
@@ -42,7 +44,8 @@ interface ClaudeLogLine {
 
 export class ClaudeParser implements SourceParser {
   async parse(input: ParseInput, sink: (batch: ParseOutput) => void): Promise<void> {
-    const { filePath, startOffset, maxLineBytes, resumeState } = input;
+    const { filePath, fileId, startOffset, maxLineBytes, resumeState } = input;
+    const fileScope = scopedFileId(fileId ?? filePath);
 
     const rawTurns: RawClaudeTurn[] = [];
     const toolEvents: ToolEvent[] = [];
@@ -51,14 +54,12 @@ export class ClaudeParser implements SourceParser {
 
     // Last-wins dedup state
     let currentRequestId: string | null = null;
+    let currentGroupKey: string | null = null;
     let bufferedTurn: RawClaudeTurn | null = null;
     let bufferedTools: ToolEvent[] = [];
 
-    // Recent requestIds for resume boundary detection
-    const recentIds: string[] = resumeState?.recentRequestIds?.slice() ?? [];
-
-    // Set of requestIds from resume state for boundary detection
-    const resumeIds = new Set(recentIds);
+    const recentRequests = (resumeState?.recentRequestIds ?? []).map(decodeRecentRequest);
+    const resumeLastRequest = recentRequests[recentRequests.length - 1];
 
     function flushBuffered() {
       if (bufferedTurn) {
@@ -69,7 +70,18 @@ export class ClaudeParser implements SourceParser {
       bufferedTools = [];
     }
 
-    const stats = await readLines({ filePath, startOffset, maxLineBytes }, (line, _byteOffset, isCompleteLine) => {
+    function rememberRecentRequest(requestId: string, groupKey: string) {
+      const last = recentRequests[recentRequests.length - 1];
+      if (last?.requestId === requestId && last.groupKey === groupKey) {
+        return;
+      }
+      recentRequests.push({ requestId, groupKey });
+      while (recentRequests.length > MAX_RECENT_IDS) {
+        recentRequests.shift();
+      }
+    }
+
+    const stats = await readLines({ filePath, startOffset, maxLineBytes }, (line, byteOffset, isCompleteLine) => {
       // Fast substring check: only parse lines with both "assistant" and "usage"
       if (!line.includes('"assistant"') || !line.includes('"usage"')) {
         return;
@@ -102,8 +114,16 @@ export class ClaudeParser implements SourceParser {
       }
       const sessionId: string = parsed.sessionId ?? "";
       const requestId: string = parsed.requestId || parsed.uuid || "";
-      const dedupKey = `claude:${sessionId}:${requestId}`;
       const timestamp = parsed.timestamp ? new Date(parsed.timestamp).getTime() : 0;
+      const isResumeContinuation =
+        currentRequestId === null &&
+        resumeLastRequest?.requestId === requestId;
+      const groupKey = currentRequestId === requestId
+        ? currentGroupKey ?? claudeGroupKey(sessionId, fileScope, requestId, byteOffset)
+        : isResumeContinuation
+          ? resumeLastRequest.groupKey ?? legacyClaudeGroupKey(sessionId, requestId)
+          : claudeGroupKey(sessionId, fileScope, requestId, byteOffset);
+      const dedupKey = groupKey;
 
       // Capture session meta from first assistant line
       if (!sessionMeta && sessionId) {
@@ -164,27 +184,23 @@ export class ClaudeParser implements SourceParser {
         bufferedTools = turnTools;
       } else {
         // New requestId — check if it's a resume boundary continuation
-        if (currentRequestId === null && resumeIds.has(requestId)) {
+        if (isResumeContinuation) {
           // Continuation from resume — still last-wins, don't flush
           currentRequestId = requestId;
+          currentGroupKey = groupKey;
           bufferedTurn = turn;
           bufferedTools = turnTools;
         } else {
           // Genuinely new group — flush previous
           flushBuffered();
           currentRequestId = requestId;
+          currentGroupKey = groupKey;
           bufferedTurn = turn;
           bufferedTools = turnTools;
         }
       }
 
-      // Track recent requestIds
-      if (!recentIds.includes(requestId)) {
-        recentIds.push(requestId);
-        if (recentIds.length > MAX_RECENT_IDS) {
-          recentIds.shift();
-        }
-      }
+      rememberRecentRequest(requestId, groupKey);
     });
 
     // Flush last buffered group
@@ -192,7 +208,7 @@ export class ClaudeParser implements SourceParser {
 
     const endState: ResumeState = {
       runningTotals: resumeState?.runningTotals ?? {},
-      recentRequestIds: recentIds.slice(-MAX_RECENT_IDS),
+      recentRequestIds: recentRequests.slice(-MAX_RECENT_IDS).map(encodeRecentRequest),
     };
 
     sink({
@@ -209,4 +225,33 @@ export class ClaudeParser implements SourceParser {
 
 function isPresent<T>(value: T | null | undefined): value is T {
   return value !== null && value !== undefined;
+}
+
+function scopedFileId(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function claudeGroupKey(sessionId: string, fileScope: string, requestId: string, groupStartOffset: number): string {
+  return `claude:${sessionId}:${fileScope}:${requestId}:${groupStartOffset}`;
+}
+
+function legacyClaudeGroupKey(sessionId: string, requestId: string): string {
+  return `claude:${sessionId}:${requestId}`;
+}
+
+function encodeRecentRequest(entry: { requestId: string; groupKey?: string }): string {
+  return entry.groupKey
+    ? `${entry.requestId}${RECENT_REQUEST_SEPARATOR}${entry.groupKey}`
+    : entry.requestId;
+}
+
+function decodeRecentRequest(value: string): { requestId: string; groupKey?: string } {
+  const separatorIndex = value.indexOf(RECENT_REQUEST_SEPARATOR);
+  if (separatorIndex < 0) {
+    return { requestId: value };
+  }
+  return {
+    requestId: value.slice(0, separatorIndex),
+    groupKey: value.slice(separatorIndex + RECENT_REQUEST_SEPARATOR.length),
+  };
 }

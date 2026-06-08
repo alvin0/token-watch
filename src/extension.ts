@@ -51,6 +51,16 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("token-watch.rescan", () => {
       coordinator?.rescan();
     }),
+    vscode.commands.registerCommand("token-watch.resetDatabase", async () => {
+      const confirmed = await vscode.window.showWarningMessage(
+        "Token Watch: Reset database? This clears all stored token data and cursors, then rebuilds from logs.",
+        { modal: true },
+        "Reset",
+      );
+      if (confirmed === "Reset") {
+        coordinator?.resetDatabase();
+      }
+    }),
   );
 
   // Status bar

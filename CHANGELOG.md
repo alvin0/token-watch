@@ -2,6 +2,31 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.0.5]
+
+- Improved Linux log discovery by falling back to per-directory watchers when
+  recursive `fs.watch` is unavailable, so nested Codex and Claude logs are picked
+  up more reliably.
+- Broadened Codex discovery to include all `.jsonl` session files under the
+  configured sessions root, not only `rollout-*.jsonl` files.
+- Changed the default historical backfill cap to unlimited (`0`) so first-time
+  collection does not silently skip older logs on new machines or servers.
+- Added a `Reset Database` command and sidebar button. It clears stored token
+  data, cursors, catalog state, runtime pricing rows, and stale metadata, then
+  rebuilds from the available logs.
+- Restored `Rescan Logs` as a full rebuild path for manual recovery while keeping
+  background watch scans incremental.
+- Hardened Codex resume parsing so incremental reads preserve session/model,
+  effort, sandbox, approval, and pending tool context across file boundaries.
+- Hardened Claude deduplication across repeated request IDs and append overlap,
+  including recovery for legacy Claude dedup keys.
+- Made reingest safer for active files by keeping the previous good contribution
+  until a full reparse succeeds, and by yielding during large ingest batches to
+  keep the worker responsive.
+- Added regression coverage for Linux watcher fallback, broader discovery,
+  parser resume behavior, append-overlap reingest, full reset, and command
+  registration.
+
 ## [0.0.4]
 
 - Added an hourly `Usage trend` chart to the `today` view, with Tokens, Cost,

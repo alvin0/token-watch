@@ -99,6 +99,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       case "rescan":
         this.coordinator.rescan();
         break;
+      case "resetDatabase":
+        vscode.commands.executeCommand("token-watch.resetDatabase");
+        break;
       case "updatePricing":
         this.coordinator.updatePricing(message.table);
         break;

@@ -40,6 +40,7 @@ const SMALL_FILE_THRESHOLD_BYTES = 5 * 1024 * 1024;
 const RECENT_FILE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const STORED_PRIORITY_LIMIT = 500;
+const EVENT_LOOP_YIELD_INTERVAL = 25;
 
 /**
  * Pure decision function — no I/O. Determines what action to take for a
@@ -119,27 +120,29 @@ export async function ingestFile(
     }
   }
 
-  // Reingest: subtract old contribution, delete old rows (Req 4.10)
-  if (decision === "reingest" && cursor) {
-    store.subtractFileContribution(cursor.fileId);
-    store.deleteFileRows(cursor.fileId);
-  }
-
-  // Determine parse start offset and resume state
-  const startOffset = decision === "append" && cursor ? cursor.lastByteOffset : 0;
-  const resumeState: ResumeState | undefined =
-    decision === "append" && cursor
-      ? { runningTotals: cursor.runningTotals, recentRequestIds: cursor.recentRequestIds }
-      : undefined;
-
-  // Parse
   const parser = candidate.source === "codex" ? new CodexParser() : new ClaudeParser();
-  let parseOutput: ParseOutput | undefined;
+  const parseForDecision = async (parseDecision: IngestDecision): Promise<ParseOutput | undefined> => {
+    const startOffset = parseDecision === "append" && cursor ? cursor.lastByteOffset : 0;
+    const resumeState: ResumeState | undefined =
+      parseDecision === "append" && cursor
+        ? { runningTotals: cursor.runningTotals, recentRequestIds: cursor.recentRequestIds }
+        : undefined;
 
-  await parser.parse(
-    { filePath: candidate.filePath, fileId: candidate.fileId, startOffset, maxLineBytes: options.maxLineBytes, resumeState },
-    (batch) => { parseOutput = batch; },
-  );
+    let output: ParseOutput | undefined;
+    await parser.parse(
+      {
+        filePath: candidate.filePath,
+        fileId: candidate.fileId,
+        startOffset,
+        maxLineBytes: options.maxLineBytes,
+        resumeState,
+      },
+      (batch) => { output = batch; },
+    );
+    return output;
+  };
+
+  let parseOutput = await parseForDecision(decision);
 
   if (!parseOutput) {
     // No output — still update cursor to reflect current stat
@@ -170,12 +173,28 @@ export async function ingestFile(
 
   // Normalize raw turns → UsageRecords
   // Drop turns with no valid timestamp (would land in 1970-01-01 bucket)
-  const parsedRecords: UsageRecord[] = parseOutput.rawTurns
+  let parsedRecords: UsageRecord[] = parseOutput.rawTurns
     .map(normalize)
     .filter((r) => r.timestamp > 0);
-  const parsedToolEvents: ToolEvent[] = parseOutput.toolEvents
+  let parsedToolEvents: ToolEvent[] = parseOutput.toolEvents
     .filter((e) => e.timestamp > 0);
-  const { records, toolEvents } = dedupeParsedRecords(parsedRecords, parsedToolEvents);
+  let { records, toolEvents } = dedupeParsedRecords(parsedRecords, parsedToolEvents);
+
+  if (decision === "append" && cursor && hasOverlappingRecordKeys(cursor.contribution, records)) {
+    const reparseOutput = await parseForDecision("reingest");
+    if (!reparseOutput || reparseOutput.endOffset < candidate.size) {
+      return empty("skip");
+    }
+
+    decision = "reingest";
+    parseOutput = reparseOutput;
+    parsedRecords = parseOutput.rawTurns
+      .map(normalize)
+      .filter((r) => r.timestamp > 0);
+    parsedToolEvents = parseOutput.toolEvents
+      .filter((e) => e.timestamp > 0);
+    ({ records, toolEvents } = dedupeParsedRecords(parsedRecords, parsedToolEvents));
+  }
 
   // Build contribution (daily + session aggregates)
   const contribution = buildContribution(records, toolEvents, pricing);
@@ -187,6 +206,13 @@ export async function ingestFile(
 
   // Build StoreBatch
   const batch: StoreBatch = { records, toolEvents, contribution };
+
+  // Reingest: subtract old contribution only after a successful parse. This
+  // keeps the previous good data if an active file ends at a partial JSON line.
+  if (decision === "reingest" && cursor) {
+    store.subtractFileContribution(cursor.fileId);
+    store.deleteFileRows(cursor.fileId);
+  }
 
   // Apply to store
   store.applyFileResult(candidate.fileId, batch);
@@ -264,6 +290,9 @@ export async function ingestAll(
     totalMalformed += fileResult.malformedCount;
     totalOversized += fileResult.oversizedCount;
     onProgress?.(result.processed, total, fileResult);
+    if (result.processed % EVENT_LOOP_YIELD_INTERVAL === 0) {
+      await yieldToEventLoop();
+    }
   }
 
   // Persist quality metrics — incremental appends only see new issues, so we
@@ -365,6 +394,37 @@ function isEmptyContribution(contribution: FileContribution): boolean {
     contribution.sessions.length === 0 &&
     contribution.recordKeys.length === 0 &&
     contribution.toolEventCount === 0;
+}
+
+function hasOverlappingRecordKeys(contribution: FileContribution, records: UsageRecord[]): boolean {
+  if (records.length === 0 || contribution.recordKeys.length === 0) {
+    return false;
+  }
+  const existingKeys = new Set(contribution.recordKeys);
+  return records.some((record) => {
+    if (existingKeys.has(record.dedupKey)) {
+      return true;
+    }
+    const legacyKey = legacyClaudeRecordKey(record);
+    return legacyKey ? existingKeys.has(legacyKey) : false;
+  });
+}
+
+function legacyClaudeRecordKey(record: UsageRecord): string | undefined {
+  if (record.source !== "claude") {
+    return undefined;
+  }
+  const parts = record.dedupKey.split(":");
+  if (parts.length < 5) {
+    return undefined;
+  }
+  return `claude:${record.sessionId}:${parts[3]}`;
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
 }
 
 function dedupeParsedRecords(

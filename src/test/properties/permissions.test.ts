@@ -4,7 +4,7 @@
 // ingestion continues with the other (valid) source.
 
 import * as assert from "assert";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -88,6 +88,49 @@ suite("Permissions/missing-dir integration test", () => {
     assert.ok(candidates[0].filePath.endsWith("agent-a.jsonl"));
   });
 
+  test("Codex non-rollout JSONL files are discovered", () => {
+    const codexRoot = join(tmpDir, "codex-sessions");
+    const dayDir = join(codexRoot, "2026", "06", "08");
+    mkdirSync(dayDir, { recursive: true });
+    const codexFile = join(dayDir, "session-live.jsonl");
+    writeFileSync(codexFile, '{"type":"session_meta"}\n');
+
+    const candidates = scan({
+      codex: { enabled: true, path: codexRoot },
+      claude: { enabled: false, path: join(tmpDir, "no-claude") },
+    });
+
+    assert.strictEqual(candidates.length, 1);
+    assert.strictEqual(candidates[0].source, "codex");
+    assert.strictEqual(candidates[0].filePath, codexFile);
+  });
+
+  test("Symlinked source subdirectories are discovered", function (this: Mocha.Context) {
+    const codexRoot = join(tmpDir, "codex-sessions");
+    const realRoot = join(tmpDir, "real-codex-sessions");
+    const realDayDir = join(realRoot, "2026", "06", "08");
+    const linkedYearDir = join(codexRoot, "2026");
+    mkdirSync(codexRoot, { recursive: true });
+    mkdirSync(realDayDir, { recursive: true });
+    const codexFile = join(linkedYearDir, "06", "08", "session-live.jsonl");
+    writeFileSync(join(realDayDir, "session-live.jsonl"), '{"type":"session_meta"}\n');
+
+    try {
+      symlinkSync(join(realRoot, "2026"), linkedYearDir, process.platform === "win32" ? "junction" : "dir");
+    } catch {
+      this.skip();
+    }
+
+    const candidates = scan({
+      codex: { enabled: true, path: codexRoot },
+      claude: { enabled: false, path: join(tmpDir, "no-claude") },
+    });
+
+    assert.strictEqual(candidates.length, 1);
+    assert.strictEqual(candidates[0].source, "codex");
+    assert.strictEqual(candidates[0].filePath, codexFile);
+  });
+
   test("scanChanged returns only changed log candidates", () => {
     const codexRoot = join(tmpDir, "codex-sessions");
     const codexDir = join(codexRoot, "2026", "06", "03");
@@ -159,6 +202,24 @@ suite("Permissions/missing-dir integration test", () => {
     writeFileSync(codexFile, '{"type":"session_meta"}\n');
 
     const candidates = scanChanged([codexRoot], {
+      codex: { enabled: true, path: codexRoot },
+      claude: { enabled: false, path: join(tmpDir, "no-claude") },
+    });
+
+    assert.strictEqual(candidates.length, 1);
+    assert.strictEqual(candidates[0].source, "codex");
+    assert.strictEqual(candidates[0].filePath, codexFile);
+  });
+
+  test("scanChanged accepts non-rollout Codex JSONL files", () => {
+    const codexRoot = join(tmpDir, "codex-sessions");
+    const dayDir = join(codexRoot, "2026", "06", "08");
+    mkdirSync(dayDir, { recursive: true });
+
+    const codexFile = join(dayDir, "session-live.jsonl");
+    writeFileSync(codexFile, '{"type":"session_meta"}\n');
+
+    const candidates = scanChanged([codexFile], {
       codex: { enabled: true, path: codexRoot },
       claude: { enabled: false, path: join(tmpDir, "no-claude") },
     });

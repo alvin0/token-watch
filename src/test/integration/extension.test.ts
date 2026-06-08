@@ -32,6 +32,17 @@ suite("Extension integration tests", () => {
     );
   });
 
+  test("token-watch.resetDatabase command is registered", async () => {
+    const ext = vscode.extensions.getExtension(EXTENSION_ID);
+    assert.ok(ext, "Extension should be found");
+    await ext.activate();
+    const commands = await vscode.commands.getCommands(true);
+    assert.ok(
+      commands.includes("token-watch.resetDatabase"),
+      "token-watch.resetDatabase should be registered",
+    );
+  });
+
   test("Status bar item present (openPanel command exists)", async () => {
     // The status bar item is wired to token-watch.openPanel.
     // We verify the command is registered as a proxy for the status bar item.

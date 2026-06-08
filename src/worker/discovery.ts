@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
 import { join, basename, isAbsolute, relative, resolve, sep } from "node:path";
 import type { Source } from "../shared/types.js";
 
@@ -91,11 +91,10 @@ function candidatesForChangedPath(filePath: string, roots: SourceRoots): Candida
   return candidates;
 }
 
-/** Recursively find all `rollout-*.jsonl` files under the Codex sessions root. */
+/** Recursively find all `.jsonl` files under the Codex sessions root. */
 function walkCodex(root: string, out: CandidateFile[]): void {
   walkDir(root, (filePath) => {
-    const name = basename(filePath);
-    if (name.startsWith("rollout-") && name.endsWith(".jsonl")) {
+    if (isJsonl(filePath)) {
       const candidate = statCandidate(filePath, "codex");
       if (candidate) {
         out.push(candidate);
@@ -121,8 +120,7 @@ function candidateForChangedPath(filePath: string, roots: SourceRoots): Candidat
     if (isDirSafe(filePath)) {
       return null;
     }
-    const name = basename(filePath);
-    if (name.startsWith("rollout-") && name.endsWith(".jsonl")) {
+    if (isJsonl(filePath)) {
       return statCandidate(filePath, "codex");
     }
   }
@@ -151,12 +149,18 @@ function statCandidate(filePath: string, source: Source): CandidateFile | null {
 }
 
 /** Recursively walk a directory, calling `visitor` for each file path. */
-function walkDir(dir: string, visitor: (filePath: string) => void): void {
+function walkDir(dir: string, visitor: (filePath: string) => void, seenDirs = new Set<string>()): void {
+  const realDir = realPathSafe(dir);
+  if (seenDirs.has(realDir)) {
+    return;
+  }
+  seenDirs.add(realDir);
+
   const entries = readDirSafe(dir);
   for (const entry of entries) {
     const full = join(dir, entry);
     if (isDirSafe(full)) {
-      walkDir(full, visitor);
+      walkDir(full, visitor, seenDirs);
     } else {
       visitor(full);
     }
@@ -179,6 +183,18 @@ function isDirSafe(p: string): boolean {
   } catch {
     return false;
   }
+}
+
+function realPathSafe(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+function isJsonl(filePath: string): boolean {
+  return basename(filePath).endsWith(".jsonl");
 }
 
 function isInside(filePath: string, root: string): boolean {
