@@ -152,8 +152,7 @@ export type RawTurn = RawCodexTurn | RawClaudeTurn;
 
 /**
  * Per-model pricing rates (USD per 1K tokens, per bucket). All fields optional so
- * a partial override only adjusts the buckets it specifies; absent buckets fall
- * back to bundled defaults (Req 6.4, 10.3). A model with no resolvable rate yields
+ * custom-model additions can provide only the buckets they need. A model with no resolvable rate yields
  * an "unknown cost" turn rather than a wrong cost.
  *
  * Defined here (the shared module) so both the protocol and the worker pricing
@@ -166,5 +165,5 @@ export interface ModelRate {
   outputPer1K?: number;
 }
 
-/** Map of base model id → its rates. Bundled defaults merged with user overrides. */
+/** Map of base model id → its rates. Bundled defaults win for known models. */
 export type PricingTable = Record<string, ModelRate>;

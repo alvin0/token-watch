@@ -9,11 +9,30 @@
  */
 
 import type { ModelRate, PricingTable, CumulativeTotals, TokenSums } from "../shared/types.js";
+import { FALLBACK_RATE } from "../shared/defaultPricing.js";
+
+export const LONG_CONTEXT_THRESHOLD_TOKENS = 272_000;
+
+export interface PricingContext {
+  contextUsedTokens?: number;
+  forceLongContext?: boolean;
+}
 
 export interface CostBreakdown {
   usd: number;
   /** True when the model has no entry in the pricing table (Req 6.3, 7.13). */
   unknown: boolean;
+  effectiveModel: string;
+  longContextApplied: boolean;
+  longContextMissingRate: boolean;
+}
+
+export interface LongContextStatus {
+  thresholdTokens: number;
+  requested: boolean;
+  applied: boolean;
+  missingRate: boolean;
+  effectiveModel: string;
 }
 
 export class PricingEngine {
@@ -22,22 +41,22 @@ export class PricingEngine {
 
   constructor(table: PricingTable, fallbackRate?: ModelRate) {
     this.table = table;
-    this.fallbackRate = fallbackRate ?? { inputPer1K: 0.003, cachedInputPer1K: 0.0015, outputPer1K: 0.012 };
+    this.fallbackRate = fallbackRate ?? FALLBACK_RATE;
   }
 
   /**
    * Compute cost for a set of cumulative token totals (e.g. from parser resume state).
    */
-  costOfTokens(model: string, t: CumulativeTotals): CostBreakdown {
-    return this.compute(model, t);
+  costOfTokens(model: string, t: CumulativeTotals, context?: PricingContext): CostBreakdown {
+    return this.compute(model, t, context);
   }
 
   /**
    * Compute cost for aggregate token sums (e.g. from stored daily/session aggregates).
    * Same logic — TokenSums has the same five fields.
    */
-  costOfAggregate(model: string, agg: TokenSums): CostBreakdown {
-    return this.compute(model, agg);
+  costOfAggregate(model: string, agg: TokenSums, context?: PricingContext): CostBreakdown {
+    return this.compute(model, agg, context);
   }
 
   /**
@@ -57,8 +76,42 @@ export class PricingEngine {
     return { ...this.fallbackRate };
   }
 
-  private compute(model: string, t: CumulativeTotals | TokenSums): CostBreakdown {
-    let rate: ModelRate | undefined = Object.hasOwn(this.table, model) ? this.table[model] : undefined;
+  hasLongContextRate(model: string): boolean {
+    return Object.hasOwn(this.table, longContextModelId(model));
+  }
+
+  longContextStatus(model: string, contextUsedTokens?: number, forceLongContext = false): LongContextStatus {
+    const requested = forceLongContext ||
+      (contextUsedTokens !== undefined && contextUsedTokens > LONG_CONTEXT_THRESHOLD_TOKENS);
+    if (!requested) {
+      return {
+        thresholdTokens: LONG_CONTEXT_THRESHOLD_TOKENS,
+        requested: false,
+        applied: false,
+        missingRate: false,
+        effectiveModel: model,
+      };
+    }
+
+    const effectiveModel = longContextModelId(model);
+    const hasRate = Object.hasOwn(this.table, effectiveModel);
+    return {
+      thresholdTokens: LONG_CONTEXT_THRESHOLD_TOKENS,
+      requested: true,
+      applied: hasRate,
+      missingRate: !hasRate,
+      effectiveModel: hasRate ? effectiveModel : model,
+    };
+  }
+
+  private compute(model: string, t: CumulativeTotals | TokenSums, context?: PricingContext): CostBreakdown {
+    const longContext = this.longContextStatus(
+      model,
+      context?.contextUsedTokens,
+      context?.forceLongContext,
+    );
+    const effectiveModel = longContext.effectiveModel;
+    let rate: ModelRate | undefined = Object.hasOwn(this.table, effectiveModel) ? this.table[effectiveModel] : undefined;
     let unknown = false;
 
     if (!rate) {
@@ -75,6 +128,16 @@ export class PricingEngine {
       // Reasoning tokens billed at output rate (documented assumption)
       (t.reasoningTokens / 1000) * (rate.outputPer1K ?? 0);
 
-    return { usd, unknown };
+    return {
+      usd,
+      unknown,
+      effectiveModel,
+      longContextApplied: longContext.applied,
+      longContextMissingRate: longContext.missingRate,
+    };
   }
+}
+
+function longContextModelId(model: string): string {
+  return model.endsWith("-long-context") ? model : `${model}-long-context`;
 }

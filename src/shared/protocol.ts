@@ -77,6 +77,69 @@ export interface RateLimitInfo {
   tsUtc?: number;
 }
 
+export interface PricingDiagnostics {
+  ignoredKnownModelOverrides: string[];
+  ignoredFallbackOverride: boolean;
+  customModelOverrides: string[];
+}
+
+export interface LongContextDiagnosticRow {
+  model: string;
+  effectiveModel?: string;
+  sessions: number;
+  turns: number;
+  maxContextUsedTokens: number;
+}
+
+export interface CrossingMidnightSessionDiagnostic {
+  source: Source;
+  sessionId: string;
+  workspace: string;
+  firstDay: string;
+  lastDay: string;
+  totalTokens: number;
+  costUsd: number;
+}
+
+export interface FolderDayCostComparison {
+  day: string;
+  eventCostUsd: number;
+  folderCostUsd: number;
+  deltaUsd: number;
+}
+
+export interface FolderDayMismatchDiagnostic {
+  filePath: string;
+  folderDay: string;
+  eventDays: string[];
+  costUsd: number;
+}
+
+export interface ReconciliationMismatchDiagnostic {
+  filePath: string;
+  sessionId: string;
+  finalTotalTokens: number;
+  ingestedTotalTokens: number;
+  deltaTokens: number;
+}
+
+export interface DiagnosticsReport {
+  generatedAtUtc: number;
+  pricing: PricingDiagnostics;
+  longContext: {
+    thresholdTokens: number;
+    applied: LongContextDiagnosticRow[];
+    missingRates: LongContextDiagnosticRow[];
+  };
+  crossingMidnightSessions: CrossingMidnightSessionDiagnostic[];
+  folderDayComparison: FolderDayCostComparison[];
+  folderDayMismatches: FolderDayMismatchDiagnostic[];
+  reconciliation: {
+    checkedSessions: number;
+    mismatches: ReconciliationMismatchDiagnostic[];
+  };
+}
+
 /** Secondary display currency, so the WebView formats costs without round-trips (Req 6.5). */
 export interface DisplayCurrencyConfig {
   secondary?: string;           // ISO code, e.g. "JPY"; absent → USD only
@@ -95,6 +158,7 @@ export type WebviewRequest =
 /** Host → WebView messages. */
 export type HostMessage =
   | { type: "queryResult"; id: string; result: AnalyticsResult }
+  | { type: "queryError"; id: string; message: string }
   | { type: "dataChanged" }                                          // Req 8.7
   | { type: "ingestProgress"; processed: number; total: number; partial: boolean } // Req 4.17
   | {

@@ -155,7 +155,10 @@ export class CodexParser implements SourceParser {
           const dedupKey = `codex:${currentSessionId}:${fileScope}:${byteOffset}`;
           const timestamp = parsed.timestamp ? new Date(parsed.timestamp).getTime() : 0;
 
-          // Determine token usage: prefer last_token_usage, else derive delta
+          // Determine token usage from cumulative totals when available. Some
+          // Codex logs repeat token_count lines with a non-zero last_token_usage
+          // while total_token_usage has not advanced; the cumulative delta is
+          // the safer accounting source and still splits by the event timestamp.
           let inputTokens: number;
           let cachedInputTokens: number;
           let outputTokens: number;
@@ -165,36 +168,35 @@ export class CodexParser implements SourceParser {
           const last = info.last_token_usage;
           const total = info.total_token_usage;
 
-          if (last && isPresent(last.input_tokens)) {
+          if (total) {
+            const prev = runningTotals[currentSessionId] ?? emptyTotals();
+            const delta = deltaFromTotal(total, prev);
+            const hasNegativeDelta =
+              delta.inputTokens < 0 ||
+              delta.outputTokens < 0 ||
+              delta.cacheReadTokens < 0 ||
+              delta.reasoningTokens < 0;
+
+            runningTotals[currentSessionId] = totalsFromUsage(total);
+
+            if (hasNegativeDelta || isZeroDelta(delta)) {
+              pendingToolNames = [];
+              return;
+            }
+
+            inputTokens = delta.inputTokens;
+            cachedInputTokens = delta.cacheReadTokens;
+            outputTokens = delta.outputTokens;
+            reasoningOutputTokens = delta.reasoningTokens;
+            totalTokens = inputTokens + outputTokens;
+          } else if (last && isPresent(last.input_tokens)) {
             inputTokens = last.input_tokens;
             cachedInputTokens = last.cached_input_tokens ?? 0;
             outputTokens = last.output_tokens ?? 0;
             reasoningOutputTokens = last.reasoning_output_tokens ?? 0;
             totalTokens = last.total_tokens ?? (inputTokens + outputTokens);
-          } else if (total) {
-            // Derive delta from running totals
-            const prev = runningTotals[currentSessionId] ?? {
-              inputTokens: 0, outputTokens: 0,
-              cacheReadTokens: 0, cacheCreationTokens: 0, reasoningTokens: 0,
-            };
-            inputTokens = (total.input_tokens ?? 0) - prev.inputTokens;
-            cachedInputTokens = (total.cached_input_tokens ?? 0) - prev.cacheReadTokens;
-            outputTokens = (total.output_tokens ?? 0) - prev.outputTokens;
-            reasoningOutputTokens = (total.reasoning_output_tokens ?? 0) - prev.reasoningTokens;
-            totalTokens = (total.total_tokens ?? 0) - (prev.inputTokens + prev.outputTokens);
           } else {
             return; // No usable token data
-          }
-
-          // Update running totals from total_token_usage
-          if (total) {
-            runningTotals[currentSessionId] = {
-              inputTokens: total.input_tokens ?? 0,
-              outputTokens: total.output_tokens ?? 0,
-              cacheReadTokens: total.cached_input_tokens ?? 0,
-              cacheCreationTokens: 0, // Codex doesn't report cache creation separately
-              reasoningTokens: total.reasoning_output_tokens ?? 0,
-            };
           }
 
           // Build TurnMeta
@@ -327,6 +329,44 @@ function decodeCodexResumeContext(values: string[] | undefined): CodexResumeCont
   } catch {
     return undefined;
   }
+}
+
+function emptyTotals(): CumulativeTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    reasoningTokens: 0,
+  };
+}
+
+function totalsFromUsage(usage: CodexTokenUsage): CumulativeTotals {
+  return {
+    inputTokens: usage.input_tokens ?? 0,
+    outputTokens: usage.output_tokens ?? 0,
+    cacheReadTokens: usage.cached_input_tokens ?? 0,
+    cacheCreationTokens: 0,
+    reasoningTokens: usage.reasoning_output_tokens ?? 0,
+  };
+}
+
+function deltaFromTotal(total: CodexTokenUsage, prev: CumulativeTotals): CumulativeTotals {
+  return {
+    inputTokens: (total.input_tokens ?? 0) - prev.inputTokens,
+    outputTokens: (total.output_tokens ?? 0) - prev.outputTokens,
+    cacheReadTokens: (total.cached_input_tokens ?? 0) - prev.cacheReadTokens,
+    cacheCreationTokens: 0,
+    reasoningTokens: (total.reasoning_output_tokens ?? 0) - prev.reasoningTokens,
+  };
+}
+
+function isZeroDelta(delta: CumulativeTotals): boolean {
+  return delta.inputTokens === 0 &&
+    delta.outputTokens === 0 &&
+    delta.cacheReadTokens === 0 &&
+    delta.cacheCreationTokens === 0 &&
+    delta.reasoningTokens === 0;
 }
 
 function isPresent<T>(value: T | null | undefined): value is T {

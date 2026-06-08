@@ -2,6 +2,29 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.0.6]
+
+- Updated bundled pricing for current GPT and Claude models, including GPT-5.4,
+  GPT-5.5, GPT-4.1, o-series, Claude Opus/Sonnet/Haiku families, and snapshot
+  aliases used by logs.
+- Changed pricing overrides to custom-model additions only. Bundled pricing now
+  wins for known models, and stale `$fallback` overrides are ignored.
+- Added long-context pricing selection for GPT-5.4/GPT-5.5 sessions above the
+  272K context threshold, including rebuild support so fresh ingest and aggregate
+  rebuilds stay consistent.
+- Added a `Show Diagnostics` command with a Markdown report for ignored pricing
+  overrides, fallback models, long-context gaps, crossing-midnight sessions,
+  event-day versus folder-day drift, and Codex reconciliation warnings.
+- Added Codex reconciliation checks between cumulative `total_token_usage`
+  snapshots and the deltas ingested from file cursor contributions.
+- Improved append handling when a Codex session crosses into long-context pricing,
+  forcing a safe reparse instead of mixing normal and long-context rates.
+- Fixed the dashboard's initial empty state so it shows loading while the first
+  query is pending and surfaces query errors instead of staying on
+  `No usage data yet`.
+- Added regression coverage for pricing merge policy, GPT/Claude rates,
+  long-context pricing, diagnostics, reconciliation, and empty-query handling.
+
 ## [0.0.5]
 
 - Improved Linux log discovery by falling back to per-directory watchers when

@@ -14,6 +14,7 @@ suite("Token Watch Extension Test Suite", () => {
     assert.ok(commands.includes("token-watch.openPanel"));
     assert.ok(commands.includes("token-watch.rescan"));
     assert.ok(commands.includes("token-watch.resetDatabase"));
+    assert.ok(commands.includes("token-watch.showDiagnostics"));
   });
 
   test("Configuration default", () => {

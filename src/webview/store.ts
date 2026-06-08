@@ -33,6 +33,8 @@ export interface Filters {
 
 export interface DataSlice {
   results: Record<string, AnalyticsResult>;
+  queryPending: boolean;
+  queryError?: string;
 }
 
 export interface StatusSlice {
@@ -46,6 +48,7 @@ export interface StatusSlice {
 interface Actions {
   setFilter: (partial: Partial<Filters>) => void;
   applyResult: (id: string, result: AnalyticsResult) => void;
+  applyQueryError: (id: string, message: string) => void;
   setStatus: (status: Partial<StatusSlice>) => void;
   requestQuery: () => void;
 }
@@ -74,6 +77,8 @@ export const useStore = create<Store>((set, get) => ({
 
   // Data
   results: {},
+  queryPending: false,
+  queryError: undefined,
 
   // Status
   freshness: {},
@@ -102,8 +107,12 @@ export const useStore = create<Store>((set, get) => ({
         if (v.view !== result.view) { newResults[k] = v; }
       }
       newResults[id] = result;
-      return { results: newResults };
+      return { results: newResults, queryPending: false, queryError: undefined };
     });
+  },
+
+  applyQueryError(_id, message) {
+    set({ queryPending: false, queryError: message });
   },
 
   setStatus(status) {
@@ -131,6 +140,7 @@ export const useStore = create<Store>((set, get) => ({
       breakdownByVariant: s.breakdownByVariant || undefined,
     };
     const msg: WebviewRequest = { type: "query", id, query };
+    set({ queryPending: true, queryError: undefined });
     vscodeApi.postMessage(msg);
   },
 }));
@@ -142,10 +152,13 @@ window.addEventListener("message", (event: MessageEvent<HostMessage>) => {
   if (!msg || typeof msg !== "object" || !("type" in msg)) {
     return;
   }
-  const { applyResult, requestQuery, setStatus } = useStore.getState();
+  const { applyResult, applyQueryError, requestQuery, setStatus } = useStore.getState();
   switch (msg.type) {
     case "queryResult":
       applyResult(msg.id, msg.result);
+      break;
+    case "queryError":
+      applyQueryError(msg.id, msg.message);
       break;
     case "dataChanged":
       requestQuery();

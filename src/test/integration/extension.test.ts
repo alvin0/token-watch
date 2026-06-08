@@ -43,6 +43,14 @@ suite("Extension integration tests", () => {
     );
   });
 
+  test("token-watch.showDiagnostics command is registered", async () => {
+    const commands = await vscode.commands.getCommands(true);
+    assert.ok(
+      commands.includes("token-watch.showDiagnostics"),
+      "token-watch.showDiagnostics should be registered",
+    );
+  });
+
   test("Status bar item present (openPanel command exists)", async () => {
     // The status bar item is wired to token-watch.openPanel.
     // We verify the command is registered as a proxy for the status bar item.

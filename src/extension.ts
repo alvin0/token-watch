@@ -6,6 +6,7 @@ import { IngestionCoordinator } from "./host/IngestionCoordinator";
 import { FileWatcher } from "./host/FileWatcher";
 import { StatusBarController } from "./host/StatusBarController";
 import { getConfig, toIngestConfig, loadPricingFromFile } from "./host/config";
+import type { DiagnosticsReport } from "./shared/protocol";
 
 let coordinator: IngestionCoordinator | undefined;
 const PERIODIC_SCAN_MS = 2 * 60 * 1000;
@@ -59,6 +60,23 @@ export async function activate(context: vscode.ExtensionContext) {
       );
       if (confirmed === "Reset") {
         coordinator?.resetDatabase();
+      }
+    }),
+    vscode.commands.registerCommand("token-watch.showDiagnostics", async () => {
+      if (!coordinator) {
+        vscode.window.showWarningMessage("Token Watch: worker is not available.");
+        return;
+      }
+      try {
+        const report = await coordinator.diagnostics();
+        const doc = await vscode.workspace.openTextDocument({
+          content: renderDiagnosticsReport(report),
+          language: "markdown",
+        });
+        await vscode.window.showTextDocument(doc, { preview: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        vscode.window.showErrorMessage(`Token Watch diagnostics failed: ${message}`);
       }
     }),
   );
@@ -125,4 +143,121 @@ export async function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
   // Coordinator dispose handles flush + terminate
+}
+
+function renderDiagnosticsReport(report: DiagnosticsReport): string {
+  const lines: string[] = [];
+  lines.push("# Token Watch Diagnostics");
+  lines.push("");
+  lines.push(`Generated: ${new Date(report.generatedAtUtc).toLocaleString()}`);
+  lines.push("");
+
+  lines.push("## Pricing");
+  lines.push(`Ignored known-model overrides: ${listOrNone(report.pricing.ignoredKnownModelOverrides)}`);
+  lines.push(`Ignored $fallback override: ${report.pricing.ignoredFallbackOverride ? "yes" : "no"}`);
+  lines.push(`Custom model overrides: ${listOrNone(report.pricing.customModelOverrides)}`);
+  lines.push("");
+
+  lines.push("## Long Context");
+  lines.push(`Threshold: ${report.longContext.thresholdTokens.toLocaleString()} input/context tokens`);
+  lines.push("");
+  lines.push("Applied:");
+  lines.push(...table(
+    ["Model", "Effective", "Sessions", "Turns", "Max context"],
+    report.longContext.applied.map((row) => [
+      row.model,
+      row.effectiveModel ?? "",
+      row.sessions,
+      row.turns,
+      row.maxContextUsedTokens.toLocaleString(),
+    ]),
+  ));
+  lines.push("");
+  lines.push("Missing rates:");
+  lines.push(...table(
+    ["Model", "Sessions", "Turns", "Max context"],
+    report.longContext.missingRates.map((row) => [
+      row.model,
+      row.sessions,
+      row.turns,
+      row.maxContextUsedTokens.toLocaleString(),
+    ]),
+  ));
+  lines.push("");
+
+  lines.push("## Crossing Midnight Sessions");
+  lines.push(...table(
+    ["Source", "Session", "First day", "Last day", "Tokens", "Cost"],
+    report.crossingMidnightSessions.map((row) => [
+      row.source,
+      shortId(row.sessionId),
+      row.firstDay,
+      row.lastDay,
+      row.totalTokens.toLocaleString(),
+      fmtUsd(row.costUsd),
+    ]),
+  ));
+  lines.push("");
+
+  lines.push("## Event Day vs Folder Day");
+  lines.push(...table(
+    ["Day", "Event cost", "Folder cost", "Delta"],
+    report.folderDayComparison.map((row) => [
+      row.day,
+      fmtUsd(row.eventCostUsd),
+      fmtUsd(row.folderCostUsd),
+      fmtUsd(row.deltaUsd),
+    ]),
+  ));
+  lines.push("");
+  lines.push("Mismatched files:");
+  lines.push(...table(
+    ["Folder day", "Event days", "Cost", "File"],
+    report.folderDayMismatches.map((row) => [
+      row.folderDay,
+      row.eventDays.join(", "),
+      fmtUsd(row.costUsd),
+      row.filePath,
+    ]),
+  ));
+  lines.push("");
+
+  lines.push("## Reconciliation");
+  lines.push(`Checked Codex file sessions: ${report.reconciliation.checkedSessions}`);
+  lines.push(...table(
+    ["Session", "Final total", "Ingested total", "Delta", "File"],
+    report.reconciliation.mismatches.map((row) => [
+      shortId(row.sessionId),
+      row.finalTotalTokens.toLocaleString(),
+      row.ingestedTotalTokens.toLocaleString(),
+      row.deltaTokens.toLocaleString(),
+      row.filePath,
+    ]),
+  ));
+  lines.push("");
+
+  return `${lines.join("\n")}\n`;
+}
+
+function table(headers: string[], rows: Array<Array<string | number>>): string[] {
+  if (rows.length === 0) {
+    return ["_None_"];
+  }
+  return [
+    `| ${headers.join(" | ")} |`,
+    `| ${headers.map(() => "---").join(" | ")} |`,
+    ...rows.map((row) => `| ${row.map(String).join(" | ")} |`),
+  ];
+}
+
+function listOrNone(values: string[]): string {
+  return values.length > 0 ? values.join(", ") : "none";
+}
+
+function fmtUsd(value: number): string {
+  return `$${value.toFixed(4)}`;
+}
+
+function shortId(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 12)}...` : value;
 }

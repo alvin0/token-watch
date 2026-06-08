@@ -639,6 +639,17 @@ export class UsageStore {
     return Number(result[0].values[0][0]);
   }
 
+  usageRecordCountForSource(source: Source): number {
+    const result = this.getDb().exec(
+      "SELECT COUNT(*) FROM usage_record WHERE source = ?",
+      [source],
+    );
+    if (result.length === 0 || result[0].values.length === 0) {
+      return 0;
+    }
+    return Number(result[0].values[0][0]);
+  }
+
   usageRecordSources(): Set<Source> {
     const result = this.getDb().exec("SELECT DISTINCT source FROM usage_record");
     const sources = new Set<Source>();
@@ -652,6 +663,36 @@ export class UsageStore {
       }
     }
     return sources;
+  }
+
+  storedFileIdentities(): Array<{ source: Source; filePath: string; fileId: string }> {
+    const result = this.getDb().exec(
+      `SELECT DISTINCT c.source, c.file_path, c.file_id
+       FROM file_cursor c
+       WHERE EXISTS (
+         SELECT 1
+         FROM usage_record r
+         WHERE r.file_id = c.file_id
+           AND r.source = c.source
+       )`,
+    );
+    const files: Array<{ source: Source; filePath: string; fileId: string }> = [];
+    if (result.length === 0) {
+      return files;
+    }
+    for (const row of result[0].values) {
+      const source = row[0];
+      const filePath = row[1];
+      const fileId = row[2];
+      if (
+        (source === "codex" || source === "claude") &&
+        typeof filePath === "string" &&
+        typeof fileId === "string"
+      ) {
+        files.push({ source, filePath, fileId });
+      }
+    }
+    return files;
   }
 
   /**

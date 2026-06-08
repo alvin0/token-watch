@@ -1,16 +1,16 @@
 import * as assert from "assert";
 
-import { dedupMigrationCanRebuild } from "../../worker/migration.js";
+import { dedupMigrationCanRebuild, storedFilesCanRebuild } from "../../worker/migration.js";
 import type { CandidateFile } from "../../worker/discovery.js";
 import type { Source } from "../../shared/types.js";
 
-function candidate(source: Source, filePath: string): CandidateFile {
+function candidate(source: Source, filePath: string, fileId = `${source}:1`): CandidateFile {
   return {
     filePath,
     source,
     size: 1,
     mtimeMs: 1,
-    fileId: `${source}:1`,
+    fileId,
   };
 }
 
@@ -42,6 +42,29 @@ suite("Migration guard tests", () => {
         ],
       ),
       true,
+    );
+  });
+
+  test("stored-file rebuild guard requires exact path, source, and file identity coverage", () => {
+    const stored = [
+      { source: "codex" as const, filePath: "/tmp/a.jsonl", fileId: "codex:a" },
+      { source: "claude" as const, filePath: "/tmp/b.jsonl", fileId: "claude:b" },
+    ];
+
+    assert.strictEqual(
+      storedFilesCanRebuild(stored, [
+        candidate("codex", "/tmp/a.jsonl", "codex:a"),
+        candidate("claude", "/tmp/b.jsonl", "claude:b"),
+      ]),
+      true,
+    );
+
+    assert.strictEqual(
+      storedFilesCanRebuild(stored, [
+        candidate("codex", "/tmp/a.jsonl", "codex:a"),
+        candidate("claude", "/tmp/b.jsonl", "claude:changed"),
+      ]),
+      false,
     );
   });
 });

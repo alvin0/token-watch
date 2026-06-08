@@ -3,12 +3,13 @@ import { Worker } from "worker_threads";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import type { WorkerRequest, WorkerEvent, IngestConfig } from "../shared/workerProtocol.js";
-import type { AnalyticsQuery, AnalyticsResult, FreshnessInfo } from "../shared/protocol.js";
+import type { AnalyticsQuery, AnalyticsResult, DiagnosticsReport, FreshnessInfo } from "../shared/protocol.js";
 import type { PricingTable } from "../shared/types.js";
 
 export class IngestionCoordinator implements vscode.Disposable {
   private worker: Worker | null = null;
   private pendingQueries = new Map<string, { resolve: (r: AnalyticsResult) => void; reject: (e: Error) => void }>();
+  private pendingDiagnostics = new Map<string, { resolve: (r: DiagnosticsReport) => void; reject: (e: Error) => void }>();
   private readonly _onChanged = new vscode.EventEmitter<FreshnessInfo>();
   readonly onChanged = this._onChanged.event;
   private readonly _onProgress = new vscode.EventEmitter<{ processed: number; total: number; partial: boolean }>();
@@ -56,6 +57,17 @@ export class IngestionCoordinator implements vscode.Disposable {
     return new Promise<AnalyticsResult>((resolve, reject) => {
       this.pendingQueries.set(id, { resolve, reject });
       this.send({ type: "query", id, query: q });
+    });
+  }
+
+  async diagnostics(): Promise<DiagnosticsReport> {
+    if (!this.worker) {
+      throw new Error("Worker not available");
+    }
+    const id = randomUUID();
+    return new Promise<DiagnosticsReport>((resolve, reject) => {
+      this.pendingDiagnostics.set(id, { resolve, reject });
+      this.send({ type: "diagnostics", id });
     });
   }
 
@@ -115,6 +127,22 @@ export class IngestionCoordinator implements vscode.Disposable {
           }
           break;
         }
+        case "queryError": {
+          const pending = this.pendingQueries.get(event.id);
+          if (pending) {
+            this.pendingQueries.delete(event.id);
+            pending.reject(new Error(event.message));
+          }
+          break;
+        }
+        case "diagnosticsResult": {
+          const pending = this.pendingDiagnostics.get(event.id);
+          if (pending) {
+            this.pendingDiagnostics.delete(event.id);
+            pending.resolve(event.result);
+          }
+          break;
+        }
         case "ingestComplete":
           this._onChanged.fire(event.freshness);
           break;
@@ -150,6 +178,10 @@ export class IngestionCoordinator implements vscode.Disposable {
     for (const [id, { reject }] of this.pendingQueries) {
       reject(new Error(reason));
       this.pendingQueries.delete(id);
+    }
+    for (const [id, { reject }] of this.pendingDiagnostics) {
+      reject(new Error(reason));
+      this.pendingDiagnostics.delete(id);
     }
   }
 }

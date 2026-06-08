@@ -1,44 +1,15 @@
 // Token Watch — Pricing Configuration
 // Rates are USD per 1,000 tokens.
-// Edit this file to override default rates or add new models.
-// The extension reads this file on startup and when you rescan.
+// Bundled pricing wins for known models; this file only adds custom models.
+// "$fallback" entries are ignored to avoid stale fallback rates.
 //
 // Format per model:
 //   "model-name": {
-//     "inputPer1K": 0.003,        // cost per 1K input tokens
-//     "cachedInputPer1K": 0.0015, // cost per 1K cached input tokens
-//     "cacheCreationPer1K": 0.00375, // cost per 1K cache creation tokens (Claude only)
-//     "outputPer1K": 0.012        // cost per 1K output tokens (reasoning uses this rate too)
+//     "inputPer1K": 0.00125,
+//     "cachedInputPer1K": 0.000125,
+//     "cacheCreationPer1K": 0.00375,
+//     "outputPer1K": 0.01
 //   }
-//
-// "$fallback" is used for any model not listed here.
 
 {
-  "gpt-5": { "inputPer1K": 0.003, "cachedInputPer1K": 0.0015, "outputPer1K": 0.012 },
-  "gpt-5-codex": { "inputPer1K": 0.003, "cachedInputPer1K": 0.0015, "outputPer1K": 0.012 },
-  "gpt-5-codex-mini": { "inputPer1K": 0.001, "cachedInputPer1K": 0.0005, "outputPer1K": 0.004 },
-  "gpt-5-mini": { "inputPer1K": 0.001, "cachedInputPer1K": 0.0005, "outputPer1K": 0.004 },
-
-  "gpt-5.1-codex": { "inputPer1K": 0.003, "cachedInputPer1K": 0.0015, "outputPer1K": 0.012 },
-  "gpt-5.1-codex-max": { "inputPer1K": 0.005, "cachedInputPer1K": 0.0025, "outputPer1K": 0.015 },
-  "gpt-5.1-codex-mini": { "inputPer1K": 0.001, "cachedInputPer1K": 0.0005, "outputPer1K": 0.004 },
-
-  "gpt-5.2": { "inputPer1K": 0.003, "cachedInputPer1K": 0.0015, "outputPer1K": 0.012 },
-  "gpt-5.2-codex": { "inputPer1K": 0.003, "cachedInputPer1K": 0.0015, "outputPer1K": 0.012 },
-
-  "gpt-5.3-codex": { "inputPer1K": 0.004, "cachedInputPer1K": 0.002, "outputPer1K": 0.012 },
-  "gpt-5.3-codex-spark": { "inputPer1K": 0.002, "cachedInputPer1K": 0.001, "outputPer1K": 0.008 },
-
-  "gpt-5.4": { "inputPer1K": 0.004, "cachedInputPer1K": 0.002, "outputPer1K": 0.014 },
-  "gpt-5.4-mini": { "inputPer1K": 0.001, "cachedInputPer1K": 0.0005, "outputPer1K": 0.005 },
-
-  "gpt-5.5": { "inputPer1K": 0.005, "cachedInputPer1K": 0.0025, "outputPer1K": 0.015 },
-
-  "claude-sonnet-4-20250514": { "inputPer1K": 0.003, "cachedInputPer1K": 0.0003, "cacheCreationPer1K": 0.00375, "outputPer1K": 0.015 },
-  "claude-opus-4-20250514": { "inputPer1K": 0.015, "cachedInputPer1K": 0.0015, "cacheCreationPer1K": 0.01875, "outputPer1K": 0.075 },
-  "claude-opus-4.6": { "inputPer1K": 0.015, "cachedInputPer1K": 0.0015, "cacheCreationPer1K": 0.01875, "outputPer1K": 0.075 },
-  "claude-opus-4.7": { "inputPer1K": 0.015, "cachedInputPer1K": 0.0015, "cacheCreationPer1K": 0.01875, "outputPer1K": 0.075 },
-  "claude-opus-4.8": { "inputPer1K": 0.015, "cachedInputPer1K": 0.0015, "cacheCreationPer1K": 0.01875, "outputPer1K": 0.075 },
-
-  "$fallback": { "inputPer1K": 0.003, "cachedInputPer1K": 0.0015, "outputPer1K": 0.012 }
 }

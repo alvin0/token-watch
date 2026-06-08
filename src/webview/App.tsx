@@ -20,6 +20,8 @@ import type { Period } from "./lib/periodData";
 export function App() {
   const progress = useStore((s) => s.progress);
   const results = useStore((s) => s.results);
+  const queryPending = useStore((s) => s.queryPending);
+  const queryError = useStore((s) => s.queryError);
   const granularity = useStore((s) => s.granularity) as Period;
   const sources = useStore((s) => s.sources);
   const setFilter = useStore((s) => s.setFilter);
@@ -30,7 +32,10 @@ export function App() {
   if (isLoading && !hasData) {
     return <LoadingState processed={progress.processed} total={progress.total} />;
   }
-  if (!hasData) { return <EmptyState />; }
+  if (queryPending && !hasData) {
+    return <LoadingState processed={0} total={0} label="Loading usage data" />;
+  }
+  if (!hasData) { return <EmptyState error={queryError} />; }
 
   const status = isLoading ? "Scanning" : freshness.latestRecordUtc ? freshnessIsToday(freshness.latestRecordUtc) ? "Live" : "Stale" : "Paused";
   const activeSource = sources && sources.length === 1 ? sources[0] : "all";

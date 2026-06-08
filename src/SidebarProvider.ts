@@ -93,6 +93,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           (err) => {
             // Query failed — log but don't crash
             console.error("[TokenWatch] query error:", err);
+            const errorMessage = err instanceof Error ? err.message : "Unknown query error";
+            this.postMessage({ type: "queryError", id: message.id, message: errorMessage });
           },
         );
         break;

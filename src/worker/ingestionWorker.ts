@@ -13,13 +13,14 @@ import initSqlJs from "sql.js";
 import { UsageStore } from "./store/UsageStore.js";
 import { PricingEngine } from "./pricing.js";
 import { AnalyticsService } from "./analytics.js";
-import { DEFAULT_PRICING, FALLBACK_RATE } from "../shared/defaultPricing.js";
+import { mergePricingConfig, type PricingMergeAudit } from "../shared/pricingMerge.js";
 import { scan, scanChanged } from "./discovery.js";
 import { ingestAll } from "./ingest.js";
-import { dedupMigrationCanRebuild } from "./migration.js";
+import { buildDiagnosticsReport } from "./diagnostics.js";
+import { dedupMigrationCanRebuild, storedFilesCanRebuild } from "./migration.js";
 import * as queries from "./store/queries.js";
 import type { WorkerRequest, WorkerEvent, IngestConfig } from "../shared/workerProtocol.js";
-import type { PricingTable, ModelRate } from "../shared/types.js";
+import type { PricingTable } from "../shared/types.js";
 
 type ScanRequest = Extract<WorkerRequest, { type: "scanAndIngest" }>;
 
@@ -33,9 +34,16 @@ let pendingScan: ScanRequest | undefined;
 let pendingPricing: PricingTable | undefined;
 let pendingReset = false;
 let needsDedupKeyMigration = false;
+let needsCodexAccountingMigration = false;
+let pricingAudit: PricingMergeAudit = {
+  ignoredKnownModelOverrides: [],
+  ignoredFallbackOverride: false,
+  customModelOverrides: [],
+};
 
 const FULL_DISCOVERY_MIN_INTERVAL_MS = 2 * 60 * 1000;
 const CODEX_FILE_SCOPE_DEDUP_META_KEY = "codex_file_scoped_dedup_v1";
+const CODEX_CUMULATIVE_DELTA_META_KEY = "codex_cumulative_delta_accounting_v1";
 
 function post(event: WorkerEvent): void {
   parentPort!.postMessage(event);
@@ -72,26 +80,6 @@ function classifyErrorScope(err: unknown, fallbackScope: string): string {
     }
   }
   return fallbackScope;
-}
-
-/**
- * Extract a fallback rate from the merged pricing table's "$fallback" key,
- * falling back to the bundled FALLBACK_RATE constant.
- */
-function buildFallbackRate(table: PricingTable): ModelRate {
-  const fb = table["$fallback"];
-  return fb ?? FALLBACK_RATE;
-}
-
-/** Remove meta keys (like $fallback) from a pricing table before passing to PricingEngine. */
-function stripMetaKeys(table: PricingTable): PricingTable {
-  const result: PricingTable = {};
-  for (const [key, value] of Object.entries(table)) {
-    if (!key.startsWith("$")) {
-      result[key] = value;
-    }
-  }
-  return result;
 }
 
 function mergeScanRequests(existing: ScanRequest | undefined, incoming: ScanRequest): ScanRequest {
@@ -225,9 +213,12 @@ async function handleScanAndIngest(req: ScanRequest): Promise<void> {
       ? { enabled: true, path: config.sources.claude.path ?? "" }
       : undefined,
   };
-  if (needsDedupKeyMigration) {
+  if (needsDedupKeyMigration || needsCodexAccountingMigration) {
     const migrationCandidates = fullDiscovery(sourceRoots);
-    if (!dedupMigrationCanRebuild(store.usageRecordSources(), migrationCandidates)) {
+    if (
+      !dedupMigrationCanRebuild(store.usageRecordSources(), migrationCandidates) ||
+      !storedFilesCanRebuild(store.storedFileIdentities(), migrationCandidates)
+    ) {
       post({
         type: "ingestComplete",
         freshness: analytics.freshness(),
@@ -237,9 +228,15 @@ async function handleScanAndIngest(req: ScanRequest): Promise<void> {
     }
     const migrationReq: ScanRequest = { type: "scanAndIngest", reason: "manual", forceFull: true };
     await ingestCandidates(migrationReq, migrationCandidates);
-    store.setMeta(CODEX_FILE_SCOPE_DEDUP_META_KEY, "1");
+    if (needsDedupKeyMigration) {
+      store.setMeta(CODEX_FILE_SCOPE_DEDUP_META_KEY, "1");
+    }
+    if (needsCodexAccountingMigration) {
+      store.setMeta(CODEX_CUMULATIVE_DELTA_META_KEY, "1");
+    }
     store.flush();
     needsDedupKeyMigration = false;
+    needsCodexAccountingMigration = false;
     return;
   }
 
@@ -328,8 +325,9 @@ function handleUpdatePricing(table: PricingTable): void {
     post({ type: "error", scope: "updatePricing", message: "Worker not initialized" });
     return;
   }
-  const mergedTable = { ...DEFAULT_PRICING, ...table };
-  pricing = new PricingEngine(stripMetaKeys(mergedTable), buildFallbackRate(mergedTable));
+  const merged = mergePricingConfig(table);
+  pricingAudit = merged.audit;
+  pricing = new PricingEngine(merged.table, merged.fallbackRate);
   analytics = new AnalyticsService(store.database, pricing);
   queries.rebuildAggregates(store.database, pricing);
   // Recompute unmapped models with new pricing table
@@ -377,17 +375,24 @@ async function handleInit(req: Extract<WorkerRequest, { type: "init" }>): Promis
 
   config = req.config;
 
-  // Merge default pricing with user overrides
-  const mergedTable = { ...DEFAULT_PRICING, ...req.config.pricingOverrides };
-  pricing = new PricingEngine(stripMetaKeys(mergedTable), buildFallbackRate(mergedTable));
+  const merged = mergePricingConfig(req.config.pricingOverrides);
+  pricingAudit = merged.audit;
+  pricing = new PricingEngine(merged.table, merged.fallbackRate);
 
   analytics = new AnalyticsService(store.database, pricing);
   const usageRecordCount = store.usageRecordCount();
+  const codexUsageRecordCount = store.usageRecordCountForSource("codex");
   needsDedupKeyMigration =
     usageRecordCount > 0 && store.getMeta(CODEX_FILE_SCOPE_DEDUP_META_KEY) !== "1";
+  needsCodexAccountingMigration =
+    codexUsageRecordCount > 0 && store.getMeta(CODEX_CUMULATIVE_DELTA_META_KEY) !== "1";
   if (usageRecordCount === 0 && store.getMeta(CODEX_FILE_SCOPE_DEDUP_META_KEY) !== "1") {
     store.setMeta(CODEX_FILE_SCOPE_DEDUP_META_KEY, "1");
-  } else if (!needsDedupKeyMigration) {
+  }
+  if (codexUsageRecordCount === 0 && store.getMeta(CODEX_CUMULATIVE_DELTA_META_KEY) !== "1") {
+    store.setMeta(CODEX_CUMULATIVE_DELTA_META_KEY, "1");
+  }
+  if (!needsDedupKeyMigration && !needsCodexAccountingMigration) {
     queries.rebuildAggregates(store.database, pricing);
   }
   store.recordUnmappedModels(pricing.unmappedModels(store.distinctModels()), pricing.fallbackModelRate());
@@ -416,11 +421,28 @@ parentPort!.on("message", (req: WorkerRequest) => {
 
       case "query": {
         if (!analytics) {
-          post({ type: "error", scope: "query", message: "Worker not initialized" });
+          post({ type: "queryError", id: req.id, message: "Worker not initialized" });
           return;
         }
-        const result = analytics.query(req.query);
-        post({ type: "queryResult", id: req.id, result });
+        try {
+          const result = analytics.query(req.query);
+          post({ type: "queryResult", id: req.id, result });
+        } catch (err: unknown) {
+          post({ type: "queryError", id: req.id, message: sanitizeErrorMessage(err) });
+        }
+        break;
+      }
+
+      case "diagnostics": {
+        if (!store || !pricing) {
+          post({ type: "error", scope: "diagnostics", message: "Worker not initialized" });
+          return;
+        }
+        post({
+          type: "diagnosticsResult",
+          id: req.id,
+          result: buildDiagnosticsReport(store.database, pricing, pricingAudit),
+        });
         break;
       }
 

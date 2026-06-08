@@ -17,7 +17,7 @@ import { computeHeadHash, computeTailAnchorHash } from "./cursor";
 import { CodexParser } from "./parsers/codex";
 import { ClaudeParser } from "./parsers/claude";
 import { normalize } from "./normalizer";
-import { PricingEngine } from "./pricing";
+import { LONG_CONTEXT_THRESHOLD_TOKENS, PricingEngine } from "./pricing";
 import { localDay } from "../shared/time";
 import type { ParseOutput, ResumeState } from "./parsers/types";
 
@@ -180,7 +180,14 @@ export async function ingestFile(
     .filter((e) => e.timestamp > 0);
   let { records, toolEvents } = dedupeParsedRecords(parsedRecords, parsedToolEvents);
 
-  if (decision === "append" && cursor && hasOverlappingRecordKeys(cursor.contribution, records)) {
+  if (
+    decision === "append" &&
+    cursor &&
+    (
+      hasOverlappingRecordKeys(cursor.contribution, records) ||
+      shouldReingestForLongContextCrossing(cursor, parseOutput, records, pricing)
+    )
+  ) {
     const reparseOutput = await parseForDecision("reingest");
     if (!reparseOutput || reparseOutput.endOffset < candidate.size) {
       return empty("skip");
@@ -468,6 +475,36 @@ export interface FileIngestResult {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+function shouldReingestForLongContextCrossing(
+  cursor: FileCursor,
+  parseOutput: ParseOutput,
+  parsedRecords: UsageRecord[],
+  pricing: PricingEngine,
+): boolean {
+  const modelsBySession = new Map<string, Set<string>>();
+  for (const rec of parsedRecords) {
+    if (!pricing.hasLongContextRate(rec.model)) {
+      continue;
+    }
+    const models = modelsBySession.get(rec.sessionId) ?? new Set<string>();
+    models.add(rec.model);
+    modelsBySession.set(rec.sessionId, models);
+  }
+
+  for (const [sessionId, after] of Object.entries(parseOutput.endState.runningTotals)) {
+    const before = cursor.runningTotals[sessionId];
+    if (
+      before &&
+      before.inputTokens <= LONG_CONTEXT_THRESHOLD_TOKENS &&
+      after.inputTokens > LONG_CONTEXT_THRESHOLD_TOKENS &&
+      (modelsBySession.get(sessionId)?.size ?? 0) > 0
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Build a FileContribution from normalized records and tool events.
  * Groups by (day, source, variantId, workspace) for daily and by
@@ -478,6 +515,8 @@ function buildContribution(
   toolEvents: ToolEvent[],
   pricing: PricingEngine,
 ): FileContribution {
+  const longContextKeys = sessionModelLongContextKeys(records, pricing);
+
   // Daily aggregates keyed by "day|source|variantId|workspace"
   const dailyMap = new Map<string, {
     day: string; source: Source; variantId: string; workspace: string;
@@ -501,13 +540,20 @@ function buildContribution(
     const workspace = rec.workspace ?? "";
 
     // Cost
-    const cost = pricing.costOfAggregate(rec.model, {
-      inputTokens: rec.inputTokens,
-      outputTokens: rec.outputTokens,
-      cacheReadTokens: rec.cacheReadTokens,
-      cacheCreationTokens: rec.cacheCreationTokens,
-      reasoningTokens: rec.reasoningTokens,
-    });
+    const cost = pricing.costOfAggregate(
+      rec.model,
+      {
+        inputTokens: rec.inputTokens,
+        outputTokens: rec.outputTokens,
+        cacheReadTokens: rec.cacheReadTokens,
+        cacheCreationTokens: rec.cacheCreationTokens,
+        reasoningTokens: rec.reasoningTokens,
+      },
+      {
+        contextUsedTokens: rec.meta?.contextUsedTokens,
+        forceLongContext: longContextKeys.has(sessionModelKey(rec.source, rec.sessionId, rec.model)),
+      },
+    );
 
     // Daily
     const dailyKey = `${day}|${rec.source}|${rec.variantId}|${workspace}`;
@@ -578,6 +624,25 @@ function buildContribution(
     recordKeys,
     toolEventCount: toolEvents.length,
   };
+}
+
+function sessionModelLongContextKeys(records: UsageRecord[], pricing: PricingEngine): Set<string> {
+  const keys = new Set<string>();
+  for (const rec of records) {
+    const contextUsed = rec.meta?.contextUsedTokens;
+    if (
+      contextUsed !== undefined &&
+      contextUsed > LONG_CONTEXT_THRESHOLD_TOKENS &&
+      pricing.hasLongContextRate(rec.model)
+    ) {
+      keys.add(sessionModelKey(rec.source, rec.sessionId, rec.model));
+    }
+  }
+  return keys;
+}
+
+function sessionModelKey(source: Source, sessionId: string, model: string): string {
+  return `${source}\0${sessionId}\0${model}`;
 }
 
 /**

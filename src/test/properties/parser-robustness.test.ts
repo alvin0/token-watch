@@ -283,6 +283,101 @@ suite("Parser robustness property tests", () => {
     }
   });
 
+  test("Codex parser accounts from cumulative deltas and skips repeated snapshots", async () => {
+    const parser = new CodexParser();
+    const tmpFile = join(tmpdir(), `pbt-codex-cumulative-delta-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+    const beforeMidnight = new Date(2026, 5, 7, 23, 55, 0).toISOString();
+    const afterMidnight = new Date(2026, 5, 8, 0, 5, 0).toISOString();
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: "delta-session", cwd: "/tmp", cli_version: "1.0.0" },
+      }),
+      JSON.stringify({
+        type: "turn_context",
+        payload: { model: "gpt-5-codex", effort: "high" },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "token_count" },
+        timestamp: beforeMidnight,
+        info: {
+          last_token_usage: {
+            input_tokens: 100,
+            output_tokens: 20,
+            total_tokens: 120,
+          },
+          total_token_usage: {
+            input_tokens: 100,
+            output_tokens: 20,
+            total_tokens: 120,
+          },
+        },
+      }),
+      JSON.stringify({
+        type: "turn_context",
+        payload: { model: "gpt-5-codex", effort: "high" },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "token_count" },
+        timestamp: beforeMidnight,
+        info: {
+          last_token_usage: {
+            input_tokens: 100,
+            output_tokens: 20,
+            total_tokens: 120,
+          },
+          total_token_usage: {
+            input_tokens: 100,
+            output_tokens: 20,
+            total_tokens: 120,
+          },
+        },
+      }),
+      JSON.stringify({
+        type: "turn_context",
+        payload: { model: "gpt-5-codex", effort: "high" },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "token_count" },
+        timestamp: afterMidnight,
+        info: {
+          last_token_usage: {
+            input_tokens: 90,
+            output_tokens: 10,
+            total_tokens: 100,
+          },
+          total_token_usage: {
+            input_tokens: 160,
+            output_tokens: 30,
+            total_tokens: 190,
+          },
+        },
+      }),
+    ];
+    writeFileSync(tmpFile, lines.join("\n"), "utf8");
+
+    try {
+      let output: ParseOutput | undefined;
+      await parser.parse(
+        { filePath: tmpFile, startOffset: 0, maxLineBytes: MAX_LINE_BYTES },
+        (batch) => { output = batch; },
+      );
+
+      assert.ok(output, "Parser should emit output");
+      assert.strictEqual(output.rawTurns.length, 2);
+      assert.strictEqual((output.rawTurns[0] as RawCodexTurn).rawInputTokens, 100);
+      assert.strictEqual((output.rawTurns[0] as RawCodexTurn).rawOutputTokens, 20);
+      assert.strictEqual((output.rawTurns[1] as RawCodexTurn).rawInputTokens, 60);
+      assert.strictEqual((output.rawTurns[1] as RawCodexTurn).rawOutputTokens, 10);
+      assert.strictEqual(output.rawTurns[1].timestamp, Date.parse(afterMidnight));
+    } finally {
+      try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    }
+  });
+
   // Feature: token-tracking, Property 5: malformed/oversized/irrelevant lines don't change emitted raw turns
   test("Property 5: malformed/oversized/irrelevant lines don't change emitted raw turns; counters accurate", async () => {
     const parser = new CodexParser();

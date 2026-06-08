@@ -13,6 +13,7 @@ import { PricingTable } from "./types";
 import {
   AnalyticsQuery,
   AnalyticsResult,
+  DiagnosticsReport,
   FreshnessInfo,
   WarningInfo,
   DisplayCurrencyConfig,
@@ -36,7 +37,7 @@ export interface IngestConfig {
     codex: SourceConfig;
     claude: SourceConfig;
   };
-  /** User pricing overrides merged over bundled defaults (Req 6.4, 10.3). */
+  /** User pricing additions; bundled defaults win for known models (Req 6.4, 10.3). */
   pricingOverrides: PricingTable;
   /** Secondary display currency config (Req 6.5). */
   currency: DisplayCurrencyConfig;
@@ -55,6 +56,7 @@ export interface IngestConfig {
 export type WorkerRequest =
   | { type: "init"; dbPath: string; config: IngestConfig }
   | { type: "query"; id: string; query: AnalyticsQuery }
+  | { type: "diagnostics"; id: string }
   | { type: "scanAndIngest"; reason: "activation" | "watch" | "manual"; forceFull?: boolean; changedPaths?: string[] }
   | { type: "resetDatabase" }
   | { type: "updatePricing"; table: PricingTable }
@@ -64,6 +66,8 @@ export type WorkerRequest =
 export type WorkerEvent =
   | { type: "ready"; schema: "ok" | "migrated" | "rebuilt" }
   | { type: "queryResult"; id: string; result: AnalyticsResult }
+  | { type: "queryError"; id: string; message: string }
+  | { type: "diagnosticsResult"; id: string; result: DiagnosticsReport }
   | { type: "progress"; processed: number; total: number; partial: boolean }
   | { type: "ingestComplete"; freshness: FreshnessInfo; warnings: WarningInfo }
   | { type: "error"; scope: string; message: string };

@@ -485,6 +485,56 @@ suite("Store property tests (in-memory sql.js)", () => {
     db.close();
   });
 
+  test("rebuildAggregates prices the full session with long-context rates after threshold crossing", async () => {
+    const db = await freshDb();
+    const store = storeFromDb(db);
+    const day = "2026-06-08";
+    const ts = new Date(`${day}T10:00:00.000Z`).getTime();
+    const records: UsageRecord[] = [
+      {
+        source: "codex",
+        sessionId: "long-session",
+        dedupKey: "codex:long-session:1",
+        timestamp: ts,
+        model: "gpt-5.5",
+        variantId: "gpt-5.5",
+        inputTokens: 1000,
+        outputTokens: 1000,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        reasoningTokens: 0,
+        meta: { contextUsedTokens: 1000 },
+      },
+      {
+        source: "codex",
+        sessionId: "long-session",
+        dedupKey: "codex:long-session:2",
+        timestamp: ts + 1000,
+        model: "gpt-5.5",
+        variantId: "gpt-5.5",
+        inputTokens: 1000,
+        outputTokens: 1000,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        reasoningTokens: 0,
+        meta: { contextUsedTokens: 300_000 },
+      },
+    ];
+
+    store.applyFileResult("file-long", buildBatch(records, []));
+    rebuildAggregates(db, new PricingEngine({
+      "gpt-5.5": { inputPer1K: 0.005, outputPer1K: 0.03 },
+      "gpt-5.5-long-context": { inputPer1K: 0.01, outputPer1K: 0.045 },
+    }));
+
+    const dailyCost = singleNumber(db, "SELECT cost_usd FROM daily_aggregate WHERE day_local = ?", [day]);
+    const sessionCost = singleNumber(db, "SELECT cost_usd FROM session_aggregate WHERE session_id = ?", ["long-session"]);
+
+    assert.strictEqual(dailyCost, 0.11);
+    assert.strictEqual(sessionCost, 0.11);
+    db.close();
+  });
+
   test("Unmapped models are auto-registered with fallback pricing without resetting first_seen", async () => {
     const db = await freshDb();
     const store = storeFromDb(db);

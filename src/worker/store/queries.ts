@@ -133,6 +133,34 @@ function str(v: SqlValue): string {
   return typeof v === "string" ? v : "";
 }
 
+function sessionModelKey(source: string, sessionId: string, model: string): string {
+  return `${source}\0${sessionId}\0${model}`;
+}
+
+function longContextSessionModelKeys(db: Database, pricing: PricingEngine): Set<string> {
+  const keys = new Set<string>();
+  const rows = db.exec(
+    `SELECT source, session_id, model, MAX(context_used_tokens) as max_context_used_tokens
+     FROM usage_record
+     WHERE context_used_tokens IS NOT NULL
+     GROUP BY source, session_id, model`
+  );
+  if (rows.length === 0) {
+    return keys;
+  }
+  for (const row of rows[0].values) {
+    const source = str(row[0]);
+    const sessionId = str(row[1]);
+    const model = str(row[2]);
+    const contextUsed = num(row[3]);
+    const status = pricing.longContextStatus(model, contextUsed);
+    if (status.applied) {
+      keys.add(sessionModelKey(source, sessionId, model));
+    }
+  }
+  return keys;
+}
+
 // ---------------------------------------------------------------------------
 // Query functions
 // ---------------------------------------------------------------------------
@@ -425,9 +453,10 @@ export function toolCallsByDay(db: Database, q: AnalyticsQuery): ToolCallsByDay[
 
 export function hourlySeries(db: Database, q: AnalyticsQuery, pricing: PricingEngine): HourlyAggregate[] {
   const where = buildRecordWhere(q);
+  const longContextKeys = longContextSessionModelKeys(db, pricing);
 
   const sql = `
-    SELECT day_local, hour_local, model,
+    SELECT day_local, hour_local, model, source, session_id,
            SUM(input_tokens) as input_tokens,
            SUM(output_tokens) as output_tokens,
            SUM(cache_read_tokens) as cache_read_tokens,
@@ -437,7 +466,7 @@ export function hourlySeries(db: Database, q: AnalyticsQuery, pricing: PricingEn
            COUNT(*) as turns
     FROM usage_record
     ${where.sql}
-    GROUP BY day_local, hour_local, model
+    GROUP BY day_local, hour_local, model, source, session_id
     ORDER BY day_local, hour_local`;
 
   const results = db.exec(sql, where.params);
@@ -450,6 +479,8 @@ export function hourlySeries(db: Database, q: AnalyticsQuery, pricing: PricingEn
     const day = str(row[0]);
     const hour = num(row[1]);
     const model = str(row[2]);
+    const source = str(row[3]);
+    const sessionId = str(row[4]);
     const key = `${day}\0${hour}`;
     let bucket = buckets.get(key);
     if (!bucket) {
@@ -470,21 +501,23 @@ export function hourlySeries(db: Database, q: AnalyticsQuery, pricing: PricingEn
     }
 
     const sums = {
-      inputTokens: num(row[3]),
-      outputTokens: num(row[4]),
-      cacheReadTokens: num(row[5]),
-      cacheCreationTokens: num(row[6]),
-      reasoningTokens: num(row[7]),
+      inputTokens: num(row[5]),
+      outputTokens: num(row[6]),
+      cacheReadTokens: num(row[7]),
+      cacheCreationTokens: num(row[8]),
+      reasoningTokens: num(row[9]),
     };
-    const turns = num(row[9]);
-    const cost = pricing.costOfAggregate(model, sums);
+    const turns = num(row[11]);
+    const cost = pricing.costOfAggregate(model, sums, {
+      forceLongContext: longContextKeys.has(sessionModelKey(source, sessionId, model)),
+    });
 
     bucket.inputTokens += sums.inputTokens;
     bucket.outputTokens += sums.outputTokens;
     bucket.cacheReadTokens += sums.cacheReadTokens;
     bucket.cacheCreationTokens += sums.cacheCreationTokens;
     bucket.reasoningTokens += sums.reasoningTokens;
-    bucket.totalTokens += num(row[8]);
+    bucket.totalTokens += num(row[10]);
     bucket.turns += turns;
     bucket.costUsd += cost.usd;
     if (cost.unknown) {
@@ -627,16 +660,18 @@ export function latestRateLimit(db: Database): RateLimitInfo | undefined {
 }
 
 export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
+  const longContextKeys = longContextSessionModelKeys(db, pricing);
   const dailyRows = db.exec(
-    `SELECT day_local, source, variant_id, model, workspace,
+    `SELECT day_local, source, variant_id, model, workspace, session_id,
             SUM(input_tokens) as input_tokens,
             SUM(output_tokens) as output_tokens,
             SUM(cache_read_tokens) as cache_read_tokens,
             SUM(cache_creation_tokens) as cache_creation_tokens,
             SUM(reasoning_tokens) as reasoning_tokens,
+            SUM(total_tokens) as total_tokens,
             COUNT(*) as turns
      FROM usage_record
-     GROUP BY day_local, source, variant_id, model, workspace`
+     GROUP BY day_local, source, variant_id, model, workspace, session_id`
   );
   const sessionRows = db.exec(
     `SELECT source, session_id, model,
@@ -650,7 +685,8 @@ export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
             SUM(output_tokens) as output_tokens,
             SUM(cache_read_tokens) as cache_read_tokens,
             SUM(cache_creation_tokens) as cache_creation_tokens,
-            SUM(reasoning_tokens) as reasoning_tokens
+            SUM(reasoning_tokens) as reasoning_tokens,
+            MAX(context_used_tokens) as max_context_used_tokens
      FROM usage_record
      GROUP BY source, session_id, model`
   );
@@ -660,7 +696,77 @@ export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
     db.run("DELETE FROM daily_aggregate");
     db.run("DELETE FROM session_aggregate");
 
+    const dailyMap = new Map<string, {
+      day: string;
+      source: string;
+      variantId: string;
+      baseModel: string;
+      workspace: string;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
+      reasoningTokens: number;
+      totalTokens: number;
+      turns: number;
+      costUsd: number;
+      unknownCostTurns: number;
+    }>();
+
     if (dailyRows.length > 0) {
+      for (const row of dailyRows[0].values) {
+        const day = str(row[0]);
+        const source = str(row[1]);
+        const variantId = str(row[2]);
+        const model = str(row[3]);
+        const workspace = str(row[4]);
+        const sessionId = str(row[5]);
+        const sums = {
+          inputTokens: num(row[6]),
+          outputTokens: num(row[7]),
+          cacheReadTokens: num(row[8]),
+          cacheCreationTokens: num(row[9]),
+          reasoningTokens: num(row[10]),
+        };
+        const total = num(row[11]);
+        const turns = num(row[12]);
+        const cost = pricing.costOfAggregate(model, sums, {
+          forceLongContext: longContextKeys.has(sessionModelKey(source, sessionId, model)),
+        });
+        const key = `${day}\0${source}\0${variantId}\0${workspace}`;
+        const existing = dailyMap.get(key);
+        if (existing) {
+          existing.inputTokens += sums.inputTokens;
+          existing.outputTokens += sums.outputTokens;
+          existing.cacheReadTokens += sums.cacheReadTokens;
+          existing.cacheCreationTokens += sums.cacheCreationTokens;
+          existing.reasoningTokens += sums.reasoningTokens;
+          existing.totalTokens += total;
+          existing.turns += turns;
+          existing.costUsd += cost.usd;
+          if (cost.unknown) { existing.unknownCostTurns += turns; }
+        } else {
+          dailyMap.set(key, {
+            day,
+            source,
+            variantId,
+            baseModel: model || baseModelOf(variantId),
+            workspace,
+            inputTokens: sums.inputTokens,
+            outputTokens: sums.outputTokens,
+            cacheReadTokens: sums.cacheReadTokens,
+            cacheCreationTokens: sums.cacheCreationTokens,
+            reasoningTokens: sums.reasoningTokens,
+            totalTokens: total,
+            turns,
+            costUsd: cost.usd,
+            unknownCostTurns: cost.unknown ? turns : 0,
+          });
+        }
+      }
+    }
+
+    if (dailyMap.size > 0) {
       const dailyStmt = db.prepare(
         `INSERT INTO daily_aggregate
          (day_local, source, variant_id, base_model, workspace,
@@ -669,35 +775,22 @@ export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
 
-      for (const row of dailyRows[0].values) {
-        const model = str(row[3]);
-        const sums = {
-          inputTokens: num(row[5]),
-          outputTokens: num(row[6]),
-          cacheReadTokens: num(row[7]),
-          cacheCreationTokens: num(row[8]),
-          reasoningTokens: num(row[9]),
-        };
-        const total = sums.inputTokens + sums.outputTokens + sums.cacheReadTokens +
-          sums.cacheCreationTokens + sums.reasoningTokens;
-        const turns = num(row[10]);
-        const cost = pricing.costOfAggregate(model, sums);
-
+      for (const row of dailyMap.values()) {
         dailyStmt.run([
-          str(row[0]),
-          str(row[1]),
-          str(row[2]),
-          model || baseModelOf(str(row[2])),
-          str(row[4]),
-          sums.inputTokens,
-          sums.outputTokens,
-          sums.cacheReadTokens,
-          sums.cacheCreationTokens,
-          sums.reasoningTokens,
-          total,
-          turns,
-          cost.usd,
-          cost.unknown ? turns : 0,
+          row.day,
+          row.source,
+          row.variantId,
+          row.baseModel,
+          row.workspace,
+          row.inputTokens,
+          row.outputTokens,
+          row.cacheReadTokens,
+          row.cacheCreationTokens,
+          row.reasoningTokens,
+          row.totalTokens,
+          row.turns,
+          row.costUsd,
+          row.unknownCostTurns,
         ]);
       }
       dailyStmt.free();
@@ -728,7 +821,10 @@ export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
           cacheCreationTokens: num(row[12]),
           reasoningTokens: num(row[13]),
         };
-        const cost = pricing.costOfAggregate(model, sums);
+        const cost = pricing.costOfAggregate(model, sums, {
+          forceLongContext: longContextKeys.has(sessionModelKey(source, sessionId, model)),
+          contextUsedTokens: num(row[14]),
+        });
         const existing = sessions.get(key);
         if (existing) {
           existing.workspace = existing.workspace || str(row[3]);

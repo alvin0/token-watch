@@ -28,7 +28,7 @@ suite("Parse + normalize round-trip property tests", () => {
       output: t.output + t.reasoning, // total output includes reasoning
       reasoning: t.reasoning,
       total: t.input + t.cached + t.output + t.reasoning,
-    }));
+    })).filter((t) => t.total > 0);
 
     await fc.assert(
       fc.asyncProperty(
@@ -49,7 +49,21 @@ suite("Parse + normalize round-trip property tests", () => {
             payload: { model, effort },
           }));
 
+          const cumulative = {
+            input: 0,
+            cached: 0,
+            output: 0,
+            reasoning: 0,
+            total: 0,
+          };
+
           for (const turn of turns) {
+            cumulative.input += turn.input;
+            cumulative.cached += turn.cached;
+            cumulative.output += turn.output;
+            cumulative.reasoning += turn.reasoning;
+            cumulative.total += turn.total;
+
             lines.push(JSON.stringify({
               type: "event_msg",
               payload: { type: "token_count" },
@@ -63,11 +77,11 @@ suite("Parse + normalize round-trip property tests", () => {
                   total_tokens: turn.total,
                 },
                 total_token_usage: {
-                  input_tokens: turn.input,
-                  cached_input_tokens: turn.cached,
-                  output_tokens: turn.output,
-                  reasoning_output_tokens: turn.reasoning,
-                  total_tokens: turn.total,
+                  input_tokens: cumulative.input,
+                  cached_input_tokens: cumulative.cached,
+                  output_tokens: cumulative.output,
+                  reasoning_output_tokens: cumulative.reasoning,
+                  total_tokens: cumulative.total,
                 },
               },
             }));
