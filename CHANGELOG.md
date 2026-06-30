@@ -2,6 +2,12 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.0.7]
+
+- Added Codex usage to the Today view and status bar.
+- Shows a clear fallback message when Codex usage is unavailable.
+- Added regression coverage for the new Codex usage flow.
+
 ## [0.0.6]
 
 - Updated bundled pricing for current GPT and Claude models, including GPT-5.4,

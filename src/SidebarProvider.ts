@@ -1,11 +1,14 @@
 import * as vscode from "vscode";
 import { getNonce } from "./utils";
 import type { IngestionCoordinator } from "./host/IngestionCoordinator";
+import { CodexConnection, DEFAULT_CODEX_AUTH_FILE } from "./provider/codex";
+import { mapCodexUsageToRateLimitInfo, type CodexUsageResponse } from "./shared/codexUsage";
 import type {
   WebviewRequest,
   HostMessage,
   DisplayCurrencyConfig,
   FreshnessInfo,
+  RateLimitInfo,
   WarningInfo,
 } from "./shared/protocol";
 
@@ -17,6 +20,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   private currency: DisplayCurrencyConfig;
   private latestFreshness: FreshnessInfo = {};
   private latestWarnings: WarningInfo = { unmappedModels: [], malformedLineCount: 0, oversizedLineCount: 0 };
+  private latestRateLimit: RateLimitInfo | undefined;
+  private readonly codexConnection = new CodexConnection({ authFile: DEFAULT_CODEX_AUTH_FILE });
+  private rateLimitRefreshPromise: Promise<void> | undefined;
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -49,6 +55,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     };
 
     webviewView.webview.html = this._getHtml(webviewView.webview);
+    void this.refreshCodexUsage();
 
     // WebView → host message relay
     webviewView.webview.onDidReceiveMessage(
@@ -75,8 +82,33 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       type: "status",
       freshness: this.latestFreshness,
       warnings: this.latestWarnings,
+      rateLimit: this.latestRateLimit,
       currency: this.currency,
     });
+  }
+
+  private async refreshCodexUsage(): Promise<void> {
+    if (this.rateLimitRefreshPromise) {
+      return this.rateLimitRefreshPromise;
+    }
+
+    const refreshPromise = this.codexConnection.usageInfo<CodexUsageResponse>()
+      .then((usage) => {
+        const rateLimit = mapCodexUsageToRateLimitInfo(usage);
+        if (rateLimit) {
+          this.latestRateLimit = rateLimit;
+          this.pushStatus();
+        }
+      })
+      .catch((error) => {
+        console.warn("[TokenWatch] Codex usage refresh failed:", error);
+      })
+      .finally(() => {
+        this.rateLimitRefreshPromise = undefined;
+      });
+
+    this.rateLimitRefreshPromise = refreshPromise;
+    return refreshPromise;
   }
 
   private handleWebviewMessage(message: WebviewRequest): void {
@@ -84,6 +116,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       case "ready":
         // WebView loaded — push initial status
         this.pushStatus();
+        void this.refreshCodexUsage();
         break;
       case "query":
         this.coordinator.query(message.query).then(

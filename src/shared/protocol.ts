@@ -74,6 +74,8 @@ export interface WarningInfo {
 export interface RateLimitInfo {
   primaryPct?: number;
   secondaryPct?: number;
+  remainingSeconds?: number;
+  weeklyResetAtUtc?: number;
   tsUtc?: number;
 }
 

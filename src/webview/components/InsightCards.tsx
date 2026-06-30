@@ -19,10 +19,10 @@ export function InsightCards() {
 
     return (
       <div className="tw-grid tw-grid-cols-2 tw-gap-1.5">
-        <MiniCard icon="🧠" label="Cache hit" value={`${cacheHit.toFixed(1)}%`} />
-        <MiniCard icon="⚖" label="Tokens / turn" value={fmtT(tokensPerTurn)} />
-        <MiniCard icon="↵" label="Turns today" value={cur.turns.toLocaleString()} />
-        <MiniCard icon="⛭" label="Reasoning mix" value={`${reasoningMix.toFixed(1)}%`} />
+        <MiniCard icon="" label="Cache hit" value={`${cacheHit.toFixed(1)}%`} />
+        <MiniCard icon="" label="Tokens / turn" value={fmtT(tokensPerTurn)} />
+        <MiniCard icon="" label="Turns today" value={cur.turns.toLocaleString()} />
+        <MiniCard icon="" label="Reasoning mix" value={`${reasoningMix.toFixed(1)}%`} />
       </div>
     );
   }
@@ -46,10 +46,10 @@ export function InsightCards() {
 
   return (
     <div className="tw-grid tw-grid-cols-2 tw-gap-1.5">
-      <MiniCard icon="💰" label="Cache saved" value={formatCost(cacheSaved)} />
-      <MiniCard icon="📊" label="Avg / turn" value={formatCost(avgTurn)} />
-      <MiniCard icon="🤖" label="Active models" value={String(cur.models)} />
-      <MiniCard icon="⚡" label="Peak" value={peakLabel} />
+      <MiniCard icon="" label="Cache saved" value={formatCost(cacheSaved)} />
+      <MiniCard icon="" label="Avg / turn" value={formatCost(avgTurn)} />
+      <MiniCard icon="" label="Active models" value={String(cur.models)} />
+      <MiniCard icon="" label="Peak" value={peakLabel} />
     </div>
   );
 }
