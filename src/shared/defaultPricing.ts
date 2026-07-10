@@ -52,6 +52,10 @@ export const DEFAULT_PRICING: PricingTable = {
   "gpt-5.5-pro-2026-04-23": { inputPer1K: 0.03, cachedInputPer1K: 0, outputPer1K: 0.18 },
   "gpt-5.5-pro-long-context": { inputPer1K: 0.06, cachedInputPer1K: 0, outputPer1K: 0.27 },
   "gpt-5.5-pro-2026-04-23-long-context": { inputPer1K: 0.06, cachedInputPer1K: 0, outputPer1K: 0.27 },
+  // GPT-5.6
+  "gpt-5.6-sol": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, cacheCreationPer1K: 0.00625, outputPer1K: 0.03 },
+  "gpt-5.6-terra": { inputPer1K: 0.0025, cachedInputPer1K: 0.00025, cacheCreationPer1K: 0.003125, outputPer1K: 0.015 },
+  "gpt-5.6-luna": { inputPer1K: 0.001, cachedInputPer1K: 0.0001, cacheCreationPer1K: 0.00125, outputPer1K: 0.006 },
   // GPT-4 / o-series
   "gpt-4.1": { inputPer1K: 0.002, cachedInputPer1K: 0.0005, outputPer1K: 0.008 },
   "gpt-4.1-mini": { inputPer1K: 0.0004, cachedInputPer1K: 0.0001, outputPer1K: 0.0016 },
@@ -75,6 +79,8 @@ export const DEFAULT_PRICING: PricingTable = {
   "claude-opus-4-1": { inputPer1K: 0.015, cachedInputPer1K: 0.0015, cacheCreationPer1K: 0.01875, outputPer1K: 0.075 },
   "claude-opus-4": { inputPer1K: 0.015, cachedInputPer1K: 0.0015, cacheCreationPer1K: 0.01875, outputPer1K: 0.075 },
   "claude-opus-4-20250514": { inputPer1K: 0.015, cachedInputPer1K: 0.0015, cacheCreationPer1K: 0.01875, outputPer1K: 0.075 },
+  "claude-fable-5": { inputPer1K: 0.01, cachedInputPer1K: 0.001, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
+  "claude-sonnet-5": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
   "claude-sonnet-4.6": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
   "claude-sonnet-4-6": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
   "claude-sonnet-4.5": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },

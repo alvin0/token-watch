@@ -2,6 +2,12 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.0.8]
+
+- Added bundled pricing for GPT-5.6 Sol, Terra, and Luna.
+- Added bundled pricing for Claude Fable 5 and Claude Sonnet 5, including cache-hit rates.
+- Added Cache writes pricing for the new GPT-5.6 and Claude models; Claude rates use 5-minute cache writes.
+
 ## [0.0.7]
 
 - Added Codex usage to the Today view and status bar.
