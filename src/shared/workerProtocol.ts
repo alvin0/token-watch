@@ -54,7 +54,7 @@ export interface IngestConfig {
 
 /** Host → worker requests. */
 export type WorkerRequest =
-  | { type: "init"; dbPath: string; config: IngestConfig }
+  | { type: "init"; dbPath: string; previousDbPath?: string; legacyDbPath?: string; config: IngestConfig }
   | { type: "query"; id: string; query: AnalyticsQuery }
   | { type: "diagnostics"; id: string }
   | { type: "scanAndIngest"; reason: "activation" | "watch" | "manual"; forceFull?: boolean; changedPaths?: string[] }
@@ -69,5 +69,5 @@ export type WorkerEvent =
   | { type: "queryError"; id: string; message: string }
   | { type: "diagnosticsResult"; id: string; result: DiagnosticsReport }
   | { type: "progress"; processed: number; total: number; partial: boolean }
-  | { type: "ingestComplete"; freshness: FreshnessInfo; warnings: WarningInfo }
+  | { type: "ingestComplete"; freshness: FreshnessInfo; warnings: WarningInfo; dataChanged: boolean }
   | { type: "error"; scope: string; message: string };

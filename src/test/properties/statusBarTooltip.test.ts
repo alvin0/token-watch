@@ -1,5 +1,5 @@
 import * as assert from 'node:assert';
-import { buildStatusBarTooltip, type StatusBarUsageSummary } from '../../host/StatusBarController.js';
+import { buildStatusBarTooltip, summarizeDailySeries, type StatusBarUsageSummary } from '../../host/StatusBarController.js';
 
 suite('Status bar tooltip', () => {
   const summary: StatusBarUsageSummary = {
@@ -12,6 +12,26 @@ suite('Status bar tooltip', () => {
     cacheCreationTokens: 500,
     turns: 7,
   };
+
+  test('series summary preserves every token and cost bucket', () => {
+    const result = summarizeDailySeries([
+      {
+        day: '2026-07-10', source: 'codex', variantId: 'gpt-5', baseModel: 'gpt-5', workspace: '',
+        inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheCreationTokens: 40,
+        reasoningTokens: 50, totalTokens: 150, turns: 2, costUsd: 1.25, unknownCostTurns: 0,
+      },
+      {
+        day: '2026-07-10', source: 'claude', variantId: 'claude', baseModel: 'claude', workspace: '',
+        inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheCreationTokens: 4,
+        reasoningTokens: 5, totalTokens: 15, turns: 1, costUsd: 0.25, unknownCostTurns: 0,
+      },
+    ]);
+
+    assert.deepStrictEqual(result, {
+      tokens: 165, cost: 1.5, inputTokens: 11, outputTokens: 22,
+      cacheReadTokens: 33, cacheCreationTokens: 44, reasoningTokens: 55, turns: 3,
+    });
+  });
 
   test('uses the compact current-usage summary layout', () => {
     const tooltip = buildStatusBarTooltip(summary);

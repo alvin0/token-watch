@@ -5,15 +5,25 @@
  * daily/session aggregates, and file cursors. The db lives in memory for fast
  * access; `flush()` exports it to disk.
  *
- * Key invariant: after `applyFileResult`, aggregates reflect the batch's
- * contribution. After `subtractFileContribution` + `deleteFileRows`, the file's
- * impact is fully removed.
+ * Production ingestion uses `commitFileResult`: usage rows, per-record costs,
+ * affected aggregates, and the cursor commit in one transaction. Legacy
+ * contribution methods remain for migration/property-test compatibility.
  *
  * This module MUST NOT import `vscode`.
  */
 
 import initSqlJs, { Database } from "sql.js";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 
 import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
@@ -22,6 +32,8 @@ import type { FileCursor, FileContribution, StoreBatch } from "../../shared/stor
 import { totalTokens } from "../../shared/types.js";
 import { baseModelOf } from "../../shared/variant.js";
 import { localDay } from "../../shared/time.js";
+import { parseRevisionForSource } from "../parsers/revision.js";
+import { PricingEngine } from "../pricing.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const FULL_DISCOVERY_META_KEY = "last_full_discovery_utc";
@@ -34,15 +46,28 @@ interface FileCatalogCandidate {
   mtimeMs: number;
 }
 
+export type FileCursorHeader = Pick<
+  FileCursor,
+  "filePath" | "fileId" | "source" | "size" | "mtimeMs" | "lastByteOffset" | "headHash" | "tailAnchorHash" | "parseRevision"
+>;
+
+export interface CursorRankInfo {
+  cursor: FileCursorHeader;
+  minDay?: string;
+  maxDay?: string;
+}
+
 type CatalogIngestDecision = "skip" | "append" | "reingest" | "firstRead";
 
 export class UsageStore {
   private db: Database | null = null;
   private dbPath: string = "";
+  private sqlJs: initSqlJs.SqlJsStatic | null = null;
 
   async open(dbPath: string, sqlJs?: initSqlJs.SqlJsStatic): Promise<void> {
     this.dbPath = dbPath;
     const SQL = sqlJs ?? await initSqlJs();
+    this.sqlJs = SQL;
 
     if (existsSync(dbPath)) {
       const buffer = readFileSync(dbPath);
@@ -65,33 +90,44 @@ export class UsageStore {
     return 0;
   }
 
-  async migrateOrRebuild(): Promise<"migrated" | "rebuilt" | "ok"> {
-    const current = this.schemaVersion();
-    if (current === SCHEMA_VERSION) {
+  async migrateOrRebuild(targetVersion = SCHEMA_VERSION): Promise<"migrated" | "rebuilt" | "ok"> {
+    let current = this.schemaVersion();
+    if (current === targetVersion) {
       this.ensureAuxiliarySchema();
       return "ok";
     }
 
-    // v1: rebuild only, no migration logic
     const db = this.getDb();
-    // Drop all existing tables
-    const tables = db.exec(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence'"
-    );
-    if (tables.length > 0) {
-      for (const row of tables[0].values) {
-        db.run(`DROP TABLE IF EXISTS "${row[0]}"`);
-      }
+    if (targetVersion < 7 || targetVersion > SCHEMA_VERSION) {
+      throw new Error(`Unsupported target database schema ${targetVersion}`);
     }
-
-    // Recreate schema
-    db.exec(SCHEMA_SQL);
-    db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)", [
-      String(SCHEMA_VERSION),
-    ]);
-    this.ensureAuxiliarySchema();
-
-    return "rebuilt";
+    if (current > targetVersion) {
+      throw new Error(`Database schema ${current} is newer than supported schema ${targetVersion}`);
+    }
+    if (current === 6 && targetVersion >= 7) {
+      this.migrateV6ToV7();
+      current = 7;
+    }
+    if (current === 7 && targetVersion >= 8) {
+      this.migrateV7ToV8();
+      current = 8;
+    }
+    if (current === targetVersion) {
+      this.ensureAuxiliarySchema();
+      return "migrated";
+    }
+    if (current === 0 && !this.hasApplicationTables()) {
+      if (targetVersion !== SCHEMA_VERSION) {
+        throw new Error(`Cannot initialize an empty database at historical schema ${targetVersion}`);
+      }
+      db.exec(SCHEMA_SQL);
+      db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)", [
+        String(SCHEMA_VERSION),
+      ]);
+      this.ensureAuxiliarySchema();
+      return "rebuilt";
+    }
+    throw new Error(`Unsupported database schema ${current}; refusing to rebuild destructively`);
   }
 
   flush(): void {
@@ -101,7 +137,29 @@ export class UsageStore {
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
-    writeFileSync(this.dbPath, data);
+    const tempPath = `${this.dbPath}.tmp`;
+    const fd = openSync(tempPath, "w");
+    try {
+      writeFileSync(fd, data);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    try {
+      renameSync(tempPath, this.dbPath);
+    } catch (error) {
+      try { unlinkSync(tempPath); } catch { /* best-effort cleanup */ }
+      throw error;
+    }
+  }
+
+  /** Restore the last atomically persisted snapshot after a failed force-full scan. */
+  reload(): void {
+    if (!this.sqlJs || !this.dbPath || !existsSync(this.dbPath)) {
+      throw new Error("Cannot reload store before a persisted database has been opened");
+    }
+    this.db?.close();
+    this.db = new this.sqlJs.Database(readFileSync(this.dbPath));
   }
 
   getCursor(filePath: string): FileCursor | undefined {
@@ -126,7 +184,51 @@ export class UsageStore {
       tailAnchorHash: row["tail_anchor_hash"] as string,
       runningTotals: JSON.parse(row["running_totals"] as string),
       recentRequestIds: JSON.parse(row["recent_req_ids"] as string),
+      parseRevision: Number(row["parse_revision"] ?? 0),
       contribution: JSON.parse(row["contribution"] as string),
+    };
+  }
+
+  getCursorHeader(filePath: string): FileCursorHeader | undefined {
+    const result = this.getDb().exec(
+      `SELECT file_path, file_id, source, size, mtime_ms, last_byte_offset,
+              head_hash, tail_anchor_hash, parse_revision
+       FROM file_cursor WHERE file_path = ?`,
+      [filePath],
+    );
+    const row = result[0]?.values[0];
+    if (!row) { return undefined; }
+    return {
+      filePath: String(row[0]),
+      fileId: String(row[1]),
+      source: row[2] as FileCursor["source"],
+      size: Number(row[3]),
+      mtimeMs: Number(row[4]),
+      lastByteOffset: Number(row[5]),
+      headHash: String(row[6]),
+      tailAnchorHash: String(row[7]),
+      parseRevision: Number(row[8]),
+    };
+  }
+
+  getCursorRankInfo(filePath: string): CursorRankInfo | undefined {
+    const result = this.getDb().exec(
+      `SELECT c.file_path, c.file_id, c.source, c.size, c.mtime_ms, c.last_byte_offset,
+              c.head_hash, c.tail_anchor_hash, c.parse_revision, f.min_day, f.max_day
+       FROM file_cursor c LEFT JOIN file_catalog f ON f.file_path = c.file_path
+       WHERE c.file_path = ?`,
+      [filePath],
+    );
+    const row = result[0]?.values[0];
+    if (!row) { return undefined; }
+    return {
+      cursor: {
+        filePath: String(row[0]), fileId: String(row[1]), source: row[2] as FileCursor["source"],
+        size: Number(row[3]), mtimeMs: Number(row[4]), lastByteOffset: Number(row[5]),
+        headHash: String(row[6]), tailAnchorHash: String(row[7]), parseRevision: Number(row[8]),
+      },
+      minDay: typeof row[9] === "string" ? row[9] : undefined,
+      maxDay: typeof row[10] === "string" ? row[10] : undefined,
     };
   }
 
@@ -135,8 +237,8 @@ export class UsageStore {
     db.run(
       `INSERT OR REPLACE INTO file_cursor
        (file_path, file_id, source, size, mtime_ms, last_byte_offset,
-        head_hash, tail_anchor_hash, running_totals, recent_req_ids, contribution)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        head_hash, tail_anchor_hash, running_totals, recent_req_ids, contribution, parse_revision)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         cursor.filePath,
         cursor.fileId,
@@ -149,6 +251,7 @@ export class UsageStore {
         JSON.stringify(cursor.runningTotals),
         JSON.stringify(cursor.recentRequestIds),
         JSON.stringify(cursor.contribution),
+        cursor.parseRevision,
       ]
     );
   }
@@ -217,9 +320,16 @@ export class UsageStore {
     decision: CatalogIngestDecision,
     now = Date.now(),
   ): void {
+    if (decision === "skip") {
+      const hasCursor = this.getCursorHeader(candidate.filePath) !== undefined;
+      this.getDb().run(
+        "UPDATE file_catalog SET last_checked_utc = ?, state = ? WHERE file_path = ?",
+        [now, hasCursor ? "complete" : "ignored", candidate.filePath],
+      );
+      return;
+    }
     const cursor = this.getCursor(candidate.filePath);
     const range = cursor ? dayRangeFromContribution(cursor.contribution) : undefined;
-    const didReadFile = decision !== "skip";
     const state = cursor ? "complete" : "ignored";
 
     this.getDb().run(
@@ -232,7 +342,7 @@ export class UsageStore {
        WHERE file_path = ?`,
       [
         now,
-        didReadFile ? 1 : 0,
+        1,
         now,
         range?.minDay ?? null,
         range?.maxDay ?? null,
@@ -475,6 +585,169 @@ export class UsageStore {
     } catch (e) {
       db.run("ROLLBACK");
       throw e;
+    }
+  }
+
+  /**
+   * Canonical targeted commit used by schema v8 ingestion. Aggregate rows are
+   * recomputed from usage_record for every affected key, so cursor contribution
+   * costs are never used as an accounting source.
+   */
+  commitFileResult(
+    fileId: string,
+    batch: StoreBatch,
+    decision: CatalogIngestDecision,
+    pricing: PricingEngine,
+    cursor: FileCursor,
+    previousFileId = fileId,
+  ): void {
+    const db = this.getDb();
+    const dailyKeys = new Set<string>();
+    const sessionKeys = new Set<string>();
+    const sessionModelKeys = new Set<string>();
+
+    const rememberRow = (row: Array<string | number | Uint8Array | null>): void => {
+      const day = String(row[0]);
+      const source = String(row[1]);
+      const sessionId = String(row[2]);
+      const model = String(row[3]);
+      const variantId = String(row[4]);
+      const workspace = String(row[5]);
+      dailyKeys.add(encodeKey(day, source, variantId, workspace));
+      sessionKeys.add(encodeKey(source, sessionId));
+      sessionModelKeys.add(encodeKey(source, sessionId, model));
+    };
+
+    db.run("BEGIN TRANSACTION");
+    try {
+      if (decision === "reingest") {
+        const oldRows = db.exec(
+          `SELECT day_local, source, session_id, model, variant_id, workspace
+           FROM usage_record WHERE file_id = ?`,
+          [previousFileId],
+        );
+        for (const row of oldRows[0]?.values ?? []) { rememberRow(row); }
+        db.run("DELETE FROM tool_event WHERE file_id = ?", [previousFileId]);
+        db.run("DELETE FROM usage_record WHERE file_id = ?", [previousFileId]);
+      }
+
+      for (const rec of batch.records) {
+        const tsDate = new Date(rec.timestamp);
+        const day = localDay(tsDate);
+        dailyKeys.add(encodeKey(day, rec.source, rec.variantId, rec.workspace ?? ""));
+        sessionKeys.add(encodeKey(rec.source, rec.sessionId));
+        sessionModelKeys.add(encodeKey(rec.source, rec.sessionId, rec.model));
+        db.run(
+          `INSERT OR REPLACE INTO usage_record
+           (dedup_key, file_id, source, session_id, ts_utc, day_local, dow_local, hour_local,
+            model, effort, variant_id, workspace, input_tokens, output_tokens,
+            cache_read_tokens, cache_creation_tokens, reasoning_tokens, total_tokens,
+            context_window, context_used_tokens, is_sidechain, stop_reason, cost_usd, cost_unknown)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+          [
+            rec.dedupKey, fileId, rec.source, rec.sessionId, rec.timestamp, day,
+            tsDate.getDay(), tsDate.getHours(), rec.model, rec.effort ?? "n/a",
+            rec.variantId, rec.workspace ?? "", rec.inputTokens, rec.outputTokens,
+            rec.cacheReadTokens, rec.cacheCreationTokens, rec.reasoningTokens,
+            totalTokens(rec), rec.meta?.contextWindow ?? null,
+            rec.meta?.contextUsedTokens ?? null, rec.meta?.isSidechain ? 1 : 0,
+            rec.meta?.stopReason ?? null,
+          ],
+        );
+        db.run("DELETE FROM tool_event WHERE record_dedup_key = ?", [rec.dedupKey]);
+      }
+
+      for (const evt of batch.toolEvents) {
+        db.run(
+          `INSERT OR REPLACE INTO tool_event
+           (event_key, record_dedup_key, file_id, source, session_id, ts_utc,
+            day_local, tool_name, model, variant_id, workspace, is_sidechain)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', ?)`,
+          [
+            evt.eventKey, evt.recordDedupKey, fileId, evt.source, evt.sessionId,
+            evt.timestamp, localDay(new Date(evt.timestamp)), evt.toolName,
+            evt.isSidechain ? 1 : 0,
+          ],
+        );
+      }
+
+      for (const encoded of sessionModelKeys) {
+        const [source, sessionId, model] = decodeKey(encoded);
+        const rows = db.exec(
+          `SELECT dedup_key, day_local, variant_id, workspace,
+                  input_tokens, output_tokens, cache_read_tokens,
+                  cache_creation_tokens, reasoning_tokens, context_used_tokens
+           FROM usage_record WHERE source = ? AND session_id = ? AND model = ?`,
+          [source, sessionId, model],
+        );
+        const values = rows[0]?.values ?? [];
+        let maxContext: number | undefined;
+        for (const row of values) {
+          if (typeof row[9] === "number") {
+            maxContext = Math.max(maxContext ?? 0, row[9]);
+          }
+          dailyKeys.add(encodeKey(String(row[1]), source, String(row[2]), String(row[3])));
+        }
+        const forceLongContext = pricing.longContextStatus(model, maxContext).applied;
+        for (const row of values) {
+          const cost = pricing.costOfAggregate(model, {
+            inputTokens: Number(row[4]),
+            outputTokens: Number(row[5]),
+            cacheReadTokens: Number(row[6]),
+            cacheCreationTokens: Number(row[7]),
+            reasoningTokens: Number(row[8]),
+          }, { forceLongContext });
+          db.run(
+            "UPDATE usage_record SET cost_usd = ?, cost_unknown = ? WHERE dedup_key = ?",
+            [cost.usd, cost.unknown ? 1 : 0, String(row[0])],
+          );
+        }
+      }
+
+      for (const encoded of dailyKeys) {
+        const [day, source, variantId, workspace] = decodeKey(encoded);
+        db.run(
+          "DELETE FROM daily_aggregate WHERE day_local = ? AND source = ? AND variant_id = ? AND workspace = ?",
+          [day, source, variantId, workspace],
+        );
+        db.run(
+          `INSERT INTO daily_aggregate
+           (day_local, source, variant_id, base_model, workspace,
+            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+            reasoning_tokens, total_tokens, turns, cost_usd, unknown_cost_turns)
+           SELECT day_local, source, variant_id, MAX(model), workspace,
+                  SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
+                  SUM(cache_creation_tokens), SUM(reasoning_tokens), SUM(total_tokens),
+                  COUNT(*), SUM(cost_usd), SUM(cost_unknown)
+           FROM usage_record
+           WHERE day_local = ? AND source = ? AND variant_id = ? AND workspace = ?
+           GROUP BY day_local, source, variant_id, workspace`,
+          [day, source, variantId, workspace],
+        );
+      }
+
+      for (const encoded of sessionKeys) {
+        const [source, sessionId] = decodeKey(encoded);
+        db.run("DELETE FROM session_aggregate WHERE source = ? AND session_id = ?", [source, sessionId]);
+        db.run(
+          `INSERT INTO session_aggregate
+           (source, session_id, workspace, first_ts_utc, last_ts_utc,
+            turns, total_tokens, cost_usd, sidechain_tokens)
+           SELECT source, session_id,
+                  MAX(CASE WHEN workspace != '' THEN workspace ELSE '' END),
+                  MIN(ts_utc), MAX(ts_utc), COUNT(*), SUM(total_tokens), SUM(cost_usd),
+                  SUM(CASE WHEN is_sidechain = 1 THEN total_tokens ELSE 0 END)
+           FROM usage_record WHERE source = ? AND session_id = ?
+           GROUP BY source, session_id`,
+          [source, sessionId],
+        );
+      }
+
+      this.putCursor(cursor);
+      db.run("COMMIT");
+    } catch (error) {
+      db.run("ROLLBACK");
+      throw error;
     }
   }
 
@@ -778,6 +1051,91 @@ export class UsageStore {
     `);
   }
 
+  private hasApplicationTables(): boolean {
+    const result = this.getDb().exec(
+      "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('usage_record', 'file_cursor', 'daily_aggregate')",
+    );
+    return Number(result[0]?.values[0]?.[0] ?? 0) > 0;
+  }
+
+  private migrateV6ToV7(): void {
+    const db = this.getDb();
+    const before = this.migrationFingerprint();
+    db.run("BEGIN TRANSACTION");
+    try {
+      db.run("ALTER TABLE file_cursor ADD COLUMN parse_revision INTEGER NOT NULL DEFAULT 0");
+      const rows = db.exec("SELECT file_path, source, contribution FROM file_cursor");
+      if (rows.length > 0) {
+        const update = db.prepare("UPDATE file_cursor SET parse_revision = ? WHERE file_path = ?");
+        try {
+          for (const row of rows[0].values) {
+            const filePath = row[0];
+            const source = row[1];
+            const serialized = row[2];
+            if (
+              typeof filePath !== "string" ||
+              (source !== "codex" && source !== "claude") ||
+              typeof serialized !== "string"
+            ) {
+              continue;
+            }
+            try {
+              const contribution = JSON.parse(serialized) as FileContribution;
+              if (!isEmptyContribution(contribution)) {
+                update.run([parseRevisionForSource(source), filePath]);
+              }
+            } catch {
+              // Leave malformed legacy cursors at revision 0 so they are safely reparsed.
+            }
+          }
+        } finally {
+          update.free();
+        }
+      }
+      db.run("UPDATE meta SET value = '7' WHERE key = 'schema_version'");
+      db.run("COMMIT");
+    } catch (error) {
+      db.run("ROLLBACK");
+      throw error;
+    }
+    const after = this.migrationFingerprint();
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      throw new Error("Schema v7 migration changed canonical usage data");
+    }
+  }
+
+  private migrationFingerprint(): number[] {
+    const result = this.getDb().exec(
+      `SELECT COUNT(*), COUNT(DISTINCT dedup_key),
+              COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+              COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_creation_tokens), 0),
+              COALESCE(SUM(reasoning_tokens), 0)
+       FROM usage_record`,
+    );
+    return (result[0]?.values[0] ?? []).map(Number);
+  }
+
+  private migrateV7ToV8(): void {
+    const db = this.getDb();
+    const before = this.migrationFingerprint();
+    db.run("BEGIN TRANSACTION");
+    try {
+      db.run("ALTER TABLE usage_record ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0");
+      db.run("ALTER TABLE usage_record ADD COLUMN cost_unknown INTEGER NOT NULL DEFAULT 0");
+      db.run("CREATE INDEX IF NOT EXISTS idx_rec_session_model ON usage_record(source, session_id, model)");
+      db.run("CREATE INDEX IF NOT EXISTS idx_rec_daily_key ON usage_record(day_local, source, variant_id, workspace)");
+      db.run("UPDATE meta SET value = '8' WHERE key = 'schema_version'");
+      db.run("COMMIT");
+    } catch (error) {
+      db.run("ROLLBACK");
+      throw error;
+    }
+    const after = this.migrationFingerprint();
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      throw new Error("Schema v8 migration changed canonical usage data");
+    }
+  }
+
   private getMetaNumber(key: string): number | undefined {
     const result = this.getDb().exec("SELECT value FROM meta WHERE key = ?", [key]);
     if (result.length === 0 || result[0].values.length === 0) {
@@ -805,4 +1163,19 @@ function dayRangeFromContribution(contribution: FileContribution): { minDay: str
     return { minDay, maxDay };
   }
   return undefined;
+}
+
+function isEmptyContribution(contribution: FileContribution): boolean {
+  return contribution.daily.length === 0 &&
+    contribution.sessions.length === 0 &&
+    contribution.recordKeys.length === 0 &&
+    contribution.toolEventCount === 0;
+}
+
+function encodeKey(...parts: string[]): string {
+  return parts.join("\0");
+}
+
+function decodeKey(value: string): string[] {
+  return value.split("\0");
 }

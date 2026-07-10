@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 8;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -28,12 +28,16 @@ CREATE TABLE IF NOT EXISTS usage_record (
   context_window       INTEGER,
   context_used_tokens  INTEGER,
   is_sidechain         INTEGER NOT NULL DEFAULT 0,
-  stop_reason          TEXT
+  stop_reason          TEXT,
+  cost_usd             REAL NOT NULL DEFAULT 0,
+  cost_unknown         INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_rec_ts ON usage_record(ts_utc);
 CREATE INDEX IF NOT EXISTS idx_rec_file ON usage_record(file_id);
 CREATE INDEX IF NOT EXISTS idx_rec_session ON usage_record(source, session_id);
 CREATE INDEX IF NOT EXISTS idx_rec_day ON usage_record(day_local);
+CREATE INDEX IF NOT EXISTS idx_rec_session_model ON usage_record(source, session_id, model);
+CREATE INDEX IF NOT EXISTS idx_rec_daily_key ON usage_record(day_local, source, variant_id, workspace);
 
 CREATE TABLE IF NOT EXISTS tool_event (
   event_key        TEXT PRIMARY KEY,
@@ -97,7 +101,8 @@ CREATE TABLE IF NOT EXISTS file_cursor (
   tail_anchor_hash TEXT NOT NULL,
   running_totals   TEXT NOT NULL,
   recent_req_ids   TEXT NOT NULL,
-  contribution     TEXT NOT NULL
+  contribution     TEXT NOT NULL,
+  parse_revision   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS file_catalog (

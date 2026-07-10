@@ -25,7 +25,7 @@ suite("Diagnostics report tests", () => {
       dedupKey: "codex:diag-session:1",
       fileId: "diag-file",
       sessionId: "diag-session",
-      ts: firstTs,
+      ts: lastTs,
       model: "custom-large",
       inputTokens: 100,
       outputTokens: 50,

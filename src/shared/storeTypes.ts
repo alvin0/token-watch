@@ -114,10 +114,11 @@ export interface FileCursor {
   tailAnchorHash: string;          // hash of the W bytes ending exactly at lastByteOffset — append guard (Req 4.8)
   runningTotals: Record<string, CumulativeTotals>;
   recentRequestIds: string[];
+  parseRevision: number;           // source parser revision that produced this cursor
   contribution: FileContribution;
 }
 
-/** Exactly what this file added, so re-ingest can subtract it (Req 4.10). */
+/** Cursor summary; stored costs are not authoritative in schema v8. */
 export interface FileContribution {
   daily: Array<{ day: string; source: Source; variantId: string; workspace: string;
                  sums: TokenSums; turns: number; costUsd: number; unknownTurns: number }>;
@@ -129,21 +130,15 @@ export interface FileContribution {
 }
 
 /**
- * The per-file ingest payload consumed by `UsageStore.applyFileResult(fileId,
- * batch)` (Req 2.8, 4.19). The worker computes one of these per file and the
- * store applies it in a single transaction: it upserts each `UsageRecord` row
- * by `dedupKey` (replace semantics) and each `ToolEvent`, then folds in the
- * already-rolled-up aggregate deltas carried by `contribution`.
+ * Per-file normalized payload consumed by the store.
  *
  * Cost handling: costs are computed in the worker via the PricingEngine BEFORE
  * this batch is built, so the rolled-up cost deltas live on
  * `contribution.daily[].costUsd` / `contribution.sessions[].costUsd` (and the
  * unknown-cost turn counts on `contribution.daily[].unknownTurns`). The
- * `records` carry token data only; the store does not recompute per-record cost
- * on ingest. This keeps `StoreBatch` minimal and avoids duplicating cost on
- * both the records and the contribution. `contribution` is also persisted onto
- * the `FileCursor` so a later re-ingest can subtract exactly what was added
- * (Req 4.10).
+ * In schema v8, `commitFileResult` prices usage records and recomputes affected
+ * aggregates from those rows. Contribution costs remain only for compatibility
+ * with existing cursor diagnostics.
  */
 export interface StoreBatch {
   records: UsageRecord[];

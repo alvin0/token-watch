@@ -48,7 +48,7 @@ interface ClaudeLogLine {
 
 export class ClaudeParser implements SourceParser {
   async parse(input: ParseInput, sink: (batch: ParseOutput) => void): Promise<void> {
-    const { filePath, fileId, startOffset, maxLineBytes, resumeState } = input;
+    const { filePath, fileId, startOffset, endOffset, maxLineBytes, resumeState } = input;
     const fileScope = scopedFileId(fileId ?? filePath);
 
     const rawTurns: RawClaudeTurn[] = [];
@@ -85,7 +85,7 @@ export class ClaudeParser implements SourceParser {
       }
     }
 
-    const stats = await readLines({ filePath, startOffset, maxLineBytes }, (line, byteOffset, isCompleteLine) => {
+    const stats = await readLines({ filePath, startOffset, endOffset, maxLineBytes }, (line, byteOffset, isCompleteLine) => {
       // Fast substring check: only parse lines with both "assistant" and "usage"
       if (!line.includes('"assistant"') || !line.includes('"usage"')) {
         return;

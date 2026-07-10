@@ -9,7 +9,7 @@
  */
 
 import type { CandidateFile } from "./discovery";
-import type { UsageStore } from "./store/UsageStore";
+import type { FileCursorHeader, UsageStore } from "./store/UsageStore";
 import type { FileCursor, StoreBatch, FileContribution } from "../shared/storeTypes";
 import type { UsageRecord, ToolEvent, Source, TokenSums } from "../shared/types";
 import { totalTokens } from "../shared/types";
@@ -20,6 +20,7 @@ import { normalize } from "./normalizer";
 import { LONG_CONTEXT_THRESHOLD_TOKENS, PricingEngine } from "./pricing";
 import { localDay } from "../shared/time";
 import type { ParseOutput, ResumeState } from "./parsers/types";
+import { parseRevisionForSource } from "./parsers/revision";
 
 export type IngestDecision = "skip" | "append" | "reingest" | "firstRead";
 
@@ -29,6 +30,10 @@ export interface IngestResult {
   appended: number;
   reingested: number;
   firstReads: number;
+}
+
+export function hasIngestedChanges(result: IngestResult): boolean {
+  return result.appended + result.reingested + result.firstReads > 0;
 }
 
 export interface IngestOptions {
@@ -48,7 +53,7 @@ const EVENT_LOOP_YIELD_INTERVAL = 25;
  */
 export function decideAction(
   candidate: CandidateFile,
-  cursor: FileCursor | undefined,
+  cursor: FileCursorHeader | FileCursor | undefined,
 ): IngestDecision {
   if (!cursor) {
     return "firstRead";
@@ -56,7 +61,7 @@ export function decideAction(
   if (candidate.fileId !== cursor.fileId) {
     return "reingest";
   }
-  if (candidate.size > 0 && isEmptyContribution(cursor.contribution)) {
+  if (cursor.parseRevision !== parseRevisionForSource(candidate.source)) {
     return "reingest";
   }
   // Skip: size+mtime unchanged (Req 4.6)
@@ -86,12 +91,13 @@ export async function ingestFile(
     decision: d, malformedCount: 0, oversizedCount: 0,
   });
 
-  const cursor = store.getCursor(candidate.filePath);
-  let decision = decideAction(candidate, cursor);
+  const cursorHeader = store.getCursorHeader(candidate.filePath);
+  let decision = decideAction(candidate, cursorHeader);
 
   if (decision === "skip") {
     return empty("skip");
   }
+  const cursor = cursorHeader ? store.getCursor(candidate.filePath) : undefined;
 
   // Backfill cap: on first reads only, skip files older than backfillMonths (Req 4.24)
   // backfillMonths === 0 means unlimited (no cap).
@@ -134,6 +140,7 @@ export async function ingestFile(
         filePath: candidate.filePath,
         fileId: candidate.fileId,
         startOffset,
+        endOffset: candidate.size,
         maxLineBytes: options.maxLineBytes,
         resumeState,
       },
@@ -162,6 +169,7 @@ export async function ingestFile(
       tailAnchorHash: tailAnchor,
       runningTotals: {},
       recentRequestIds: [],
+      parseRevision: parseRevisionForSource(candidate.source),
       contribution: decision === "append" && cursor ? cursor.contribution : emptyContribution,
     });
     return empty(decision);
@@ -214,20 +222,10 @@ export async function ingestFile(
   // Build StoreBatch
   const batch: StoreBatch = { records, toolEvents, contribution };
 
-  // Reingest: subtract old contribution only after a successful parse. This
-  // keeps the previous good data if an active file ends at a partial JSON line.
-  if (decision === "reingest" && cursor) {
-    store.subtractFileContribution(cursor.fileId);
-    store.deleteFileRows(cursor.fileId);
-  }
-
-  // Apply to store
-  store.applyFileResult(candidate.fileId, batch);
-
-  // Update cursor
+  // Hashes and cursor are finalized before the single targeted store transaction.
   const headHash = computeHeadHash(candidate.filePath, candidate.size);
   const tailAnchor = computeTailAnchorHash(candidate.filePath, parseOutput.endOffset);
-  store.putCursor({
+  const nextCursor: FileCursor = {
     filePath: candidate.filePath,
     fileId: candidate.fileId,
     source: candidate.source,
@@ -238,8 +236,17 @@ export async function ingestFile(
     tailAnchorHash: tailAnchor,
     runningTotals: parseOutput.endState.runningTotals,
     recentRequestIds: parseOutput.endState.recentRequestIds,
+    parseRevision: parseRevisionForSource(candidate.source),
     contribution: finalContribution,
-  });
+  };
+  store.commitFileResult(
+    candidate.fileId,
+    batch,
+    decision,
+    pricing,
+    nextCursor,
+    cursor?.fileId,
+  );
 
   return {
     decision,
@@ -311,8 +318,10 @@ export async function ingestAll(
 
   // Record unmapped models — evaluate against ALL models in the store, not just
   // those parsed this run, so a watch tick on one file doesn't clobber the set.
-  const unmapped = pricing.unmappedModels(store.distinctModels());
-  store.recordUnmappedModels(unmapped, pricing.fallbackModelRate());
+  if (hasIngestedChanges(result)) {
+    const unmapped = pricing.unmappedModels(store.distinctModels());
+    store.recordUnmappedModels(unmapped, pricing.fallbackModelRate());
+  }
 
   return result;
 }
@@ -327,10 +336,20 @@ export function rankCandidatesForIngestion(
   now = Date.now(),
 ): Array<{ candidate: CandidateFile; priorityScore: number }> {
   return candidates
-    .map((candidate) => ({
-      candidate,
-      priorityScore: candidatePriorityScore(candidate, store?.getCursor(candidate.filePath), now),
-    }))
+    .map((candidate) => {
+      const rankInfo = store?.getCursorRankInfo(candidate.filePath);
+      return {
+        candidate,
+        priorityScore: candidatePriorityScore(
+          candidate,
+          rankInfo?.cursor,
+          now,
+          rankInfo?.minDay && rankInfo.maxDay
+            ? { minDay: rankInfo.minDay, maxDay: rankInfo.maxDay }
+            : undefined,
+        ),
+      };
+    })
     .sort((a, b) =>
       b.priorityScore - a.priorityScore ||
       b.candidate.mtimeMs - a.candidate.mtimeMs ||
@@ -340,14 +359,17 @@ export function rankCandidatesForIngestion(
 
 export function candidatePriorityScore(
   candidate: CandidateFile,
-  cursor: FileCursor | undefined,
+  cursor: FileCursorHeader | FileCursor | undefined,
   now = Date.now(),
+  knownDayRange?: { minDay: string; maxDay: string },
 ): number {
   const todayStart = startOfLocalDayMs(now);
   const weekStartDay = localDay(new Date(todayStart - 6 * DAY_MS));
   const today = localDay(new Date(now));
   const recentCutoff = now - RECENT_FILE_WINDOW_MS;
-  const dayRange = cursor ? dayRangeFromContribution(cursor.contribution) : undefined;
+  const dayRange = knownDayRange ?? (cursor && "contribution" in cursor
+    ? dayRangeFromContribution(cursor.contribution)
+    : undefined);
   const isNew = !cursor;
   const changed = cursor
     ? candidate.fileId !== cursor.fileId || candidate.size !== cursor.size || candidate.mtimeMs !== cursor.mtimeMs
@@ -394,13 +416,6 @@ function dayRangeFromContribution(contribution: FileContribution): { minDay: str
     }
   }
   return minDay && maxDay ? { minDay, maxDay } : undefined;
-}
-
-function isEmptyContribution(contribution: FileContribution): boolean {
-  return contribution.daily.length === 0 &&
-    contribution.sessions.length === 0 &&
-    contribution.recordKeys.length === 0 &&
-    contribution.toolEventCount === 0;
 }
 
 function hasOverlappingRecordKeys(contribution: FileContribution, records: UsageRecord[]): boolean {

@@ -47,12 +47,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 
     // Subscribe to coordinator data changes → push dataChanged to WebView
     this.disposables.push(
-      coordinator.onChanged((freshness) => {
-        this.latestFreshness = freshness;
+      coordinator.onChanged(() => {
         this.postMessage({ type: "dataChanged" });
-        this.pushStatus();
         void this.refreshCodexUsage();
         void this.refreshClaudeUsage();
+      }),
+      coordinator.onScanComplete((freshness) => {
+        this.latestFreshness = freshness;
+        this.pushStatus();
       }),
       coordinator.onProgress((progress) => {
         this.postMessage({ type: "ingestProgress", processed: progress.processed, total: progress.total, partial: progress.partial });

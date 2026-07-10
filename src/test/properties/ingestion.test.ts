@@ -5,7 +5,7 @@ import { appendFileSync, writeFileSync, unlinkSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { candidatePriorityScore, decideAction, ingestFile, orderCandidatesForIngestion } from "../../worker/ingest.js";
+import { candidatePriorityScore, decideAction, hasIngestedChanges, ingestFile, orderCandidatesForIngestion } from "../../worker/ingest.js";
 import { computeHeadHash, computeTailAnchorHash } from "../../worker/cursor.js";
 import { CodexParser } from "../../worker/parsers/codex.js";
 import { PricingEngine } from "../../worker/pricing.js";
@@ -369,6 +369,14 @@ suite("Ingestion property tests", () => {
 });
 
 suite("Ingestion example tests", () => {
+  test("no-op result is not reported as a data change", () => {
+    assert.strictEqual(hasIngestedChanges({
+      processed: 200, skipped: 200, appended: 0, reingested: 0, firstReads: 0,
+    }), false);
+    assert.strictEqual(hasIngestedChanges({
+      processed: 1, skipped: 0, appended: 1, reingested: 0, firstReads: 0,
+    }), true);
+  });
   test("Skip path: decideAction returns 'skip' when cursor matches size+mtime (no fs.open)", () => {
     // Create a temp file to get a real stat
     const file = tmpFile("skip-example");
@@ -397,6 +405,7 @@ suite("Ingestion example tests", () => {
         tailAnchorHash: "irrelevant-because-skip",
         runningTotals: {},
         recentRequestIds: [],
+        parseRevision: 1,
         contribution: oneDayContribution("2026-06-04"),
       };
 
@@ -425,6 +434,7 @@ suite("Ingestion example tests", () => {
         tailAnchorHash: computeTailAnchorHash(file, stat.size),
         runningTotals: {},
         recentRequestIds: [],
+        parseRevision: 0,
         contribution: { daily: [], sessions: [], recordKeys: [], toolEventCount: 0 },
       };
 
@@ -444,7 +454,7 @@ suite("Ingestion example tests", () => {
     }
   });
 
-  test("Unchanged non-empty file with empty cursor contribution is reingested from the start", () => {
+  test("Legacy empty cursor is reingested once when its parser revision is stale", () => {
     const file = tmpFile("unchanged-empty-cursor-reingest");
     writeFileSync(file, "AAAA\n", "utf8");
 
@@ -468,6 +478,7 @@ suite("Ingestion example tests", () => {
         tailAnchorHash: computeTailAnchorHash(file, stat.size),
         runningTotals: {},
         recentRequestIds: [],
+        parseRevision: 0,
         contribution: { daily: [], sessions: [], recordKeys: [], toolEventCount: 0 },
       };
 
@@ -475,6 +486,28 @@ suite("Ingestion example tests", () => {
     } finally {
       unlinkSync(file);
     }
+  });
+
+  test("Validated empty cursor is skipped when size, mtime, and parser revision match", () => {
+    const candidate: CandidateFile = {
+      filePath: "/tmp/validated-empty.jsonl",
+      source: "codex",
+      size: 5,
+      mtimeMs: 123,
+      fileId: "validated-empty",
+    };
+    const cursor: FileCursor = {
+      ...candidate,
+      lastByteOffset: candidate.size,
+      headHash: "head",
+      tailAnchorHash: "tail",
+      runningTotals: {},
+      recentRequestIds: [],
+      parseRevision: 1,
+      contribution: { daily: [], sessions: [], recordKeys: [], toolEventCount: 0 },
+    };
+
+    assert.strictEqual(decideAction(candidate, cursor), "skip");
   });
 
   test("Same-path file identity changes are reingested from the start", () => {
@@ -501,6 +534,7 @@ suite("Ingestion example tests", () => {
         tailAnchorHash: computeTailAnchorHash(file, stat.size),
         runningTotals: {},
         recentRequestIds: [],
+        parseRevision: 1,
         contribution: oneDayContribution("2026-06-04"),
       };
 
@@ -533,6 +567,7 @@ suite("Ingestion example tests", () => {
         tailAnchorHash,
         runningTotals: {},
         recentRequestIds: [],
+        parseRevision: 1,
         contribution: oneDayContribution("2026-06-04"),
       };
 
@@ -703,6 +738,7 @@ function cursorForCandidate(candidate: CandidateFile, day: string): FileCursor {
     tailAnchorHash: "tail",
     runningTotals: {},
     recentRequestIds: [],
+    parseRevision: 1,
     contribution: oneDayContribution(day),
   };
 }

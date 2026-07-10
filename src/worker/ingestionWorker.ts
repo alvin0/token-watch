@@ -9,13 +9,15 @@
 
 import { parentPort } from "worker_threads";
 import { join } from "node:path";
+import { copyFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import initSqlJs from "sql.js";
 import { UsageStore } from "./store/UsageStore.js";
 import { PricingEngine } from "./pricing.js";
 import { AnalyticsService } from "./analytics.js";
 import { mergePricingConfig, type PricingMergeAudit } from "../shared/pricingMerge.js";
 import { scan, scanChanged } from "./discovery.js";
-import { ingestAll } from "./ingest.js";
+import { hasIngestedChanges, ingestAll } from "./ingest.js";
 import { buildDiagnosticsReport } from "./diagnostics.js";
 import { dedupMigrationCanRebuild, storedFilesCanRebuild } from "./migration.js";
 import * as queries from "./store/queries.js";
@@ -35,6 +37,9 @@ let pendingPricing: PricingTable | undefined;
 let pendingReset = false;
 let needsDedupKeyMigration = false;
 let needsCodexAccountingMigration = false;
+let activePricingFingerprint = "";
+let pendingFlush = false;
+const pendingAnalyticsQueries: Array<Extract<WorkerRequest, { type: "query" }>> = [];
 let pricingAudit: PricingMergeAudit = {
   ignoredKnownModelOverrides: [],
   ignoredFallbackOverride: false,
@@ -44,6 +49,10 @@ let pricingAudit: PricingMergeAudit = {
 const FULL_DISCOVERY_MIN_INTERVAL_MS = 2 * 60 * 1000;
 const CODEX_FILE_SCOPE_DEDUP_META_KEY = "codex_file_scoped_dedup_v1";
 const CODEX_CUMULATIVE_DELTA_META_KEY = "codex_cumulative_delta_accounting_v1";
+const PRICING_FINGERPRINT_META_KEY = "pricing_fingerprint_v2";
+const AGGREGATE_ALGORITHM_META_KEY = "aggregate_algorithm_version";
+const AGGREGATE_FALLBACK_COUNT_META_KEY = "aggregate_fallback_count";
+const AGGREGATE_ALGORITHM_VERSION = "2";
 
 function post(event: WorkerEvent): void {
   parentPort!.postMessage(event);
@@ -140,6 +149,21 @@ async function runScanQueue(first?: ScanRequest): Promise<void> {
         try {
           await handleScanAndIngest(current);
         } catch (err: unknown) {
+          if (store && pricing && current.forceFull) {
+            try {
+              store.reload();
+              analytics = new AnalyticsService(store.database, pricing);
+            } catch {
+              // Preserve the original scan error; reload is best-effort.
+            }
+          } else if (store && pricing) {
+            try {
+              queries.rebuildAggregates(store.database, pricing);
+              store.flush();
+            } catch {
+              // Preserve the original scan error; recovery is best-effort.
+            }
+          }
           const scope = classifyErrorScope(err, current.type);
           const message = sanitizeErrorMessage(err);
           post({ type: "error", scope, message });
@@ -158,6 +182,14 @@ async function runScanQueue(first?: ScanRequest): Promise<void> {
         try {
           await handleResetDatabase();
         } catch (err: unknown) {
+          if (store && pricing) {
+            try {
+              store.reload();
+              analytics = new AnalyticsService(store.database, pricing);
+            } catch {
+              // Preserve the reset error; reload is best-effort.
+            }
+          }
           const scope = classifyErrorScope(err, "resetDatabase");
           const message = sanitizeErrorMessage(err);
           post({ type: "error", scope, message });
@@ -178,6 +210,11 @@ async function runScanQueue(first?: ScanRequest): Promise<void> {
     }
   } finally {
     scanInProgress = false;
+    if (pendingFlush && store) {
+      pendingFlush = false;
+      store.flush();
+    }
+    drainPendingAnalyticsQueries();
     if (pendingScan) {
       const queued = pendingScan;
       pendingScan = undefined;
@@ -223,6 +260,7 @@ async function handleScanAndIngest(req: ScanRequest): Promise<void> {
         type: "ingestComplete",
         freshness: analytics.freshness(),
         warnings: analytics.warnings(),
+        dataChanged: false,
       });
       return;
     }
@@ -292,25 +330,26 @@ async function ingestCandidates(req: ScanRequest, candidates: ReturnType<typeof 
     backfillMonths: req.forceFull ? 0 : config.ingestion.backfillMonths,
   };
 
-  await ingestAll(candidates, store, pricing, options, (processed, total, fileResult) => {
+  const result = await ingestAll(candidates, store, pricing, options, (processed, total) => {
     post({ type: "progress", processed, total, partial: true });
-    const currentAnalytics = analytics;
-    if (currentAnalytics && fileResult.decision !== "skip") {
-      post({
-        type: "ingestComplete",
-        freshness: currentAnalytics.freshness(),
-        warnings: currentAnalytics.warnings(),
-      });
-    }
   });
 
-  queries.rebuildAggregates(store.database, pricing);
+  const dataChanged = hasIngestedChanges(result);
+  if (dataChanged) {
+    const integrity = queries.aggregateIntegrity(store.database);
+    if (!integrity.valid) {
+      queries.rebuildAggregates(store.database, pricing);
+      const fallbackCount = Number(store.getMeta(AGGREGATE_FALLBACK_COUNT_META_KEY) ?? 0);
+      store.setMeta(AGGREGATE_FALLBACK_COUNT_META_KEY, String(fallbackCount + 1));
+    }
+  }
   store.flush();
   post({ type: "progress", processed: candidates.length, total: candidates.length, partial: false });
   post({
     type: "ingestComplete",
     freshness: analytics.freshness(),
     warnings: analytics.warnings(),
+    dataChanged,
   });
 }
 
@@ -330,6 +369,9 @@ function handleUpdatePricing(table: PricingTable): void {
   pricing = new PricingEngine(merged.table, merged.fallbackRate);
   analytics = new AnalyticsService(store.database, pricing);
   queries.rebuildAggregates(store.database, pricing);
+  store.setMeta(PRICING_FINGERPRINT_META_KEY, pricingFingerprint(merged.table, merged.fallbackRate));
+  activePricingFingerprint = pricingFingerprint(merged.table, merged.fallbackRate);
+  store.setMeta(AGGREGATE_ALGORITHM_META_KEY, AGGREGATE_ALGORITHM_VERSION);
   // Recompute unmapped models with new pricing table
   store.recordUnmappedModels(pricing.unmappedModels(store.distinctModels()), pricing.fallbackModelRate());
   store.flush();
@@ -337,6 +379,7 @@ function handleUpdatePricing(table: PricingTable): void {
     type: "ingestComplete",
     freshness: analytics.freshness(),
     warnings: analytics.warnings(),
+    dataChanged: true,
   });
 }
 
@@ -348,9 +391,12 @@ async function handleResetDatabase(): Promise<void> {
 
   store.resetDatabase();
   store.setMeta(CODEX_FILE_SCOPE_DEDUP_META_KEY, "1");
+  store.setMeta(CODEX_CUMULATIVE_DELTA_META_KEY, "1");
+  store.setMeta(PRICING_FINGERPRINT_META_KEY, activePricingFingerprint);
+  store.setMeta(AGGREGATE_ALGORITHM_META_KEY, AGGREGATE_ALGORITHM_VERSION);
   needsDedupKeyMigration = false;
+  needsCodexAccountingMigration = false;
   analytics = new AnalyticsService(store.database, pricing);
-  store.flush();
 
   const sourceRoots = {
     codex: config.sources.codex.enabled
@@ -369,15 +415,35 @@ async function handleInit(req: Extract<WorkerRequest, { type: "init" }>): Promis
     locateFile: (file: string) => join(__dirname, file),
   });
 
+  if (!existsSync(req.dbPath)) {
+    if (req.previousDbPath && !existsSync(req.previousDbPath) && req.legacyDbPath && existsSync(req.legacyDbPath)) {
+      copyFileSync(req.legacyDbPath, req.previousDbPath);
+      const previousStore = new UsageStore();
+      await previousStore.open(req.previousDbPath, SQL);
+      try {
+        await previousStore.migrateOrRebuild(7);
+        previousStore.flush();
+      } finally {
+        previousStore.close();
+      }
+    }
+    const sourcePath = req.previousDbPath && existsSync(req.previousDbPath)
+      ? req.previousDbPath
+      : req.legacyDbPath && existsSync(req.legacyDbPath)
+        ? req.legacyDbPath
+        : undefined;
+    if (sourcePath) {
+      copyFileSync(sourcePath, req.dbPath);
+    }
+  }
   store = new UsageStore();
   await store.open(req.dbPath, SQL);
-  const schema = await store.migrateOrRebuild();
-
   config = req.config;
 
   const merged = mergePricingConfig(req.config.pricingOverrides);
   pricingAudit = merged.audit;
   pricing = new PricingEngine(merged.table, merged.fallbackRate);
+  const schema = await store.migrateOrRebuild();
 
   analytics = new AnalyticsService(store.database, pricing);
   const usageRecordCount = store.usageRecordCount();
@@ -392,9 +458,18 @@ async function handleInit(req: Extract<WorkerRequest, { type: "init" }>): Promis
   if (codexUsageRecordCount === 0 && store.getMeta(CODEX_CUMULATIVE_DELTA_META_KEY) !== "1") {
     store.setMeta(CODEX_CUMULATIVE_DELTA_META_KEY, "1");
   }
-  if (!needsDedupKeyMigration && !needsCodexAccountingMigration) {
+  const expectedPricingFingerprint = pricingFingerprint(merged.table, merged.fallbackRate);
+  activePricingFingerprint = expectedPricingFingerprint;
+  const requiresAggregateRepair =
+    schema !== "ok" ||
+    store.getMeta(PRICING_FINGERPRINT_META_KEY) !== expectedPricingFingerprint ||
+    store.getMeta(AGGREGATE_ALGORITHM_META_KEY) !== AGGREGATE_ALGORITHM_VERSION ||
+    !queries.aggregateIntegrity(store.database).valid;
+  if (requiresAggregateRepair) {
     queries.rebuildAggregates(store.database, pricing);
   }
+  store.setMeta(PRICING_FINGERPRINT_META_KEY, expectedPricingFingerprint);
+  store.setMeta(AGGREGATE_ALGORITHM_META_KEY, AGGREGATE_ALGORITHM_VERSION);
   store.recordUnmappedModels(pricing.unmappedModels(store.distinctModels()), pricing.fallbackModelRate());
   store.flush();
 
@@ -420,16 +495,11 @@ parentPort!.on("message", (req: WorkerRequest) => {
         break;
 
       case "query": {
-        if (!analytics) {
-          post({ type: "queryError", id: req.id, message: "Worker not initialized" });
+        if (scanInProgress) {
+          pendingAnalyticsQueries.push(req);
           return;
         }
-        try {
-          const result = analytics.query(req.query);
-          post({ type: "queryResult", id: req.id, result });
-        } catch (err: unknown) {
-          post({ type: "queryError", id: req.id, message: sanitizeErrorMessage(err) });
-        }
+        handleAnalyticsQuery(req);
         break;
       }
 
@@ -466,7 +536,9 @@ parentPort!.on("message", (req: WorkerRequest) => {
       }
 
       case "flush":
-        if (store) {
+        if (scanInProgress) {
+          pendingFlush = true;
+        } else if (store) {
           store.flush();
         }
         break;
@@ -477,3 +549,32 @@ parentPort!.on("message", (req: WorkerRequest) => {
     post({ type: "error", scope, message });
   });
 });
+
+function handleAnalyticsQuery(req: Extract<WorkerRequest, { type: "query" }>): void {
+        if (!analytics) {
+          post({ type: "queryError", id: req.id, message: "Worker not initialized" });
+          return;
+        }
+        try {
+          const result = analytics.query(req.query);
+          post({ type: "queryResult", id: req.id, result });
+        } catch (err: unknown) {
+          post({ type: "queryError", id: req.id, message: sanitizeErrorMessage(err) });
+        }
+}
+
+function drainPendingAnalyticsQueries(): void {
+  const pending = pendingAnalyticsQueries.splice(0);
+  for (const query of pending) {
+    handleAnalyticsQuery(query);
+  }
+}
+
+function pricingFingerprint(table: PricingTable, fallbackRate: unknown): string {
+  const sortedTable = Object.fromEntries(
+    Object.entries(table).sort(([left], [right]) => left.localeCompare(right)),
+  );
+  return createHash("sha256")
+    .update(JSON.stringify({ table: sortedTable, fallbackRate, algorithm: AGGREGATE_ALGORITHM_VERSION }))
+    .digest("hex");
+}

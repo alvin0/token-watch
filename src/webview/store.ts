@@ -63,6 +63,10 @@ export interface Store extends Filters, DataSlice, StatusSlice, Actions {}
 // --- Helpers ---
 
 let queryCounter = 0;
+let filterGeneration = 0;
+let activeQueryId: string | undefined;
+let refreshQueued = false;
+const queryGenerations = new Map<string, number>();
 function nextId(): string {
   return `q-${++queryCounter}`;
 }
@@ -97,6 +101,7 @@ export const useStore = create<Store>((set, get) => ({
 
   // Actions
   setFilter(partial) {
+    filterGeneration++;
     // If granularity changed, update the query range accordingly
     if (partial.granularity && partial.granularity !== get().granularity) {
       partial = { ...partial, range: queryRangeForPeriod(partial.granularity as Period) };
@@ -107,8 +112,15 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   applyResult(id, result) {
+    const generation = queryGenerations.get(id);
+    queryGenerations.delete(id);
+    if (id !== activeQueryId) {
+      return;
+    }
+    activeQueryId = undefined;
+    const shouldApply = generation === filterGeneration;
     // Replace any previous result for the same view type
-    set((s) => {
+    if (shouldApply) { set((s) => {
       const newResults: Record<string, AnalyticsResult> = {};
       // Keep results for OTHER views, replace this view
       for (const [k, v] of Object.entries(s.results)) {
@@ -116,11 +128,26 @@ export const useStore = create<Store>((set, get) => ({
       }
       newResults[id] = result;
       return { results: newResults, queryPending: false, queryError: undefined };
-    });
+    }); } else {
+      set({ queryPending: false });
+    }
+    if (refreshQueued) {
+      refreshQueued = false;
+      queueMicrotask(() => get().requestQuery());
+    }
   },
 
-  applyQueryError(_id, message) {
+  applyQueryError(id, message) {
+    queryGenerations.delete(id);
+    if (id !== activeQueryId) {
+      return;
+    }
+    activeQueryId = undefined;
     set({ queryPending: false, queryError: message });
+    if (refreshQueued) {
+      refreshQueued = false;
+      queueMicrotask(() => get().requestQuery());
+    }
   },
 
   setStatus(status) {
@@ -128,8 +155,14 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   requestQuery() {
+    if (activeQueryId) {
+      refreshQueued = true;
+      return;
+    }
     const s = get();
     const id = nextId();
+    activeQueryId = id;
+    queryGenerations.set(id, filterGeneration);
     const range = queryRangeForPeriod(s.granularity);
     if (range.fromUtc !== s.range.fromUtc || range.toUtc !== s.range.toUtc) {
       set({ range });

@@ -14,6 +14,7 @@ import { openSync, readSync, closeSync, fstatSync } from "node:fs";
 export interface LineReaderOptions {
   filePath: string;
   startOffset: number;
+  endOffset?: number;
   maxLineBytes: number;
 }
 
@@ -24,6 +25,7 @@ export interface LineReaderStats {
 
 /** Read buffer size — 256 KB for good throughput on large files. */
 const READ_BUF_SIZE = 256 * 1024;
+const YIELD_AFTER_BYTES = 16 * 1024 * 1024;
 
 /**
  * Read a file line-by-line from `startOffset` with bounded memory.
@@ -37,11 +39,12 @@ export async function readLines(
   opts: LineReaderOptions,
   onLine: (line: string, byteOffset: number, isCompleteLine: boolean) => void | boolean,
 ): Promise<LineReaderStats> {
-  const { filePath, startOffset, maxLineBytes } = opts;
+  const { filePath, startOffset, endOffset, maxLineBytes } = opts;
 
   const fd = openSync(filePath, "r");
   try {
-    const fileSize = fstatSync(fd).size;
+    const observedSize = fstatSync(fd).size;
+    const fileSize = Math.min(observedSize, endOffset ?? observedSize);
     const readBuf = Buffer.allocUnsafe(READ_BUF_SIZE);
 
     let filePos = startOffset; // current read position in file
@@ -51,6 +54,7 @@ export async function readLines(
     let pending: Buffer | null = null;
     let lineStartOffset = startOffset;
     let oversized = false;
+    let bytesSinceYield = 0;
 
     while (filePos < fileSize) {
       const toRead = Math.min(READ_BUF_SIZE, fileSize - filePos);
@@ -122,6 +126,11 @@ export async function readLines(
       }
 
       filePos += bytesRead;
+      bytesSinceYield += bytesRead;
+      if (bytesSinceYield >= YIELD_AFTER_BYTES && filePos < fileSize) {
+        bytesSinceYield = 0;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
     }
 
     // Handle partial line at EOF (no trailing newline)

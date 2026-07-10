@@ -57,7 +57,7 @@ interface CodexLogLine {
 
 export class CodexParser implements SourceParser {
   async parse(input: ParseInput, sink: (batch: ParseOutput) => void): Promise<void> {
-    const { filePath, fileId, startOffset, maxLineBytes, resumeState } = input;
+    const { filePath, fileId, startOffset, endOffset, maxLineBytes, resumeState } = input;
     const fileScope = scopedFileId(fileId ?? filePath);
     const resumeContext = resumeState?.codex ?? decodeCodexResumeContext(resumeState?.recentRequestIds);
 
@@ -78,7 +78,7 @@ export class CodexParser implements SourceParser {
     let sessionMeta: SessionMeta | undefined;
 
     const stats = await readLines(
-      { filePath, startOffset, maxLineBytes },
+      { filePath, startOffset, endOffset, maxLineBytes },
       (line, byteOffset, isCompleteLine) => {
         // Fast substring check — only parse lines containing relevant keywords
         if (

@@ -277,6 +277,7 @@ suite("Store property tests (in-memory sql.js)", () => {
             tailAnchorHash: "def",
             runningTotals: {},
             recentRequestIds: [],
+            parseRevision: 1,
             contribution: batch.contribution,
           });
 
@@ -661,6 +662,7 @@ function catalogCursor(
     tailAnchorHash: "tail",
     runningTotals: {},
     recentRequestIds: [],
+    parseRevision: 1,
     contribution: {
       daily: [{
         day,

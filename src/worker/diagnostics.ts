@@ -11,6 +11,7 @@ import type { FileContribution } from "../shared/storeTypes.js";
 import type { CumulativeTotals } from "../shared/types.js";
 import { localDayFromMs } from "../shared/time.js";
 import { LONG_CONTEXT_THRESHOLD_TOKENS, PricingEngine } from "./pricing.js";
+import { aggregateIntegrity } from "./store/queries.js";
 
 type SqlValue = number | string | Uint8Array | null;
 
@@ -24,6 +25,11 @@ export function buildDiagnosticsReport(
   const folderDay = folderDayDiagnostics(db);
   return {
     generatedAtUtc: Date.now(),
+    aggregate: {
+      valid: aggregateIntegrity(db).valid,
+      fallbackCount: metaNumber(db, "aggregate_fallback_count"),
+      algorithmVersion: metaString(db, "aggregate_algorithm_version"),
+    },
     pricing: pricingAudit,
     longContext: longContextDiagnostics(db, pricing),
     crossingMidnightSessions: crossingMidnightSessions(db),
@@ -121,37 +127,35 @@ function folderDayDiagnostics(db: Database): {
   const folderCostByDay = new Map<string, number>();
   const mismatches: FolderDayMismatchDiagnostic[] = [];
   const rows = db.exec(
-    `SELECT file_path, contribution
-     FROM file_cursor
-     WHERE source = 'codex'`,
+    `SELECT c.file_path, r.day_local, SUM(r.cost_usd)
+     FROM file_cursor c
+     JOIN usage_record r ON r.file_id = c.file_id
+     WHERE c.source = 'codex'
+     GROUP BY c.file_path, r.day_local`,
   );
 
-  if (rows.length > 0) {
-    for (const row of rows[0].values) {
-      const filePath = str(row[0]);
-      const contribution = parseContribution(str(row[1]));
-      const folderDay = codexFolderDay(filePath);
-      if (!contribution || !folderDay) {
-        continue;
-      }
-
-      let fileCost = 0;
-      const eventDays = new Set<string>();
-      for (const daily of contribution.daily) {
-        eventDays.add(daily.day);
-        fileCost += daily.costUsd;
-        eventCostByDay.set(daily.day, (eventCostByDay.get(daily.day) ?? 0) + daily.costUsd);
-      }
-      folderCostByDay.set(folderDay, (folderCostByDay.get(folderDay) ?? 0) + fileCost);
-
-      if ([...eventDays].some((day) => day !== folderDay)) {
-        mismatches.push({
-          filePath,
-          folderDay,
-          eventDays: [...eventDays].sort(),
-          costUsd: fileCost,
-        });
-      }
+  const files = new Map<string, { folderDay: string; eventDays: Set<string>; costUsd: number }>();
+  for (const row of rows[0]?.values ?? []) {
+    const filePath = str(row[0]);
+    const eventDay = str(row[1]);
+    const cost = num(row[2]);
+    const folderDay = codexFolderDay(filePath);
+    if (!folderDay) { continue; }
+    const file = files.get(filePath) ?? { folderDay, eventDays: new Set<string>(), costUsd: 0 };
+    file.eventDays.add(eventDay);
+    file.costUsd += cost;
+    files.set(filePath, file);
+    eventCostByDay.set(eventDay, (eventCostByDay.get(eventDay) ?? 0) + cost);
+    folderCostByDay.set(folderDay, (folderCostByDay.get(folderDay) ?? 0) + cost);
+  }
+  for (const [filePath, file] of files) {
+    if ([...file.eventDays].some((day) => day !== file.folderDay)) {
+      mismatches.push({
+        filePath,
+        folderDay: file.folderDay,
+        eventDays: [...file.eventDays].sort(),
+        costUsd: file.costUsd,
+      });
     }
   }
 
@@ -259,6 +263,16 @@ function sortedRows(rows: LongContextDiagnosticRow[]): LongContextDiagnosticRow[
   return rows
     .sort((a, b) => b.maxContextUsedTokens - a.maxContextUsedTokens || b.turns - a.turns)
     .slice(0, MAX_DIAGNOSTIC_ROWS);
+}
+
+function metaString(db: Database, key: string): string | undefined {
+  const result = db.exec("SELECT value FROM meta WHERE key = ?", [key]);
+  const value = result[0]?.values[0]?.[0];
+  return typeof value === "string" ? value : undefined;
+}
+
+function metaNumber(db: Database, key: string): number {
+  return Number(metaString(db, key) ?? 0);
 }
 
 function sourceOf(value: SqlValue): "codex" | "claude" {

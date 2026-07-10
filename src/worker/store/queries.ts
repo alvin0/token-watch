@@ -453,7 +453,7 @@ export function toolCallsByDay(db: Database, q: AnalyticsQuery): ToolCallsByDay[
 
 export function hourlySeries(db: Database, q: AnalyticsQuery, pricing: PricingEngine): HourlyAggregate[] {
   const where = buildRecordWhere(q);
-  const longContextKeys = longContextSessionModelKeys(db, pricing);
+  void pricing;
 
   const sql = `
     SELECT day_local, hour_local, model, source, session_id,
@@ -463,7 +463,9 @@ export function hourlySeries(db: Database, q: AnalyticsQuery, pricing: PricingEn
            SUM(cache_creation_tokens) as cache_creation_tokens,
            SUM(reasoning_tokens) as reasoning_tokens,
            SUM(total_tokens) as total_tokens,
-           COUNT(*) as turns
+           COUNT(*) as turns,
+           SUM(cost_usd) as cost_usd,
+           SUM(cost_unknown) as unknown_cost_turns
     FROM usage_record
     ${where.sql}
     GROUP BY day_local, hour_local, model, source, session_id
@@ -478,9 +480,6 @@ export function hourlySeries(db: Database, q: AnalyticsQuery, pricing: PricingEn
   for (const row of results[0].values) {
     const day = str(row[0]);
     const hour = num(row[1]);
-    const model = str(row[2]);
-    const source = str(row[3]);
-    const sessionId = str(row[4]);
     const key = `${day}\0${hour}`;
     let bucket = buckets.get(key);
     if (!bucket) {
@@ -508,10 +507,6 @@ export function hourlySeries(db: Database, q: AnalyticsQuery, pricing: PricingEn
       reasoningTokens: num(row[9]),
     };
     const turns = num(row[11]);
-    const cost = pricing.costOfAggregate(model, sums, {
-      forceLongContext: longContextKeys.has(sessionModelKey(source, sessionId, model)),
-    });
-
     bucket.inputTokens += sums.inputTokens;
     bucket.outputTokens += sums.outputTokens;
     bucket.cacheReadTokens += sums.cacheReadTokens;
@@ -519,10 +514,8 @@ export function hourlySeries(db: Database, q: AnalyticsQuery, pricing: PricingEn
     bucket.reasoningTokens += sums.reasoningTokens;
     bucket.totalTokens += num(row[10]);
     bucket.turns += turns;
-    bucket.costUsd += cost.usd;
-    if (cost.unknown) {
-      bucket.unknownCostTurns += turns;
-    }
+    bucket.costUsd += num(row[12]);
+    bucket.unknownCostTurns += num(row[13]);
   }
 
   return Array.from(buckets.values()).sort((a, b) => (
@@ -538,21 +531,11 @@ export function heatmap(db: Database, q: AnalyticsQuery): HeatmapCell[] {
 
   const sql = `
     SELECT dow_local, hour_local, SUM(total_tokens) as tokens,
-           0 as cost_usd
+           SUM(cost_usd) as cost_usd
     FROM usage_record
     ${where.sql}
     GROUP BY dow_local, hour_local
     ORDER BY dow_local, hour_local`;
-
-  // Note: usage_record doesn't store cost_usd per row. We sum tokens only.
-  // Cost could be joined from daily_aggregate but the spec says GROUP BY dow,hour
-  // from usage_record. We'll return 0 for cost and let the caller handle it,
-  // OR we can compute from daily_aggregate with a different approach.
-  // Actually, let's use daily_aggregate for cost since usage_record has no cost column.
-  // We'll do a separate query for cost by day and distribute, but that's complex.
-  // Simpler: just return token sums from usage_record (cost=0 placeholder).
-  // The design says "Sum tokens and cost" — but usage_record has no cost column.
-  // We'll compute cost from the heatmap tokens using a zero placeholder for now.
 
   const results = db.exec(sql, where.params);
   if (results.length === 0) {
@@ -562,7 +545,7 @@ export function heatmap(db: Database, q: AnalyticsQuery): HeatmapCell[] {
     dow: num(row[0]),
     hour: num(row[1]),
     tokens: num(row[2]),
-    costUsd: 0, // usage_record doesn't carry per-row cost
+    costUsd: num(row[3]),
   }));
 }
 
@@ -659,40 +642,131 @@ export function latestRateLimit(db: Database): RateLimitInfo | undefined {
   }
 }
 
-export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
+export function repriceAllRecords(
+  db: Database,
+  pricing: PricingEngine,
+  manageTransaction = true,
+): void {
   const longContextKeys = longContextSessionModelKeys(db, pricing);
-  const dailyRows = db.exec(
-    `SELECT day_local, source, variant_id, model, workspace, session_id,
+  const result = db.exec(
+    `SELECT dedup_key, source, session_id, model,
+            input_tokens, output_tokens, cache_read_tokens,
+            cache_creation_tokens, reasoning_tokens
+     FROM usage_record`,
+  );
+  if (result.length === 0) { return; }
+
+  const update = db.prepare(
+    "UPDATE usage_record SET cost_usd = ?, cost_unknown = ? WHERE dedup_key = ?",
+  );
+  if (manageTransaction) { db.run("BEGIN TRANSACTION"); }
+  try {
+    for (const row of result[0].values) {
+      const source = str(row[1]);
+      const sessionId = str(row[2]);
+      const model = str(row[3]);
+      const cost = pricing.costOfAggregate(model, {
+        inputTokens: num(row[4]),
+        outputTokens: num(row[5]),
+        cacheReadTokens: num(row[6]),
+        cacheCreationTokens: num(row[7]),
+        reasoningTokens: num(row[8]),
+      }, {
+        forceLongContext: longContextKeys.has(sessionModelKey(source, sessionId, model)),
+      });
+      update.run([cost.usd, cost.unknown ? 1 : 0, str(row[0])]);
+    }
+    if (manageTransaction) { db.run("COMMIT"); }
+  } catch (error) {
+    if (manageTransaction) { db.run("ROLLBACK"); }
+    throw error;
+  } finally {
+    update.free();
+  }
+}
+
+export interface AggregateIntegrityResult {
+  valid: boolean;
+  recordTurns: number;
+  dailyTurns: number;
+  sessionTurns: number;
+  recordTokens: number;
+  dailyTokens: number;
+  sessionTokens: number;
+  dailyCost: number;
+  sessionCost: number;
+  recordUnknownTurns: number;
+  dailyUnknownTurns: number;
+}
+
+export function aggregateIntegrity(db: Database): AggregateIntegrityResult {
+  const record = db.exec(
+    `SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_unknown), 0)
+     FROM usage_record`,
+  )[0]?.values[0] ?? [0, 0, 0];
+  const daily = db.exec(
+    `SELECT COALESCE(SUM(turns), 0), COALESCE(SUM(total_tokens), 0),
+            COALESCE(SUM(cost_usd), 0), COALESCE(SUM(unknown_cost_turns), 0)
+     FROM daily_aggregate`,
+  )[0]?.values[0] ?? [0, 0, 0, 0];
+  const session = db.exec(
+    `SELECT COALESCE(SUM(turns), 0), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0)
+     FROM session_aggregate`,
+  )[0]?.values[0] ?? [0, 0, 0];
+  const result: AggregateIntegrityResult = {
+    recordTurns: num(record[0]),
+    recordTokens: num(record[1]),
+    recordUnknownTurns: num(record[2]),
+    dailyTurns: num(daily[0]),
+    dailyTokens: num(daily[1]),
+    dailyCost: num(daily[2]),
+    dailyUnknownTurns: num(daily[3]),
+    sessionTurns: num(session[0]),
+    sessionTokens: num(session[1]),
+    sessionCost: num(session[2]),
+    valid: false,
+  };
+  result.valid =
+    result.recordTurns === result.dailyTurns &&
+    result.recordTurns === result.sessionTurns &&
+    result.recordTokens === result.dailyTokens &&
+    result.recordTokens === result.sessionTokens &&
+    result.recordUnknownTurns === result.dailyUnknownTurns &&
+    Math.abs(result.dailyCost - result.sessionCost) <= 1e-9;
+  return result;
+}
+
+export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
+  db.run("BEGIN TRANSACTION");
+  try {
+    repriceAllRecords(db, pricing, false);
+    const dailyRows = db.exec(
+    `SELECT day_local, source, variant_id, model, workspace,
             SUM(input_tokens) as input_tokens,
             SUM(output_tokens) as output_tokens,
             SUM(cache_read_tokens) as cache_read_tokens,
             SUM(cache_creation_tokens) as cache_creation_tokens,
             SUM(reasoning_tokens) as reasoning_tokens,
             SUM(total_tokens) as total_tokens,
-            COUNT(*) as turns
+            COUNT(*) as turns,
+            SUM(cost_usd) as cost_usd,
+            SUM(cost_unknown) as unknown_cost_turns
      FROM usage_record
-     GROUP BY day_local, source, variant_id, model, workspace, session_id`
+     GROUP BY day_local, source, variant_id, model, workspace`
   );
-  const sessionRows = db.exec(
-    `SELECT source, session_id, model,
+    const sessionRows = db.exec(
+    `SELECT source, session_id,
             MAX(CASE WHEN workspace != '' THEN workspace ELSE '' END) as workspace,
             MIN(ts_utc) as first_ts_utc,
             MAX(ts_utc) as last_ts_utc,
             COUNT(*) as turns,
             SUM(total_tokens) as total_tokens,
             SUM(CASE WHEN is_sidechain = 1 THEN total_tokens ELSE 0 END) as sidechain_tokens,
-            SUM(input_tokens) as input_tokens,
-            SUM(output_tokens) as output_tokens,
-            SUM(cache_read_tokens) as cache_read_tokens,
-            SUM(cache_creation_tokens) as cache_creation_tokens,
-            SUM(reasoning_tokens) as reasoning_tokens,
-            MAX(context_used_tokens) as max_context_used_tokens
+            SUM(cost_usd) as cost_usd
      FROM usage_record
-     GROUP BY source, session_id, model`
+     GROUP BY source, session_id`
   );
 
-  db.run("BEGIN TRANSACTION");
-  try {
     db.run("DELETE FROM daily_aggregate");
     db.run("DELETE FROM session_aggregate");
 
@@ -720,19 +794,17 @@ export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
         const variantId = str(row[2]);
         const model = str(row[3]);
         const workspace = str(row[4]);
-        const sessionId = str(row[5]);
         const sums = {
-          inputTokens: num(row[6]),
-          outputTokens: num(row[7]),
-          cacheReadTokens: num(row[8]),
-          cacheCreationTokens: num(row[9]),
-          reasoningTokens: num(row[10]),
+          inputTokens: num(row[5]),
+          outputTokens: num(row[6]),
+          cacheReadTokens: num(row[7]),
+          cacheCreationTokens: num(row[8]),
+          reasoningTokens: num(row[9]),
         };
-        const total = num(row[11]);
-        const turns = num(row[12]);
-        const cost = pricing.costOfAggregate(model, sums, {
-          forceLongContext: longContextKeys.has(sessionModelKey(source, sessionId, model)),
-        });
+        const total = num(row[10]);
+        const turns = num(row[11]);
+        const costUsd = num(row[12]);
+        const unknownTurns = num(row[13]);
         const key = `${day}\0${source}\0${variantId}\0${workspace}`;
         const existing = dailyMap.get(key);
         if (existing) {
@@ -743,8 +815,8 @@ export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
           existing.reasoningTokens += sums.reasoningTokens;
           existing.totalTokens += total;
           existing.turns += turns;
-          existing.costUsd += cost.usd;
-          if (cost.unknown) { existing.unknownCostTurns += turns; }
+          existing.costUsd += costUsd;
+          existing.unknownCostTurns += unknownTurns;
         } else {
           dailyMap.set(key, {
             day,
@@ -759,8 +831,8 @@ export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
             reasoningTokens: sums.reasoningTokens,
             totalTokens: total,
             turns,
-            costUsd: cost.usd,
-            unknownCostTurns: cost.unknown ? turns : 0,
+            costUsd,
+            unknownCostTurns: unknownTurns,
           });
         }
       }
@@ -812,39 +884,28 @@ export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
       for (const row of sessionRows[0].values) {
         const source = str(row[0]);
         const sessionId = str(row[1]);
-        const model = str(row[2]);
         const key = `${source}\0${sessionId}`;
-        const sums = {
-          inputTokens: num(row[9]),
-          outputTokens: num(row[10]),
-          cacheReadTokens: num(row[11]),
-          cacheCreationTokens: num(row[12]),
-          reasoningTokens: num(row[13]),
-        };
-        const cost = pricing.costOfAggregate(model, sums, {
-          forceLongContext: longContextKeys.has(sessionModelKey(source, sessionId, model)),
-          contextUsedTokens: num(row[14]),
-        });
+        const costUsd = num(row[8]);
         const existing = sessions.get(key);
         if (existing) {
-          existing.workspace = existing.workspace || str(row[3]);
-          existing.firstTsUtc = Math.min(existing.firstTsUtc, num(row[4]));
-          existing.lastTsUtc = Math.max(existing.lastTsUtc, num(row[5]));
-          existing.turns += num(row[6]);
-          existing.totalTokens += num(row[7]);
-          existing.costUsd += cost.usd;
-          existing.sidechainTokens += num(row[8]);
+          existing.workspace = existing.workspace || str(row[2]);
+          existing.firstTsUtc = Math.min(existing.firstTsUtc, num(row[3]));
+          existing.lastTsUtc = Math.max(existing.lastTsUtc, num(row[4]));
+          existing.turns += num(row[5]);
+          existing.totalTokens += num(row[6]);
+          existing.costUsd += costUsd;
+          existing.sidechainTokens += num(row[7]);
         } else {
           sessions.set(key, {
             source,
             sessionId,
-            workspace: str(row[3]),
-            firstTsUtc: num(row[4]),
-            lastTsUtc: num(row[5]),
-            turns: num(row[6]),
-            totalTokens: num(row[7]),
-            costUsd: cost.usd,
-            sidechainTokens: num(row[8]),
+            workspace: str(row[2]),
+            firstTsUtc: num(row[3]),
+            lastTsUtc: num(row[4]),
+            turns: num(row[5]),
+            totalTokens: num(row[6]),
+            costUsd,
+            sidechainTokens: num(row[7]),
           });
         }
       }
@@ -885,74 +946,5 @@ export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
  * Updates daily_aggregate and session_aggregate in place. No raw-log read.
  */
 export function recomputeCosts(db: Database, table: PricingTable): void {
-  const engine = new PricingEngine(table);
-
-  // Recompute daily_aggregate costs
-  const dailyRows = db.exec(
-    `SELECT rowid, variant_id, input_tokens, output_tokens,
-            cache_read_tokens, cache_creation_tokens, reasoning_tokens
-     FROM daily_aggregate`
-  );
-
-  if (dailyRows.length > 0) {
-    const stmt = db.prepare("UPDATE daily_aggregate SET cost_usd = ?, unknown_cost_turns = CASE WHEN ? THEN turns ELSE 0 END WHERE rowid = ?");
-    for (const row of dailyRows[0].values) {
-      const rowid = num(row[0]);
-      const variantId = str(row[1]);
-      const model = baseModelOf(variantId);
-      const breakdown = engine.costOfAggregate(model, {
-        inputTokens: num(row[2]),
-        outputTokens: num(row[3]),
-        cacheReadTokens: num(row[4]),
-        cacheCreationTokens: num(row[5]),
-        reasoningTokens: num(row[6]),
-      });
-      stmt.run([breakdown.usd, breakdown.unknown ? 1 : 0, rowid]);
-    }
-    stmt.free();
-  }
-
-  // Recompute session_aggregate costs by summing daily costs per session
-  // Session doesn't have per-token breakdown, so we need to recompute from
-  // usage_record tokens grouped by session. But the spec says "no raw-log read"
-  // and usage_record IS the store (not raw logs). Let's use usage_record.
-  const sessionRows = db.exec(
-    `SELECT source, session_id,
-            SUM(input_tokens) as input_tokens,
-            SUM(output_tokens) as output_tokens,
-            SUM(cache_read_tokens) as cache_read_tokens,
-            SUM(cache_creation_tokens) as cache_creation_tokens,
-            SUM(reasoning_tokens) as reasoning_tokens,
-            model
-     FROM usage_record
-     GROUP BY source, session_id, model`
-  );
-
-  // Accumulate cost per (source, session_id)
-  const sessionCosts = new Map<string, number>();
-  if (sessionRows.length > 0) {
-    for (const row of sessionRows[0].values) {
-      const source = str(row[0]);
-      const sessionId = str(row[1]);
-      const model = str(row[7]);
-      const breakdown = engine.costOfAggregate(model, {
-        inputTokens: num(row[2]),
-        outputTokens: num(row[3]),
-        cacheReadTokens: num(row[4]),
-        cacheCreationTokens: num(row[5]),
-        reasoningTokens: num(row[6]),
-      });
-      const key = `${source}\0${sessionId}`;
-      sessionCosts.set(key, (sessionCosts.get(key) ?? 0) + breakdown.usd);
-    }
-  }
-
-  if (sessionCosts.size > 0) {
-    const stmt = db.prepare("UPDATE session_aggregate SET cost_usd = ? WHERE source = ? AND session_id = ?");
-    for (const [key, cost] of sessionCosts) {
-      const [source, sessionId] = key.split("\0");
-      stmt.run([cost, source, sessionId]);
-    }
-    stmt.free();
-  }
+  rebuildAggregates(db, new PricingEngine(table));
 }

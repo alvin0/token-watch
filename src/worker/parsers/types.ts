@@ -16,6 +16,7 @@ export interface ParseInput {
   filePath: string;
   fileId?: string;            // stable stat identity, used to scope file-local offsets
   startOffset: number;       // 0 for full read, lastByteOffset for append (Req 4.8)
+  endOffset?: number;        // immutable snapshot boundary captured during discovery
   maxLineBytes: number;      // default 1 MB; skip larger lines unbuffered (Req 4.14)
   resumeState?: ResumeState; // running totals + recent requestIds (Req 4.11/4.12)
 }

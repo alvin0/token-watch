@@ -147,6 +147,11 @@ export interface ReconciliationMismatchDiagnostic {
 
 export interface DiagnosticsReport {
   generatedAtUtc: number;
+  aggregate: {
+    valid: boolean;
+    fallbackCount: number;
+    algorithmVersion?: string;
+  };
   pricing: PricingDiagnostics;
   longContext: {
     thresholdTokens: number;

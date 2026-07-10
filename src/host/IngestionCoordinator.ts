@@ -18,6 +18,8 @@ export class IngestionCoordinator implements vscode.Disposable {
   private pendingDiagnostics = new Map<string, { resolve: (r: DiagnosticsReport) => void; reject: (e: Error) => void }>();
   private readonly _onChanged = new vscode.EventEmitter<FreshnessInfo>();
   readonly onChanged = this._onChanged.event;
+  private readonly _onScanComplete = new vscode.EventEmitter<FreshnessInfo>();
+  readonly onScanComplete = this._onScanComplete.event;
   private readonly _onProgress = new vscode.EventEmitter<{ processed: number; total: number; partial: boolean }>();
   readonly onProgress = this._onProgress.event;
   private disposed = false;
@@ -49,8 +51,10 @@ export class IngestionCoordinator implements vscode.Disposable {
 
     this.setupListeners();
 
-    const dbPath = join(this.globalStoragePath, "token-watch.db");
-    this.send({ type: "init", dbPath, config: this.config });
+    const dbPath = join(this.globalStoragePath, "token-watch-v8.db");
+    const previousDbPath = join(this.globalStoragePath, "token-watch-v7.db");
+    const legacyDbPath = join(this.globalStoragePath, "token-watch.db");
+    this.send({ type: "init", dbPath, previousDbPath, legacyDbPath, config: this.config });
 
     await readyPromise;
   }
@@ -115,6 +119,7 @@ export class IngestionCoordinator implements vscode.Disposable {
 
     this.rejectAllPending(COORDINATOR_DISPOSED_MESSAGE);
     this._onChanged.dispose();
+    this._onScanComplete.dispose();
     this._onProgress.dispose();
   }
 
@@ -156,7 +161,10 @@ export class IngestionCoordinator implements vscode.Disposable {
           break;
         }
         case "ingestComplete":
-          this._onChanged.fire(event.freshness);
+          this._onScanComplete.fire(event.freshness);
+          if (event.dataChanged) {
+            this._onChanged.fire(event.freshness);
+          }
           break;
         case "error":
           // Log but don't crash the coordinator

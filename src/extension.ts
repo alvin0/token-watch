@@ -157,6 +157,12 @@ function renderDiagnosticsReport(report: DiagnosticsReport): string {
   lines.push(`Generated: ${new Date(report.generatedAtUtc).toLocaleString()}`);
   lines.push("");
 
+  lines.push("## Aggregate Integrity");
+  lines.push(`Valid: ${report.aggregate.valid ? "yes" : "no"}`);
+  lines.push(`Fallback rebuilds: ${report.aggregate.fallbackCount}`);
+  lines.push(`Algorithm version: ${report.aggregate.algorithmVersion ?? "unknown"}`);
+  lines.push("");
+
   lines.push("## Pricing");
   lines.push(`Ignored known-model overrides: ${listOrNone(report.pricing.ignoredKnownModelOverrides)}`);
   lines.push(`Ignored $fallback override: ${report.pricing.ignoredFallbackOverride ? "yes" : "no"}`);

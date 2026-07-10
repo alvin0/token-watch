@@ -8,7 +8,7 @@ import initSqlJs, { Database } from "sql.js";
 
 import { SCHEMA_SQL, SCHEMA_VERSION } from "../../worker/store/schema.js";
 import { UsageStore } from "../../worker/store/UsageStore.js";
-import { variantBreakdown, toolUsage, hourlySeries } from "../../worker/store/queries.js";
+import { variantBreakdown, toolUsage, hourlySeries, rebuildAggregates } from "../../worker/store/queries.js";
 import { PricingEngine } from "../../worker/pricing.js";
 import { totalTokens } from "../../shared/types.js";
 import type { UsageRecord, ToolEvent, Source } from "../../shared/types.js";
@@ -329,6 +329,7 @@ suite("Analytics property tests", () => {
     const pricing = new PricingEngine({
       [model]: { inputPer1K: 0.01, cachedInputPer1K: 0.005, outputPer1K: 0.03 },
     });
+    rebuildAggregates(db, pricing);
     const rows = hourlySeries(db, {
       view: "dashboard",
       granularity: "day",

@@ -9,6 +9,7 @@ import {
 } from '../shared/codexUsage';
 import { mapClaudeUsageToRateLimitInfo, type ClaudeUsageResponse } from '../shared/claudeUsage';
 import type { AnalyticsResult, ClaudeRateLimitInfo, RateLimitInfo, UsageQuotaWindow } from '../shared/protocol';
+import type { DailyAggregate } from '../shared/storeTypes';
 
 /**
  * Manages the status bar item showing today's token usage and cost.
@@ -78,7 +79,7 @@ export class StatusBarController implements vscode.Disposable {
     let result: AnalyticsResult;
     try {
       result = await this.coordinator.query({
-        view: 'dashboard',
+        view: 'series',
         granularity: 'day',
         range: { fromUtc: startOfDay.getTime(), toUtc: endOfDay.getTime() },
       });
@@ -93,38 +94,7 @@ export class StatusBarController implements vscode.Disposable {
       return;
     }
 
-    let tokens = 0;
-    let cost = 0;
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let reasoningTokens = 0;
-    let cacheReadTokens = 0;
-    let cacheCreationTokens = 0;
-    let turns = 0;
-
-    if (result.view === 'dashboard') {
-      for (const row of result.series) {
-        tokens += row.totalTokens;
-        cost += row.costUsd;
-        inputTokens += row.inputTokens;
-        outputTokens += row.outputTokens;
-        reasoningTokens += row.reasoningTokens;
-        cacheReadTokens += row.cacheReadTokens;
-        cacheCreationTokens += row.cacheCreationTokens;
-        turns += row.turns;
-      }
-    }
-
-    this.latestUsage = {
-      tokens,
-      cost,
-      inputTokens,
-      outputTokens,
-      reasoningTokens,
-      cacheReadTokens,
-      cacheCreationTokens,
-      turns,
-    };
+    this.latestUsage = summarizeDailySeries(result.view === 'series' ? result.series : []);
     this.updateItem();
   }
 
@@ -268,6 +238,28 @@ export class StatusBarController implements vscode.Disposable {
     this.claudeRateLimitRefreshPromise = refreshPromise;
     return refreshPromise;
   }
+}
+
+export function summarizeDailySeries(series: DailyAggregate[]): StatusBarUsageSummary {
+  return series.reduce<StatusBarUsageSummary>((summary, row) => ({
+    tokens: summary.tokens + row.totalTokens,
+    cost: summary.cost + row.costUsd,
+    inputTokens: summary.inputTokens + row.inputTokens,
+    outputTokens: summary.outputTokens + row.outputTokens,
+    reasoningTokens: summary.reasoningTokens + row.reasoningTokens,
+    cacheReadTokens: summary.cacheReadTokens + row.cacheReadTokens,
+    cacheCreationTokens: summary.cacheCreationTokens + row.cacheCreationTokens,
+    turns: summary.turns + row.turns,
+  }), {
+    tokens: 0,
+    cost: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    turns: 0,
+  });
 }
 
 export function buildStatusBarTooltip(
