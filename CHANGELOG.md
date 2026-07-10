@@ -2,6 +2,16 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.1.0]
+
+- View total tokens, estimated cost, usage count, and trends by day or week.
+- Track usage limits for both Codex and Claude Code.
+- See the most-used models, their token usage, and estimated costs.
+- Track tool calls, with separate figures for Codex and Claude Code.
+- Quickly view today's token usage and cost in the status bar.
+- Improved cost accuracy and usage-data updates.
+- Added diagnostic information to make data checks easier when needed.
+
 ## [0.0.8]
 
 - Added bundled pricing for GPT-5.6 Sol, Terra, and Luna.
