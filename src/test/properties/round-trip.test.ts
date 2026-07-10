@@ -36,7 +36,7 @@ suite("Parse + normalize round-trip property tests", () => {
         async (turns) => {
           const sessionId = "roundtrip-codex-session";
           const model = "gpt-5-codex";
-          const effort = "high";
+          const effort = "ultra";
 
           // Build JSONL lines
           const lines: string[] = [];
@@ -115,6 +115,8 @@ suite("Parse + normalize round-trip property tests", () => {
                 `Turn ${i}: reasoningTokens expected ${expected.reasoning}, got ${record.reasoningTokens}`);
               assert.strictEqual(record.cacheCreationTokens, 0,
                 `Turn ${i}: cacheCreationTokens expected 0, got ${record.cacheCreationTokens}`);
+              assert.strictEqual(record.effort, "ultra");
+              assert.strictEqual(record.variantId, `${model} (ultra)`);
             }
           } finally {
             try { unlinkSync(tmpFile); } catch { /* ignore */ }
@@ -153,6 +155,7 @@ suite("Parse + normalize round-trip property tests", () => {
               timestamp: "2025-01-01T00:00:00Z",
               message: {
                 model,
+                output_config: { effort: "xhigh" },
                 usage: {
                   input_tokens: turn.input,
                   output_tokens: turn.output,
@@ -192,6 +195,8 @@ suite("Parse + normalize round-trip property tests", () => {
                 `Turn ${i}: cacheCreationTokens expected ${expected.cacheCreation}, got ${record.cacheCreationTokens}`);
               assert.strictEqual(record.reasoningTokens, 0,
                 `Turn ${i}: reasoningTokens expected 0, got ${record.reasoningTokens}`);
+              assert.strictEqual(record.effort, "xhigh");
+              assert.strictEqual(record.variantId, `${model} (xhigh)`);
             }
           } finally {
             try { unlinkSync(tmpFile); } catch { /* ignore */ }

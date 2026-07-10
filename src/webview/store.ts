@@ -3,9 +3,11 @@ import type {
   AnalyticsQuery,
   AnalyticsResult,
   FreshnessInfo,
+  ClaudeRateLimitInfo,
   WarningInfo,
   RateLimitInfo,
   DisplayCurrencyConfig,
+  UsageCacheInfo,
   HostMessage,
   WebviewRequest,
 } from "../shared/protocol";
@@ -42,6 +44,9 @@ export interface StatusSlice {
   warnings: WarningInfo;
   progress?: { processed: number; total: number; partial: boolean };
   rateLimit?: RateLimitInfo;
+  claudeRateLimit?: ClaudeRateLimitInfo;
+  codexUsageCache?: UsageCacheInfo;
+  claudeUsageCache?: UsageCacheInfo;
   currency?: DisplayCurrencyConfig;
 }
 
@@ -85,6 +90,9 @@ export const useStore = create<Store>((set, get) => ({
   warnings: { unmappedModels: [], malformedLineCount: 0, oversizedLineCount: 0 },
   progress: undefined,
   rateLimit: undefined,
+  claudeRateLimit: undefined,
+  codexUsageCache: undefined,
+  claudeUsageCache: undefined,
   currency: undefined,
 
   // Actions
@@ -173,6 +181,9 @@ window.addEventListener("message", (event: MessageEvent<HostMessage>) => {
         freshness: msg.freshness,
         warnings: msg.warnings,
         rateLimit: msg.rateLimit,
+        claudeRateLimit: msg.claudeRateLimit,
+        codexUsageCache: msg.codexUsageCache,
+        claudeUsageCache: msg.claudeUsageCache,
         currency: msg.currency,
       });
       break;

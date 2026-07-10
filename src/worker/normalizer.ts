@@ -46,8 +46,8 @@ export function normalizeClaudeTurn(raw: RawClaudeTurn): UsageRecord {
     dedupKey: raw.dedupKey,
     timestamp: raw.timestamp,
     model: raw.model,
-    effort: undefined, // Claude has no effort dimension (Req 3.6)
-    variantId: makeVariantId(raw.model, undefined),
+    effort: raw.effort,
+    variantId: makeVariantId(raw.model, raw.effort),
     workspace: raw.workspace,
     inputTokens: raw.rawInputTokens,
     outputTokens: raw.rawOutputTokens,

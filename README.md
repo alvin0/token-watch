@@ -8,7 +8,11 @@ them locally into an embedded SQLite store (sql.js), and shows usage, cost, and
 intensity metrics. Raw prompt/response content is never extracted or stored —
 only token counts and structural metadata.
 
-<img src="resources/today-image.png" alt="Token Watch today usage view" width="360">
+<p align="center">
+  <img src="resources/today-image.png" alt="Token Watch today usage view" width="32%">
+  <img src="resources/week-image.png" alt="Token Watch weekly usage view" width="32%">
+  <img src="resources/models-image.png" alt="Token Watch models usage view" width="32%">
+</p>
 
 ## Features
 

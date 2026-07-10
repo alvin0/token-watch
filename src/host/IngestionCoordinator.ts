@@ -6,6 +6,12 @@ import type { WorkerRequest, WorkerEvent, IngestConfig } from "../shared/workerP
 import type { AnalyticsQuery, AnalyticsResult, DiagnosticsReport, FreshnessInfo } from "../shared/protocol.js";
 import type { PricingTable } from "../shared/types.js";
 
+export const COORDINATOR_DISPOSED_MESSAGE = "Coordinator disposed";
+
+export function isCoordinatorDisposedError(error: unknown): boolean {
+  return error instanceof Error && error.message === COORDINATOR_DISPOSED_MESSAGE;
+}
+
 export class IngestionCoordinator implements vscode.Disposable {
   private worker: Worker | null = null;
   private pendingQueries = new Map<string, { resolve: (r: AnalyticsResult) => void; reject: (e: Error) => void }>();
@@ -50,6 +56,9 @@ export class IngestionCoordinator implements vscode.Disposable {
   }
 
   async query(q: AnalyticsQuery): Promise<AnalyticsResult> {
+    if (this.disposed) {
+      throw new Error(COORDINATOR_DISPOSED_MESSAGE);
+    }
     if (!this.worker) {
       throw new Error("Worker not available");
     }
@@ -61,6 +70,9 @@ export class IngestionCoordinator implements vscode.Disposable {
   }
 
   async diagnostics(): Promise<DiagnosticsReport> {
+    if (this.disposed) {
+      throw new Error(COORDINATOR_DISPOSED_MESSAGE);
+    }
     if (!this.worker) {
       throw new Error("Worker not available");
     }
@@ -101,7 +113,7 @@ export class IngestionCoordinator implements vscode.Disposable {
       setTimeout(() => { w.terminate(); }, 200);
     }
 
-    this.rejectAllPending("Coordinator disposed");
+    this.rejectAllPending(COORDINATOR_DISPOSED_MESSAGE);
     this._onChanged.dispose();
     this._onProgress.dispose();
   }

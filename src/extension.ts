@@ -41,10 +41,22 @@ export async function activate(context: vscode.ExtensionContext) {
   // Register the sidebar WebView provider
   const provider = new SidebarProvider(context.extensionUri, coordinator, config.currency);
   context.subscriptions.push(
+    provider,
     vscode.window.registerWebviewViewProvider(SidebarProvider.viewId, provider),
   );
 
   // Register commands
+  const resetDatabase = async () => {
+    const confirmed = await vscode.window.showWarningMessage(
+      "Token Watch: Reset database? This clears all stored token data and cursors, then rebuilds from logs.",
+      { modal: true },
+      "Reset",
+    );
+    if (confirmed === "Reset") {
+      coordinator?.resetDatabase();
+    }
+  };
+
   context.subscriptions.push(
     vscode.commands.registerCommand("token-watch.openPanel", () => {
       vscode.commands.executeCommand("workbench.view.extension.token-watch-container");
@@ -52,16 +64,9 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("token-watch.rescan", () => {
       coordinator?.rescan();
     }),
-    vscode.commands.registerCommand("token-watch.resetDatabase", async () => {
-      const confirmed = await vscode.window.showWarningMessage(
-        "Token Watch: Reset database? This clears all stored token data and cursors, then rebuilds from logs.",
-        { modal: true },
-        "Reset",
-      );
-      if (confirmed === "Reset") {
-        coordinator?.resetDatabase();
-      }
-    }),
+    vscode.commands.registerCommand("token-watch:resetdb", resetDatabase),
+    // Backwards-compatible alias for existing keybindings and integrations.
+    vscode.commands.registerCommand("token-watch.resetDatabase", resetDatabase),
     vscode.commands.registerCommand("token-watch.showDiagnostics", async () => {
       if (!coordinator) {
         vscode.window.showWarningMessage("Token Watch: worker is not available.");

@@ -40,7 +40,7 @@
         "category": "Token Watch"
       },
       {
-        "command": "token-watch.resetDatabase",
+        "command": "token-watch:resetdb",
         "title": "Reset Database",
         "category": "Token Watch"
       },

@@ -296,7 +296,7 @@ export function variantBreakdown(db: Database, q: AnalyticsQuery): VariantMetric
     const unknownCostTurns = num(row[11]);
 
     // Derive effort from variantId
-    const effortMatch = variantId.match(/\((minimal|low|medium|high|xhigh)\)$/);
+    const effortMatch = variantId.match(/\((minimal|low|medium|high|xhigh|ultra|max)\)$/);
     const effort = (effortMatch ? effortMatch[1] : "n/a") as VariantMetrics["effort"];
 
     const tokensPerTurn = turns > 0 ? totalTokens / turns : 0;

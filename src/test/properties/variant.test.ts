@@ -11,7 +11,7 @@ import { baseModelOf, makeVariantId } from "../../shared/variant";
  */
 
 /** Real reasoning-effort levels (excludes the no-effort sentinel "n/a"). */
-const REAL_EFFORTS: Effort[] = ["minimal", "low", "medium", "high", "xhigh"];
+const REAL_EFFORTS: Effort[] = ["minimal", "low", "medium", "high", "xhigh", "ultra", "max"];
 
 /** Non-negative token-bucket counts. Capped so five of them can't overflow. */
 const tokenCount = fc.nat({ max: 1_000_000_000 });

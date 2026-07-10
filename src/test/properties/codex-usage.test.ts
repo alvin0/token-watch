@@ -28,7 +28,74 @@ suite("Codex usage mapping", () => {
       secondaryPct: 3,
       remainingSeconds: 14_014,
       weeklyResetAtUtc: 1_783_393_903_000,
+      windows: [
+        {
+          id: "codex:primary",
+          label: "5h limit",
+          usedPct: 17,
+          resetAtUtc: 14_026_345,
+          windowSeconds: undefined,
+        },
+        {
+          id: "codex:secondary",
+          label: "Weekly",
+          usedPct: 3,
+          resetAtUtc: 1_783_393_903_000,
+          windowSeconds: undefined,
+        },
+      ],
     });
+  });
+
+  test("preserves dynamic Spark and Code Review quota windows", () => {
+    const info = mapCodexUsageToRateLimitInfo({
+      rate_limit: {
+        primary_window: { used_percent: 10, limit_window_seconds: 18_000, reset_at: 1_800_000_000 },
+      },
+      code_review_rate_limit: {
+        secondary_window: { used_percent: 20, limit_window_seconds: 604_800, reset_at: 1_800_100_000 },
+      },
+      additional_rate_limits: [{
+        limit_name: "GPT-5.3-Codex-Spark",
+        metered_feature: "codex_bengalfox",
+        rate_limit: {
+          primary_window: { used_percent: 30, limit_window_seconds: 18_000, reset_at: 1_800_200_000 },
+          secondary_window: { used_percent: 40, limit_window_seconds: 604_800, reset_at: 1_800_300_000 },
+        },
+      }],
+    });
+
+    assert.deepStrictEqual(info?.windows.map((window) => ({ id: window.id, label: window.label, usedPct: window.usedPct })), [
+      { id: "codex:primary", label: "5h limit", usedPct: 10 },
+      { id: "code-review:secondary", label: "Code Review · Weekly", usedPct: 20 },
+      { id: "additional:codex-bengalfox:primary", label: "GPT-5.3-Codex-Spark · 5h limit", usedPct: 30 },
+      { id: "additional:codex-bengalfox:secondary", label: "GPT-5.3-Codex-Spark · Weekly", usedPct: 40 },
+    ]);
+  });
+
+  test("does not create Spark rows when the account has no Spark quota", () => {
+    const info = mapCodexUsageToRateLimitInfo({
+      rate_limit: {
+        primary_window: { used_percent: 10 },
+        secondary_window: { used_percent: 20 },
+      },
+      additional_rate_limits: [],
+    });
+
+    assert.deepStrictEqual(info?.windows.map((window) => window.label), ["5h limit", "Weekly"]);
+    assert.ok(!info?.windows.some((window) => /spark/i.test(window.label)));
+  });
+
+  test("omits additional limits that contain no usage values", () => {
+    const info = mapCodexUsageToRateLimitInfo({
+      rate_limit: { primary_window: { used_percent: 10 } },
+      additional_rate_limits: [{
+        limit_name: "GPT-5.3-Codex-Spark",
+        rate_limit: { primary_window: {} },
+      }],
+    });
+
+    assert.ok(!info?.windows.some((window) => /spark/i.test(window.label)));
   });
 
   test("formats compact remaining-time and percentage labels", () => {

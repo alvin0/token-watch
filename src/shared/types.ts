@@ -8,7 +8,7 @@
 export type Source = "codex" | "claude";
 
 export type Effort =
-  | "minimal" | "low" | "medium" | "high" | "xhigh" | "n/a";
+  | "minimal" | "low" | "medium" | "high" | "xhigh" | "ultra" | "max" | "n/a";
 
 /**
  * The five disjoint token buckets shared by cumulative running totals (parser
@@ -58,7 +58,7 @@ export interface UsageRecord {
   dedupKey: string;
   timestamp: number;        // UTC epoch ms (Req 3.7)
   model: string;            // base model id, e.g. "gpt-5-codex", "claude-opus-4.7"
-  effort?: Effort;          // Codex only; undefined/"n/a" for Claude (Req 3.6)
+  effort?: Effort;          // Present when the source log reports an effort level.
   variantId: string;        // `${model} (${effort})` or `${model}` when no effort (Req 7.1/7.2)
   workspace?: string;       // coarse workspace/repo identifier (Req 12.1)
   inputTokens: number;

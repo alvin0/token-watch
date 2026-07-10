@@ -1,21 +1,22 @@
 import * as vscode from 'vscode';
-import { CodexConnection, DEFAULT_CODEX_AUTH_FILE, readCodexAuthMode } from '../provider/codex';
+import { CodexConnection, DEFAULT_CODEX_AUTH_FILE, isCodexUsageRateLimitError, readCodexAuthMode } from '../provider/codex';
+import { ClaudeConnection, isClaudeUsageRateLimitError } from '../provider/claude';
 import type { IngestionCoordinator } from './IngestionCoordinator';
 import {
-  formatDurationShort,
   formatPercent,
-  formatUtcDateTime,
   mapCodexUsageToRateLimitInfo,
   type CodexUsageResponse,
 } from '../shared/codexUsage';
-import type { AnalyticsResult, RateLimitInfo } from '../shared/protocol';
+import { mapClaudeUsageToRateLimitInfo, type ClaudeUsageResponse } from '../shared/claudeUsage';
+import type { AnalyticsResult, ClaudeRateLimitInfo, RateLimitInfo, UsageQuotaWindow } from '../shared/protocol';
 
 /**
  * Manages the status bar item showing today's token usage and cost.
  * Refreshes on coordinator data changes; respects the tokenWatch.statusBar.enabled setting.
  */
 const CODEX_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
-const CODEX_USAGE_NOT_AVAILABLE_MESSAGE = 'Codex usage not avilable';
+const CODEX_USAGE_NOT_AVAILABLE_MESSAGE = 'Codex usage not available';
+const CLAUDE_USAGE_NOT_AVAILABLE_MESSAGE = 'Claude Code usage not available';
 
 export interface StatusBarUsageSummary {
   tokens: number;
@@ -37,9 +38,14 @@ export class StatusBarController implements vscode.Disposable {
   private latestUsage: StatusBarUsageSummary | undefined;
   private latestRateLimit: RateLimitInfo | undefined;
   private rateLimitRefreshPromise: Promise<void> | undefined;
+  private latestClaudeRateLimit: ClaudeRateLimitInfo | undefined;
+  private claudeRateLimitRefreshPromise: Promise<void> | undefined;
   private lastCodexUsageRefreshAt = 0;
+  private lastClaudeUsageRefreshAt = 0;
   private latestCodexUsageMessage: string | undefined;
+  private latestClaudeUsageMessage: string | undefined;
   private readonly codexConnection = new CodexConnection({ authFile: DEFAULT_CODEX_AUTH_FILE });
+  private readonly claudeConnection = new ClaudeConnection();
 
   constructor(
     private readonly coordinator: IngestionCoordinator,
@@ -57,12 +63,14 @@ export class StatusBarController implements vscode.Disposable {
     );
 
     void this.refreshCodexUsage(true);
+    void this.refreshClaudeUsage(true);
     void this.refresh();
   }
 
   async refresh(): Promise<void> {
     const version = ++this.refreshVersion;
     void this.refreshCodexUsage();
+    void this.refreshClaudeUsage();
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const endOfDay = new Date(startOfDay.getTime() + 86_400_000 - 1);
@@ -124,6 +132,7 @@ export class StatusBarController implements vscode.Disposable {
     this.enabled = enabled;
     if (enabled) {
       void this.refreshCodexUsage();
+      void this.refreshClaudeUsage();
       this.item.show();
     } else {
       this.item.hide();
@@ -147,7 +156,13 @@ export class StatusBarController implements vscode.Disposable {
     const tokensStr = formatTokens(this.latestUsage.tokens);
     const costStr = formatCost(this.latestUsage.cost);
     this.item.text = '$' + '(zap) ' + tokensStr + ' | $' + costStr;
-    this.item.tooltip = buildStatusBarTooltip(this.latestUsage, this.latestRateLimit, this.latestCodexUsageMessage);
+    this.item.tooltip = buildStatusBarTooltip(
+      this.latestUsage,
+      this.latestRateLimit,
+      this.latestCodexUsageMessage,
+      this.latestClaudeRateLimit,
+      this.latestClaudeUsageMessage,
+    );
 
     if (this.enabled) {
       this.item.show();
@@ -193,9 +208,12 @@ export class StatusBarController implements vscode.Disposable {
       } catch (err) {
         if (!this.disposed) {
           this.lastCodexUsageRefreshAt = Date.now();
-          this.latestRateLimit = undefined;
-          this.latestCodexUsageMessage = CODEX_USAGE_NOT_AVAILABLE_MESSAGE;
-          console.warn('[TokenWatch] Codex usage refresh failed:', err);
+          if (!this.latestRateLimit) {
+            this.latestCodexUsageMessage = CODEX_USAGE_NOT_AVAILABLE_MESSAGE;
+          }
+          if (!isCodexUsageRateLimitError(err)) {
+            console.warn('[TokenWatch] Codex usage refresh failed:', err);
+          }
           this.updateItem();
         }
       } finally {
@@ -206,33 +224,82 @@ export class StatusBarController implements vscode.Disposable {
     this.rateLimitRefreshPromise = refreshPromise;
     return refreshPromise;
   }
+
+  private async refreshClaudeUsage(force = false): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    if (this.claudeRateLimitRefreshPromise) {
+      return this.claudeRateLimitRefreshPromise;
+    }
+    if (!force && Date.now() - this.lastClaudeUsageRefreshAt < CODEX_USAGE_REFRESH_INTERVAL_MS) {
+      return;
+    }
+
+    const refreshPromise = (async () => {
+      try {
+        const usage = await this.claudeConnection.usageInfo<ClaudeUsageResponse>();
+        if (this.disposed) {
+          return;
+        }
+        const rateLimit = mapClaudeUsageToRateLimitInfo(usage);
+        this.lastClaudeUsageRefreshAt = Date.now();
+        this.latestClaudeUsageMessage = undefined;
+        if (rateLimit) {
+          this.latestClaudeRateLimit = rateLimit;
+        }
+        this.updateItem();
+      } catch (err) {
+        if (!this.disposed) {
+          this.lastClaudeUsageRefreshAt = Date.now();
+          if (!this.latestClaudeRateLimit) {
+            this.latestClaudeUsageMessage = CLAUDE_USAGE_NOT_AVAILABLE_MESSAGE;
+          }
+          if (!isClaudeUsageRateLimitError(err)) {
+            console.warn('[TokenWatch] Claude usage refresh failed:', err);
+          }
+          this.updateItem();
+        }
+      } finally {
+        this.claudeRateLimitRefreshPromise = undefined;
+      }
+    })();
+
+    this.claudeRateLimitRefreshPromise = refreshPromise;
+    return refreshPromise;
+  }
 }
 
 export function buildStatusBarTooltip(
   usage: StatusBarUsageSummary,
   rateLimit?: RateLimitInfo,
   codexUsageMessage?: string,
+  claudeRateLimit?: ClaudeRateLimitInfo,
+  claudeUsageMessage?: string,
 ): string {
   const lines = [
-    'Token Watch - Current usage',
+    'Token Watch · Current usage',
     '',
-    'Input: ' + formatTokenDetail(usage.inputTokens),
-    'Output: ' + formatTokenDetail(usage.outputTokens),
-    'Reasoning: ' + formatTokenDetail(usage.reasoningTokens),
-    'Cache read: ' + formatTokenDetail(usage.cacheReadTokens),
-    'Cache write: ' + formatTokenDetail(usage.cacheCreationTokens),
-    '',
-    'Total: ' + formatTokenDetail(usage.tokens),
-    'Turns: ' + usage.turns.toLocaleString(),
-    'Cost: $' + formatCost(usage.cost),
+    `${formatTooltipTokens(usage.tokens)} tokens · $${formatCost(usage.cost)} · ${usage.turns.toLocaleString()} turns`,
+    `Input ${formatTooltipTokens(usage.inputTokens)} · Output ${formatTooltipTokens(usage.outputTokens)} · Reasoning ${formatTooltipTokens(usage.reasoningTokens)}`,
+    `Cache ${formatTooltipTokens(usage.cacheReadTokens)} read · ${formatTooltipTokens(usage.cacheCreationTokens)} write`,
   ];
 
   if (codexUsageMessage) {
-    lines.push('', codexUsageMessage);
+    lines.push('', 'CODEX', 'Usage not available');
   } else {
     const codexLines = buildCodexUsageLines(rateLimit);
     if (codexLines.length > 0) {
       lines.push('', ...codexLines);
+    }
+  }
+
+  if (claudeUsageMessage) {
+    lines.push('', 'CLAUDE CODE', 'Usage not available');
+  } else {
+    const claudeLines = buildClaudeUsageLines(claudeRateLimit);
+    if (claudeLines.length > 0) {
+      lines.push('', ...claudeLines);
     }
   }
 
@@ -243,41 +310,99 @@ function buildCodexUsageLines(rateLimit?: RateLimitInfo): string[] {
   if (!rateLimit) {
     return [];
   }
-
-  const lines = ['Codex usage'];
-
-  const primaryParts: string[] = [];
-  if (typeof rateLimit.primaryPct === 'number') {
-    primaryParts.push('5h limit: ' + remainingPercent(rateLimit.primaryPct) + ' remaining');
-  } else if (typeof rateLimit.remainingSeconds === 'number') {
-    primaryParts.push('5h limit: n/a remaining');
-  }
-  if (typeof rateLimit.remainingSeconds === 'number') {
-    primaryParts.push('resets in ' + formatDurationShort(rateLimit.remainingSeconds));
-  }
-  if (primaryParts.length > 0) {
-    lines.push(primaryParts.join(' | '));
-  }
-
-  const weeklyParts: string[] = [];
-  if (typeof rateLimit.secondaryPct === 'number') {
-    weeklyParts.push('Weekly: ' + remainingPercent(rateLimit.secondaryPct) + ' remaining');
-  } else if (typeof rateLimit.weeklyResetAtUtc === 'number') {
-    weeklyParts.push('Weekly: n/a remaining');
-  }
-  if (typeof rateLimit.weeklyResetAtUtc === 'number') {
-    weeklyParts.push('resets ' + formatUtcDateTime(rateLimit.weeklyResetAtUtc));
-  }
-  if (weeklyParts.length > 0) {
-    lines.push(weeklyParts.join(' | '));
-  }
-
-  return lines;
+  return buildCompactUsageLines('CODEX', rateLimit.windows, ['codex:primary', 'codex:secondary']);
 }
 
-function remainingPercent(usedPercent?: number): string {
+function buildClaudeUsageLines(rateLimit?: ClaudeRateLimitInfo): string[] {
+  if (!rateLimit) {
+    return [];
+  }
+  return buildCompactUsageLines('CLAUDE CODE', rateLimit.windows, ['session', 'weekly']);
+}
+
+function buildCompactUsageLines(
+  title: string,
+  windows: UsageQuotaWindow[],
+  primaryIds: string[],
+): string[] {
+  const primarySet = new Set(primaryIds);
+  const detailLines = windows
+    .filter((window) => primarySet.has(window.id))
+    .map(formatPrimaryQuota)
+    .filter((line): line is string => Boolean(line));
+
+  const groups = new Map<string, UsageQuotaWindow[]>();
+  for (const window of windows) {
+    if (primarySet.has(window.id)) { continue; }
+    const descriptor = splitQuotaLabel(window.label);
+    const groupWindows = groups.get(descriptor.group) ?? [];
+    groupWindows.push({ ...window, label: descriptor.window });
+    groups.set(descriptor.group, groupWindows);
+  }
+  for (const [group, groupWindows] of groups) {
+    const parts = groupWindows
+      .map(formatGroupedQuota)
+      .filter((line): line is string => Boolean(line));
+    if (parts.length > 0) {
+      detailLines.push(`${compactGroupName(group)} · ${parts.join(' · ')}`);
+    }
+  }
+
+  return detailLines.length > 0 ? [title, ...detailLines] : [];
+}
+
+function formatPrimaryQuota(window: UsageQuotaWindow): string | undefined {
+  const percent = remainingPercent(window.usedPct);
+  const reset = formatCompactReset(window);
+  if (!percent && !reset) { return undefined; }
+  const parts = [`${compactWindowLabel(window.label)}${percent ? ` ${percent} left` : ''}`];
+  if (reset) { parts.push(`resets ${reset}`); }
+  return parts.join(' · ');
+}
+
+function formatGroupedQuota(window: UsageQuotaWindow): string | undefined {
+  const percent = remainingPercent(window.usedPct);
+  const reset = formatCompactReset(window);
+  if (!percent && !reset) { return undefined; }
+  const parts = [`${compactWindowLabel(window.label)}${percent ? ` ${percent}` : ''}`];
+  if (!percent && reset) { parts.push(`resets ${reset}`); }
+  return parts.join(' · ');
+}
+
+function splitQuotaLabel(label: string): { group: string; window: string } {
+  const parts = label.split(' · ').map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2) {
+    return { group: label, window: 'Limit' };
+  }
+  return { group: parts.slice(0, -1).join(' · '), window: parts.at(-1) ?? 'Limit' };
+}
+
+function compactGroupName(group: string): string {
+  return group
+    .replace(/^GPT-[\d.]+-Codex-/i, '')
+    .replace(/^Fable(?:\s+\d+)?$/i, 'Fable');
+}
+
+function compactWindowLabel(label: string): string {
+  if (/weekly|\bweek\b/i.test(label)) { return 'Week'; }
+  const duration = label.match(/\b\d+(?:\.\d+)?[hmds]\b/i)?.[0];
+  return duration ?? label.replace(/\s+limit$/i, '');
+}
+
+function formatCompactReset(window: UsageQuotaWindow): string | undefined {
+  if (typeof window.resetAtUtc !== 'number' || !Number.isFinite(window.resetAtUtc)) {
+    return undefined;
+  }
+  const shortWindow = typeof window.windowSeconds === 'number'
+    ? window.windowSeconds <= 86_400
+    : /\b\d+h\b|session/i.test(window.label);
+  const date = new Date(window.resetAtUtc);
+  return shortWindow ? resetTimeFormatter.format(date) : resetDateTimeFormatter.format(date);
+}
+
+function remainingPercent(usedPercent?: number): string | undefined {
   if (typeof usedPercent !== 'number' || !Number.isFinite(usedPercent)) {
-    return 'n/a';
+    return undefined;
   }
 
   const remaining = Math.max(0, 100 - usedPercent);
@@ -297,14 +422,27 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-/** Format an exact token count with a compact suffix for tooltip rows. */
-function formatTokenDetail(n: number): string {
-  const exact = Math.round(n).toLocaleString();
-  const compact = formatTokens(n);
-  return exact === compact ? exact : exact + ' (' + compact + ')';
+function formatTooltipTokens(n: number): string {
+  if (n >= 1_000_000) { return `${(n / 1_000_000).toFixed(1)}M`; }
+  if (n >= 1_000) { return `${(n / 1_000).toFixed(1)}K`; }
+  return Math.round(n).toLocaleString();
 }
 
 /** Format USD cost to 2 decimal places. */
 function formatCost(usd: number): string {
   return usd.toFixed(2);
 }
+
+const resetTimeFormatter = new Intl.DateTimeFormat('en-GB', {
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
+const resetDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});

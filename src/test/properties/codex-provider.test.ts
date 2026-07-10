@@ -6,6 +6,7 @@ import * as os from "node:os";
 
 import {
   CodexConnection,
+  CodexUsageRateLimitError,
   WHAM_ENVIRONMENTS_ENDPOINT,
   WHAM_USAGE_ENDPOINT,
   readCodexAuthMode,
@@ -192,6 +193,67 @@ suite("Codex provider connection", () => {
       },
       account_id: "account-123",
     });
+  });
+
+  test("caches and deduplicates Codex usage requests across connection instances", async () => {
+    const authFile = join(tmpDir, "auth.json");
+    writeFileSync(authFile, JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: { access_token: "access-token", refresh_token: "refresh-token" },
+    }));
+    let now = 1_000_000;
+    let callCount = 0;
+    const fetchUsage: typeof fetch = async () => {
+      callCount += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    };
+    const options = { authFile, fetch: fetchUsage, now: () => now };
+    const firstConnection = new CodexConnection(options);
+
+    const [first, second] = await Promise.all([
+      firstConnection.usageInfo(),
+      new CodexConnection(options).usageInfo(),
+    ]);
+    const third = await new CodexConnection(options).usageInfo();
+
+    assert.deepStrictEqual(first, second);
+    assert.deepStrictEqual(second, third);
+    assert.strictEqual(callCount, 1);
+    assert.deepStrictEqual(firstConnection.usageCacheInfo(), {
+      cachedAtUtc: now,
+      retryAtUtc: now + 300_000,
+    });
+
+    now += 300_000;
+    await firstConnection.usageInfo();
+    assert.strictEqual(callCount, 2);
+  });
+
+  test("honors Codex Retry-After and blocks calls during cooldown", async () => {
+    const authFile = join(tmpDir, "auth.json");
+    writeFileSync(authFile, JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: { access_token: "access-token", refresh_token: "refresh-token" },
+    }));
+    const now = 1_000_000;
+    let callCount = 0;
+    const connection = new CodexConnection({
+      authFile,
+      now: () => now,
+      fetch: async () => {
+        callCount += 1;
+        return new Response("rate limited", {
+          status: 429,
+          headers: { "retry-after": "90" },
+        });
+      },
+    });
+
+    await assert.rejects(connection.usageInfo(), CodexUsageRateLimitError);
+    await assert.rejects(connection.usageInfo({ force: true }), CodexUsageRateLimitError);
+    assert.strictEqual(callCount, 1);
+    assert.deepStrictEqual(connection.usageCacheInfo(), { retryAtUtc: now + 90_000 });
   });
 
   test("parses environments info JSON from WHAM_ENVIRONMENTS_ENDPOINT", async () => {

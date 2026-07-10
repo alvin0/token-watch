@@ -11,7 +11,7 @@
 
 import { readLines } from "./lineReader";
 import type { ParseInput, ParseOutput, ResumeState, SessionMeta, SourceParser } from "./types";
-import type { RawClaudeTurn, ToolEvent, TurnMeta } from "../../shared/types";
+import type { Effort, RawClaudeTurn, ToolEvent, TurnMeta } from "../../shared/types";
 import { createHash } from "node:crypto";
 
 /** Max recent requestIds to carry in endState for resume boundary detection. */
@@ -28,6 +28,8 @@ interface ClaudeLogLine {
       cache_creation_input_tokens?: number;
     };
     model?: string;
+    effort?: unknown;
+    output_config?: { effort?: unknown };
     stop_reason?: string;
     content?: Array<{ type?: string; name?: string }>;
   };
@@ -40,6 +42,8 @@ interface ClaudeLogLine {
   gitBranch?: string;
   isSidechain?: boolean | null;
   entrypoint?: string;
+  effort?: unknown;
+  output_config?: { effort?: unknown };
 }
 
 export class ClaudeParser implements SourceParser {
@@ -148,6 +152,7 @@ export class ClaudeParser implements SourceParser {
         sessionId,
         timestamp,
         model: msg.model ?? "",
+        effort: claudeEffort(msg.output_config?.effort ?? msg.effort ?? parsed.output_config?.effort ?? parsed.effort),
         workspace: parsed.cwd || undefined,
         dedupKey,
         meta,
@@ -225,6 +230,12 @@ export class ClaudeParser implements SourceParser {
 
 function isPresent<T>(value: T | null | undefined): value is T {
   return value !== null && value !== undefined;
+}
+
+function claudeEffort(value: unknown): Effort | undefined {
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max"
+    ? value
+    : undefined;
 }
 
 function scopedFileId(value: string): string {

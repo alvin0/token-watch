@@ -13,6 +13,7 @@ suite("Token Watch Extension Test Suite", () => {
     const commands = await vscode.commands.getCommands(true);
     assert.ok(commands.includes("token-watch.openPanel"));
     assert.ok(commands.includes("token-watch.rescan"));
+    assert.ok(commands.includes("token-watch:resetdb"));
     assert.ok(commands.includes("token-watch.resetDatabase"));
     assert.ok(commands.includes("token-watch.showDiagnostics"));
   });

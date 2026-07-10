@@ -32,14 +32,18 @@ suite("Extension integration tests", () => {
     );
   });
 
-  test("token-watch.resetDatabase command is registered", async () => {
+  test("token-watch:resetdb command and legacy alias are registered", async () => {
     const ext = vscode.extensions.getExtension(EXTENSION_ID);
     assert.ok(ext, "Extension should be found");
     await ext.activate();
     const commands = await vscode.commands.getCommands(true);
     assert.ok(
+      commands.includes("token-watch:resetdb"),
+      "token-watch:resetdb should be registered",
+    );
+    assert.ok(
       commands.includes("token-watch.resetDatabase"),
-      "token-watch.resetDatabase should be registered",
+      "legacy token-watch.resetDatabase alias should be registered",
     );
   });
 

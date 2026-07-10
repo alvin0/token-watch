@@ -4,12 +4,12 @@ import { PeriodTabs } from "./components/PeriodTabs";
 import { SourceTabs } from "./components/SourceTabs";
 import { CurrentPeriodCard } from "./components/CurrentPeriodCard";
 import { SummaryCard } from "./components/SummaryCard";
-import { InsightCards } from "./components/InsightCards";
 import { ToolCallsCard } from "./components/ToolCallsCard";
 import { TrendChart } from "./components/TrendChart";
 import { TopModelsCard } from "./components/TopModelsCard";
 import { RecentPeriodsCard } from "./components/RecentPeriodsCard";
 import { TodayCodexUsageCard } from "./components/TodayCodexUsageCard";
+import { TodayClaudeUsageCard } from "./components/TodayClaudeUsageCard";
 import { TodayInsightsCard } from "./components/TodayInsightsCard";
 import { TodayUsageTrend } from "./components/TodayUsageTrend";
 import { FooterBar } from "./components/FooterBar";
@@ -51,13 +51,14 @@ export function App() {
       <div className="tw-flex-1 tw-overflow-y-auto tw-px-3 tw-pb-3 tw-space-y-2.5">
         <CurrentPeriodCard />
         <SummaryCard />
-        {granularity === "today" && <TodayCodexUsageCard />}
-        {granularity === "today" && <TodayUsageTrend />}
-        <InsightCards />
+        <TopModelsCard />
+        {granularity === "today" && activeSource !== "claude" && <TodayCodexUsageCard />}
+        {granularity === "today" && activeSource !== "codex" && <TodayClaudeUsageCard />}
         <ToolCallsCard />
+        {granularity === "today" && <TodayUsageTrend />}
+        {/* <InsightCards /> */}
         {/* <CompositionCard /> */}
         {granularity === "today" ? <TodayInsightsCard /> : <TrendChart />}
-        <TopModelsCard />
         {granularity !== "today" && <RecentPeriodsCard />}
       </div>
       <FooterBar />

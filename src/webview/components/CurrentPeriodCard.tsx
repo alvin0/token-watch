@@ -1,6 +1,6 @@
 import { useStore } from "../store";
 import { useQuery } from "../hooks/useQuery";
-import { formatCost } from "../format";
+import { formatCost, formatCostPerTurn } from "../format";
 import { agg, computePeriods, currentRangeForPeriod, fmtT } from "../lib/periodData";
 import { UsageOverviewCard } from "./UsageOverviewCard";
 import type { Period } from "../lib/periodData";
@@ -15,10 +15,10 @@ const labels: Record<VisiblePeriod, string> = {
 };
 
 const averageLabels: Record<VisiblePeriod, string> = {
-  day: "vs 7-day avg",
-  week: "vs 7-week avg",
-  month: "vs 6-month avg",
-  year: "vs 2-year avg",
+  day: "7-day avg",
+  week: "7-week avg",
+  month: "6-month avg",
+  year: "2-year avg",
 };
 
 export function CurrentPeriodCard() {
@@ -42,28 +42,26 @@ export function CurrentPeriodCard() {
     return sum + row.count;
   }, 0);
   const sourceLabel = !sources ? "" : sources.length === 1 ? ` (${sources[0]})` : "";
+  const cacheInputBase = cachingTokens + current.input;
+  const cacheHitPct = cacheInputBase > 0 ? (cachingTokens / cacheInputBase) * 100 : 0;
+  const costPerTurn = current.turns > 0 ? current.cost / current.turns : 0;
 
   return (
     <UsageOverviewCard
       title={`${labels[period]}${sourceLabel}`}
       cost={formatCost(current.cost)}
+      comparisonCost={formatCost(averageCost)}
       delta={delta}
-      deltaLabel={averageLabels[period]}
-      metricGroups={[
-        [
-          { label: "Total tokens", value: fmtT(current.tokens) },
-          { label: "Turns", value: current.turns.toLocaleString() },
-          { label: "Tool calls", value: toolCalls.toLocaleString() },
-        ],
-        [
-          { label: "Input tokens", value: fmtT(current.input), tone: "blue" },
-          { label: "Caching token", value: fmtT(cachingTokens), tone: "yellow" },
-          { label: "Output tokens", value: fmtT(current.output), tone: "cyan" },
-        ],
-        [
-          { label: "Models", value: current.models.toLocaleString() },
-        ],
-      ]}
+      comparisonLabel={averageLabels[period]}
+      totalTokens={fmtT(current.tokens)}
+      cachedTokens={fmtT(cachingTokens)}
+      inputTokens={fmtT(current.input)}
+      outputTokens={fmtT(current.output)}
+      cacheHitPct={cacheHitPct}
+      turns={current.turns.toLocaleString()}
+      toolCalls={toolCalls.toLocaleString()}
+      models={current.models.toLocaleString()}
+      costPerTurn={formatCostPerTurn(costPerTurn)}
     />
   );
 }

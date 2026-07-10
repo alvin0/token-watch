@@ -12,3 +12,11 @@ export function formatCost(usd: number, currency?: DisplayCurrencyConfig): strin
   }
   return usdStr;
 }
+
+export function formatCostPerTurn(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) { return "$0.00"; }
+  return `$${value.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: value < 1 ? 3 : 2,
+  })}`;
+}

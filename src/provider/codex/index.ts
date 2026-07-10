@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { UsageCacheInfo } from "../../shared/protocol";
 
 export const DEFAULT_CODEX_AUTH_FILE = "~/.codex/auth.json";
 export const WHAM_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
@@ -9,9 +10,15 @@ export const DEFAULT_CODEX_ISSUER = "https://auth.openai.com";
 export const DEFAULT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 const REFRESH_SAFETY_MARGIN_MS = 30_000;
+const DEFAULT_USAGE_CACHE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
+const DEFAULT_FAILURE_RETRY_MS = 60 * 1000;
 
 const DEFAULT_ORIGINATOR = "opencode";
 const DEFAULT_USER_AGENT = "codex-standalone-client";
+const usageInfoPromises = new Map<string, Promise<unknown>>();
+const usageCooldowns = new Map<string, number>();
+const usageInfoCache = new Map<string, { value: unknown; cachedAt: number; expiresAt: number }>();
 
 export interface CodexAuthFile {
   auth_mode?: string;
@@ -40,11 +47,28 @@ export interface CodexConnectionOptions {
   clientId?: string;
   originator?: string;
   userAgent?: string;
+  now?: () => number;
+  usageCacheTtlMs?: number;
 }
 
 export interface CodexRequestOptions {
   headers?: HeadersInit;
   signal?: AbortSignal;
+  force?: boolean;
+}
+
+export class CodexUsageRateLimitError extends Error {
+  constructor(
+    public readonly retryAt: number,
+    public readonly fromCooldown: boolean,
+  ) {
+    super(`Codex usage is rate limited until ${new Date(retryAt).toISOString()}`);
+    this.name = "CodexUsageRateLimitError";
+  }
+}
+
+export function isCodexUsageRateLimitError(error: unknown): error is CodexUsageRateLimitError {
+  return error instanceof CodexUsageRateLimitError;
 }
 
 export class CodexConnection {
@@ -60,12 +84,80 @@ export class CodexConnection {
     return this.requestWithRefresh(WHAM_ENVIRONMENTS_ENDPOINT, options);
   }
 
-  async usageInfo<T = unknown>(options?: CodexRequestOptions): Promise<T> {
+  usageInfo<T = unknown>(options: CodexRequestOptions = {}): Promise<T> {
+    const key = usageRequestKey(this.options);
+    const now = (this.options.now ?? Date.now)();
+    const cached = usageInfoCache.get(key);
+    if (!options.force && cached && cached.expiresAt > now) {
+      return Promise.resolve(cached.value as T);
+    }
+
+    const retryAt = usageCooldowns.get(key) ?? 0;
+    if (retryAt > now) {
+      if (cached) {
+        return Promise.resolve(cached.value as T);
+      }
+      return Promise.reject(new CodexUsageRateLimitError(retryAt, true));
+    }
+
+    const inFlight = usageInfoPromises.get(key);
+    if (inFlight) {
+      return inFlight as Promise<T>;
+    }
+
+    const promise = this.fetchUsageInfo<T>(key, options)
+      .catch((error: unknown) => {
+        if (!isCodexUsageRateLimitError(error)) {
+          setFailureCooldown(usageCooldowns, key, (this.options.now ?? Date.now)());
+        }
+        throw error;
+      })
+      .finally(() => {
+        usageInfoPromises.delete(key);
+      });
+    usageInfoPromises.set(key, promise);
+    return promise;
+  }
+
+  usageCacheInfo(): UsageCacheInfo {
+    const key = usageRequestKey(this.options);
+    const now = (this.options.now ?? Date.now)();
+    const cached = usageInfoCache.get(key);
+    const cooldown = usageCooldowns.get(key) ?? 0;
+    return {
+      ...(cached ? { cachedAtUtc: cached.cachedAt } : {}),
+      ...(cooldown > now
+        ? { retryAtUtc: cooldown }
+        : cached && cached.expiresAt > now
+          ? { retryAtUtc: cached.expiresAt }
+          : {}),
+    };
+  }
+
+  private async fetchUsageInfo<T>(key: string, options: CodexRequestOptions): Promise<T> {
     const response = await this.usage(options);
+    if (response.status === 429) {
+      const now = (this.options.now ?? Date.now)();
+      const retryAt = retryAtFromHeader(response.headers.get("retry-after"), now);
+      usageCooldowns.set(key, retryAt);
+      const cached = usageInfoCache.get(key);
+      if (cached) {
+        return cached.value as T;
+      }
+      throw new CodexUsageRateLimitError(retryAt, false);
+    }
     if (!response.ok) {
       throw new Error(`Codex usage request failed: ${response.status} ${await response.text()}`);
     }
-    return (await response.json()) as T;
+    usageCooldowns.delete(key);
+    const value = (await response.json()) as T;
+    const now = (this.options.now ?? Date.now)();
+    usageInfoCache.set(key, {
+      value,
+      cachedAt: now,
+      expiresAt: now + (this.options.usageCacheTtlMs ?? DEFAULT_USAGE_CACHE_TTL_MS),
+    });
+    return value;
   }
 
   async environmentsInfo<T = unknown>(options?: CodexRequestOptions): Promise<T> {
@@ -144,6 +236,30 @@ export function resolveCodexAuthPath(authFile = DEFAULT_CODEX_AUTH_FILE) {
     return path.join(os.homedir(), authFile.slice(2));
   }
   return path.isAbsolute(authFile) ? authFile : path.resolve(authFile);
+}
+
+function usageRequestKey(options: CodexConnectionOptions): string {
+  return `codex:${resolveCodexAuthPath(options.authFile)}:${options.endpoint ?? WHAM_USAGE_ENDPOINT}`;
+}
+
+function retryAtFromHeader(value: string | null, now: number): number {
+  if (value) {
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return now + seconds * 1_000;
+    }
+    const date = Date.parse(value);
+    if (Number.isFinite(date) && date > now) {
+      return date;
+    }
+  }
+  return now + DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+}
+
+function setFailureCooldown(cooldowns: Map<string, number>, key: string, now: number): void {
+  if ((cooldowns.get(key) ?? 0) <= now) {
+    cooldowns.set(key, now + DEFAULT_FAILURE_RETRY_MS);
+  }
 }
 
 async function readCodexAuthFile(resolvedPath: string): Promise<CodexAuthFile> {
@@ -287,4 +403,3 @@ interface CodexTokenResponse {
   refresh_token?: string;
   expires_in?: number;
 }
-

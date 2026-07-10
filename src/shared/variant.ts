@@ -15,6 +15,11 @@ export function makeVariantId(model: string, effort?: Effort): string {
 }
 
 export function baseModelOf(variantId: string): string {
-  const m = variantId.match(/^(.*) \((minimal|low|medium|high|xhigh)\)$/);
+  const m = variantId.match(/^(.*) \((minimal|low|medium|high|xhigh|ultra|max)\)$/);
   return m ? m[1] : variantId;
+}
+
+export function effortOf(variantId: string): Effort | undefined {
+  const match = variantId.match(/\((minimal|low|medium|high|xhigh|ultra|max)\)$/);
+  return match?.[1] as Effort | undefined;
 }

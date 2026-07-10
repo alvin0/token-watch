@@ -1,11 +1,19 @@
-import type { RateLimitInfo } from "./protocol";
+import type { RateLimitInfo, UsageQuotaWindow } from "./protocol";
 
 export interface CodexUsageResponse {
   plan_type?: string;
-  rate_limit?: {
-    primary_window?: CodexUsageWindow;
-    secondary_window?: CodexUsageWindow;
-  };
+  rate_limit?: CodexRateLimit;
+  code_review_rate_limit?: CodexRateLimit | null;
+  additional_rate_limits?: Array<{
+    limit_name?: string;
+    metered_feature?: string;
+    rate_limit?: CodexRateLimit;
+  }>;
+}
+
+export interface CodexRateLimit {
+  primary_window?: CodexUsageWindow;
+  secondary_window?: CodexUsageWindow;
 }
 
 export interface CodexUsageWindow {
@@ -18,7 +26,17 @@ export interface CodexUsageWindow {
 export function mapCodexUsageToRateLimitInfo(usage: CodexUsageResponse, fetchedAtUtc = Date.now()): RateLimitInfo | undefined {
   const primary = usage.rate_limit?.primary_window;
   const secondary = usage.rate_limit?.secondary_window;
-  if (!primary && !secondary) {
+  const windows: UsageQuotaWindow[] = [];
+  appendCodexWindows(windows, "codex", undefined, usage.rate_limit, fetchedAtUtc);
+  appendCodexWindows(windows, "code-review", "Code Review", usage.code_review_rate_limit, fetchedAtUtc);
+  const additionalLimits = Array.isArray(usage.additional_rate_limits) ? usage.additional_rate_limits : [];
+  for (const [index, additional] of additionalLimits.entries()) {
+    const label = cleanLabel(additional.limit_name) ?? cleanLabel(additional.metered_feature) ?? `Additional limit ${index + 1}`;
+    const id = `additional:${slug(additional.metered_feature ?? additional.limit_name ?? String(index))}`;
+    appendCodexWindows(windows, id, label, additional.rate_limit, fetchedAtUtc);
+  }
+
+  if (windows.length === 0) {
     return undefined;
   }
 
@@ -28,7 +46,89 @@ export function mapCodexUsageToRateLimitInfo(usage: CodexUsageResponse, fetchedA
     secondaryPct: normalizeNumber(secondary?.used_percent),
     remainingSeconds: normalizeNumber(primary?.reset_after_seconds),
     weeklyResetAtUtc: normalizeResetAtUtc(secondary?.reset_at),
+    windows,
   };
+}
+
+function appendCodexWindows(
+  windows: UsageQuotaWindow[],
+  id: string,
+  groupLabel: string | undefined,
+  rateLimit: CodexRateLimit | null | undefined,
+  fetchedAtUtc: number,
+): void {
+  appendCodexWindow(
+    windows,
+    `${id}:primary`,
+    quotaLabel(groupLabel, windowLabel(rateLimit?.primary_window, "5h limit")),
+    rateLimit?.primary_window,
+    fetchedAtUtc,
+  );
+  appendCodexWindow(
+    windows,
+    `${id}:secondary`,
+    quotaLabel(groupLabel, windowLabel(rateLimit?.secondary_window, "Weekly")),
+    rateLimit?.secondary_window,
+    fetchedAtUtc,
+  );
+}
+
+function appendCodexWindow(
+  windows: UsageQuotaWindow[],
+  id: string,
+  label: string,
+  window: CodexUsageWindow | undefined,
+  fetchedAtUtc: number,
+): void {
+  if (!window) {
+    return;
+  }
+  const usedPct = normalizeNumber(window.used_percent);
+  const resetAtUtc = normalizeResetAtUtc(window.reset_at)
+    ?? (isFiniteNumber(window.reset_after_seconds) ? fetchedAtUtc + window.reset_after_seconds * 1_000 : undefined);
+  if (usedPct === undefined && resetAtUtc === undefined) {
+    return;
+  }
+  windows.push({
+    id,
+    label,
+    usedPct,
+    resetAtUtc,
+    windowSeconds: normalizeNumber(window.limit_window_seconds),
+  });
+}
+
+function quotaLabel(group: string | undefined, window: string): string {
+  return group ? `${group} · ${window}` : window;
+}
+
+function windowLabel(window: CodexUsageWindow | undefined, fallback: string): string {
+  const seconds = window?.limit_window_seconds;
+  if (!isFiniteNumber(seconds) || seconds <= 0) {
+    return fallback;
+  }
+  if (seconds === 604_800) {
+    return "Weekly";
+  }
+  if (seconds % 86_400 === 0) {
+    return `${seconds / 86_400}d limit`;
+  }
+  if (seconds % 3_600 === 0) {
+    return `${seconds / 3_600}h limit`;
+  }
+  if (seconds % 60 === 0) {
+    return `${seconds / 60}m limit`;
+  }
+  return `${seconds}s limit`;
+}
+
+function cleanLabel(value?: string): string | undefined {
+  const cleaned = value?.trim();
+  return cleaned || undefined;
+}
+
+function slug(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
 export function formatDurationShort(totalSeconds?: number): string {

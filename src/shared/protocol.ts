@@ -71,11 +71,31 @@ export interface WarningInfo {
 }
 
 /** Latest Codex rate-limit percentages seen, informational (Req 14.4). */
+export interface UsageQuotaWindow {
+  id: string;
+  label: string;
+  usedPct?: number;
+  resetAtUtc?: number;
+  windowSeconds?: number;
+  isActive?: boolean;
+}
+
 export interface RateLimitInfo {
   primaryPct?: number;
   secondaryPct?: number;
   remainingSeconds?: number;
   weeklyResetAtUtc?: number;
+  windows: UsageQuotaWindow[];
+  tsUtc?: number;
+}
+
+/** Latest Claude Code subscription quota percentages. */
+export interface ClaudeRateLimitInfo {
+  fiveHourPct?: number;
+  weeklyPct?: number;
+  fiveHourResetAtUtc?: number;
+  weeklyResetAtUtc?: number;
+  windows: UsageQuotaWindow[];
   tsUtc?: number;
 }
 
@@ -148,13 +168,22 @@ export interface DisplayCurrencyConfig {
   secondaryRate?: number;       // USD→secondary multiplier; must be > 0 to display
 }
 
+export type UsageProvider = "codex" | "claude";
+
+export interface UsageCacheInfo {
+  cachedAtUtc?: number;
+  retryAtUtc?: number;
+  refreshing?: boolean;
+  unavailable?: boolean;
+}
+
 /** WebView → host messages. */
 export type WebviewRequest =
   | { type: "ready" }
   | { type: "query"; id: string; query: AnalyticsQuery }
   | { type: "rescan" }
-  | { type: "resetDatabase" }
   | { type: "updatePricing"; table: PricingTable }
+  | { type: "refreshUsage"; provider: UsageProvider }
   | { type: "openSetting"; key: string };
 
 /** Host → WebView messages. */
@@ -168,5 +197,8 @@ export type HostMessage =
       freshness: FreshnessInfo;
       warnings: WarningInfo;
       rateLimit?: RateLimitInfo;          // Req 14.4
+      claudeRateLimit?: ClaudeRateLimitInfo;
+      codexUsageCache?: UsageCacheInfo;
+      claudeUsageCache?: UsageCacheInfo;
       currency?: DisplayCurrencyConfig;   // Req 6.5
     };

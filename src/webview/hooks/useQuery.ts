@@ -1,10 +1,10 @@
-import { useEffect } from "react";
 import { useStore } from "../store.js";
 import type { AnalyticsQuery, AnalyticsResult } from "../../shared/protocol.js";
 
 /**
- * Returns the LATEST cached `AnalyticsResult` for the given view.
- * When filters change, a new query is sent and the newest result replaces the old.
+ * Returns the latest cached `AnalyticsResult` for the given view. Query
+ * scheduling is centralized in the store/main entry point so multiple cards do
+ * not emit duplicate requests while the same result is pending.
  */
 export function useQuery(view: AnalyticsQuery["view"]): AnalyticsResult | undefined {
   const result = useStore((s) => {
@@ -22,14 +22,6 @@ export function useQuery(view: AnalyticsQuery["view"]): AnalyticsResult | undefi
     }
     return latest;
   });
-
-  const requestQuery = useStore((s) => s.requestQuery);
-
-  useEffect(() => {
-    if (!result) {
-      requestQuery();
-    }
-  }, [result, requestQuery]);
 
   return result;
 }

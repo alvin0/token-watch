@@ -88,6 +88,7 @@ export const DEFAULT_PRICING: PricingTable = {
   "claude-sonnet-4": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
   "claude-sonnet-4-20250514": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
   "claude-haiku-4.5": { inputPer1K: 0.001, cachedInputPer1K: 0.0001, cacheCreationPer1K: 0.00125, outputPer1K: 0.005 },
+  "claude-haiku-4-5-20251001": { inputPer1K: 0.001, cachedInputPer1K: 0.0001, cacheCreationPer1K: 0.00125, outputPer1K: 0.005 },
   "claude-haiku-4-5": { inputPer1K: 0.001, cachedInputPer1K: 0.0001, cacheCreationPer1K: 0.00125, outputPer1K: 0.005 },
   "claude-haiku-3.5": { inputPer1K: 0.0008, cachedInputPer1K: 0.00008, cacheCreationPer1K: 0.001, outputPer1K: 0.004 },
   "claude-haiku-3-5": { inputPer1K: 0.0008, cachedInputPer1K: 0.00008, cacheCreationPer1K: 0.001, outputPer1K: 0.004 },

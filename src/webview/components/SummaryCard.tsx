@@ -1,6 +1,6 @@
 import { useStore } from "../store";
 import { useQuery } from "../hooks/useQuery";
-import { formatCost } from "../format";
+import { formatCost, formatCostPerTurn } from "../format";
 import { computePeriods, fmtT, pRange } from "../lib/periodData";
 import { UsageOverviewCard } from "./UsageOverviewCard";
 import type { Period } from "../lib/periodData";
@@ -21,6 +21,9 @@ export function SummaryCard() {
     return sum + row.count;
   }, 0);
   const delta = prev.cost > 0 ? ((cur.cost - prev.cost) / prev.cost) * 100 : cur.cost > 0 ? 100 : 0;
+  const cacheInputBase = cachingTokens + cur.input;
+  const cacheHitPct = cacheInputBase > 0 ? (cachingTokens / cacheInputBase) * 100 : 0;
+  const costPerTurn = cur.turns > 0 ? cur.cost / cur.turns : 0;
   const sourceLabel = !sources ? "" : sources.length === 1 ? ` (${sources[0]})` : "";
   const labels: Record<Period, string> = {
     today: `Today cost${sourceLabel}`,
@@ -30,28 +33,29 @@ export function SummaryCard() {
     year: `Last 2 years cost${sourceLabel}`,
   };
   const vs: Record<Period, string> = {
-    today: "vs yesterday",
-    day: "vs previous 7 days",
-    week: "vs previous 7 weeks",
-    month: "vs previous 6 months",
-    year: "vs previous 2 years",
+    today: "yesterday",
+    day: "previous 7 days",
+    week: "previous 7 weeks",
+    month: "previous 6 months",
+    year: "previous 2 years",
   };
 
   return (
     <UsageOverviewCard
       title={labels[g]}
       cost={formatCost(cur.cost)}
+      comparisonCost={formatCost(prev.cost)}
       delta={delta}
-      deltaLabel={vs[g]}
-      metrics={[
-        { label: "Total tokens", value: fmtT(cur.tokens) },
-        { label: "Input tokens", value: fmtT(cur.input), tone: "blue" },
-        { label: "Output tokens", value: fmtT(cur.output), tone: "cyan" },
-        { label: "Caching token", value: fmtT(cachingTokens), tone: "yellow" },
-        { label: "Turns", value: cur.turns.toLocaleString() },
-        { label: "Tool calls", value: toolCalls.toLocaleString() },
-        { label: "Models", value: cur.models.toLocaleString() },
-      ]}
+      comparisonLabel={vs[g]}
+      totalTokens={fmtT(cur.tokens)}
+      cachedTokens={fmtT(cachingTokens)}
+      inputTokens={fmtT(cur.input)}
+      outputTokens={fmtT(cur.output)}
+      cacheHitPct={cacheHitPct}
+      turns={cur.turns.toLocaleString()}
+      toolCalls={toolCalls.toLocaleString()}
+      models={cur.models.toLocaleString()}
+      costPerTurn={formatCostPerTurn(costPerTurn)}
     />
   );
 }
