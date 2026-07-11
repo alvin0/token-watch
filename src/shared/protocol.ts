@@ -18,10 +18,11 @@ import {
   HourlyAggregate,
   HeatmapCell,
 } from "./storeTypes";
+import type { AppLanguage } from "./i18n";
 
 /** A single analytics request describing a view + filters + range (Req 5.5, 8.4). */
 export interface AnalyticsQuery {
-  view: "dashboard" | "series" | "variants" | "sessions" | "tools" | "heatmap" | "comparison";
+  view: "dashboard" | "hourly" | "series" | "variants" | "sessions" | "tools" | "heatmap" | "comparison";
   granularity: "day" | "week" | "month";
   range: { fromUtc: number; toUtc: number };   // inclusive (Req 5.5)
   sources?: Source[];                           // filters (Req 8.4, 11.18)
@@ -50,6 +51,7 @@ export interface SourceComparison {
  */
 export type AnalyticsResult =
   | { view: "dashboard"; series: DailyAggregate[]; variants: VariantMetrics[]; sessions: SessionAggregate[]; tools: ToolUsageRow[]; toolCallsByDay: ToolCallsByDay[]; hourlySeries: HourlyAggregate[] }
+  | { view: "hourly"; hourlySeries: HourlyAggregate[] }
   | { view: "series"; series: DailyAggregate[] }
   | { view: "variants"; variants: VariantMetrics[] }
   | { view: "sessions"; sessions: SessionAggregate[] }
@@ -182,6 +184,14 @@ export interface UsageCacheInfo {
   unavailable?: boolean;
 }
 
+export type CostAlertPeriod = "day" | "week" | "month";
+
+export interface CostAlertRule {
+  id: string;
+  period: CostAlertPeriod;
+  budgetUsd: number;
+}
+
 /** WebView → host messages. */
 export type WebviewRequest =
   | { type: "ready" }
@@ -189,7 +199,9 @@ export type WebviewRequest =
   | { type: "rescan" }
   | { type: "updatePricing"; table: PricingTable }
   | { type: "refreshUsage"; provider: UsageProvider }
-  | { type: "openSetting"; key: string };
+  | { type: "openSetting"; key: string }
+  | { type: "setLanguage"; language: AppLanguage }
+  | { type: "saveCostAlertSettings"; requestId: string; rules: CostAlertRule[] };
 
 /** Host → WebView messages. */
 export type HostMessage =
@@ -197,6 +209,10 @@ export type HostMessage =
   | { type: "queryError"; id: string; message: string }
   | { type: "dataChanged" }                                          // Req 8.7
   | { type: "ingestProgress"; processed: number; total: number; partial: boolean } // Req 4.17
+  | { type: "costAlertSettings"; rules: CostAlertRule[] }
+  | { type: "costAlertSettingsSaved"; requestId: string; rules: CostAlertRule[] }
+  | { type: "costAlertSettingsError"; requestId: string; message: string }
+  | { type: "language"; language: AppLanguage }
   | {
       type: "status";
       freshness: FreshnessInfo;

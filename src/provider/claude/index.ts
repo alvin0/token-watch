@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import type { UsageCacheInfo } from "../../shared/protocol";
+import { randomUsageRetryMs } from "../../shared/usageRetry";
 
 export const DEFAULT_CLAUDE_CREDENTIALS_FILE = "~/.claude/.credentials.json";
 export const DEFAULT_CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
@@ -13,7 +14,6 @@ export const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
 const CLAUDE_OAUTH_BETA = "oauth-2025-04-20";
 const REFRESH_SAFETY_MARGIN_MS = 30_000;
-const DEFAULT_USAGE_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
 const DEFAULT_FAILURE_RETRY_MS = 60 * 1000;
 const execFileAsync = promisify(execFile);
@@ -54,6 +54,7 @@ export interface ClaudeConnectionOptions {
   keychainService?: string;
   now?: () => number;
   usageCacheTtlMs?: number;
+  random?: () => number;
 }
 
 export interface ClaudeUsageRequestOptions {
@@ -164,7 +165,7 @@ export class ClaudeConnection {
     usageInfoCache.set(key, {
       value,
       cachedAt: now,
-      expiresAt: now + (this.options.usageCacheTtlMs ?? DEFAULT_USAGE_CACHE_TTL_MS),
+      expiresAt: now + (this.options.usageCacheTtlMs ?? randomUsageRetryMs(this.options.random)),
     });
     return value;
   }

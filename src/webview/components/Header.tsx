@@ -1,23 +1,68 @@
-import { vscodeApi } from "../store";
+import { useRef, useState } from "react";
+import { useStore, vscodeApi } from "../store";
+import { CostAlertSettingsDialog } from "./CostAlertSettingsDialog";
+import { useTranslation } from "../i18n";
+import type { AppLanguage } from "../../shared/i18n";
 
 export function Header({ status }: { status: string }) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const alertButtonRef = useRef<HTMLButtonElement>(null);
+  const setLanguage = useStore((state) => state.setLanguage);
+  const { language, t } = useTranslation();
   const c = status === "Live" ? "#89d185" : status === "Scanning" || status === "Stale" ? "#cca700" : "#888";
+  const statusLabel = status === "Live" ? t("status.live")
+    : status === "Scanning" ? t("status.scanning")
+      : status === "Stale" ? t("status.stale")
+        : t("status.paused");
+  const closeSettings = () => {
+    setSettingsOpen(false);
+    requestAnimationFrame(() => alertButtonRef.current?.focus());
+  };
   return (
-    <div className="tw-shrink-0 tw-px-3 tw-pt-2 tw-pb-1 tw-flex tw-items-center tw-gap-2">
-      <span className="tw-text-[13px] tw-font-bold tw-text-[var(--vscode-foreground)]">Token Watch</span>
-      <span className="tw-flex tw-items-center tw-gap-1 tw-text-[9px]" style={{ color: c }}>
-        <span className="tw-w-[5px] tw-h-[5px] tw-rounded-full" style={{ backgroundColor: c }} />{status}
-      </span>
-      <div className="tw-ml-auto tw-flex tw-items-center tw-gap-1">
-        <button
-          title="Rescan logs"
-          aria-label="Rescan logs"
-          onClick={() => vscodeApi.postMessage({ type: "rescan" })}
-          className="tw-text-[12px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-text-[var(--vscode-foreground)] tw-cursor-pointer"
-        >
-          &#8635;
-        </button>
+    <>
+      <div className="tw-shrink-0 tw-px-3 tw-pt-2 tw-pb-1 tw-flex tw-items-center tw-gap-2">
+        <span className="tw-text-[13px] tw-font-bold tw-text-[var(--vscode-foreground)]">Token Watch</span>
+        <span className="tw-flex tw-items-center tw-gap-1 tw-text-[9px]" style={{ color: c }}>
+          <span className="tw-w-[5px] tw-h-[5px] tw-rounded-full" style={{ backgroundColor: c }} />{statusLabel}
+        </span>
+        <div className="tw-ml-auto tw-flex tw-items-center tw-gap-0.5">
+          <button
+            type="button"
+            title={t("header.rescan")}
+            aria-label={t("header.rescan")}
+            onClick={() => vscodeApi.postMessage({ type: "rescan" })}
+            className="tw-flex tw-h-6 tw-w-6 tw-cursor-pointer tw-items-center tw-justify-center tw-rounded tw-text-[12px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-[#25253a] hover:tw-text-[var(--vscode-foreground)]"
+          >
+            &#8635;
+          </button>
+          <select
+            value={language}
+            title={t("language.label")}
+            aria-label={t("language.label")}
+            onChange={(event) => setLanguage(event.target.value as AppLanguage)}
+            className="tw-h-6 tw-cursor-pointer tw-rounded tw-border tw-border-[#34344a] tw-bg-[var(--vscode-dropdown-background,#222236)] tw-px-1 tw-text-[8px] tw-font-medium tw-text-[var(--vscode-dropdown-foreground,var(--vscode-foreground))] tw-outline-none focus:tw-border-[var(--vscode-focusBorder)]"
+          >
+            <option value="en">EN</option>
+            <option value="vi">VI</option>
+            <option value="ja">JA</option>
+          </select>
+          <button
+            ref={alertButtonRef}
+            type="button"
+            title={t("header.alerts")}
+            aria-label={t("header.alerts")}
+            aria-haspopup="dialog"
+            onClick={() => setSettingsOpen(true)}
+            className="tw-flex tw-h-6 tw-w-6 tw-cursor-pointer tw-items-center tw-justify-center tw-rounded tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-[#25253a] hover:tw-text-[var(--vscode-foreground)]"
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24" className="tw-h-3.5 tw-w-3.5 tw-fill-none tw-stroke-current" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+              <path d="M10 21h4" />
+            </svg>
+          </button>
+        </div>
       </div>
-    </div>
+      {settingsOpen && <CostAlertSettingsDialog onClose={closeSettings} />}
+    </>
   );
 }

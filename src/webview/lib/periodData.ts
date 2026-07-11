@@ -7,14 +7,14 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface PAgg {
   tokens: number; cost: number; turns: number;
-  input: number; output: number; cache: number; reasoning: number;
+  input: number; output: number; cache: number; cacheWrite: number; reasoning: number;
   models: number; activeDays: number;
 }
 
 export interface Bkt {
   key: string; label: string;
   tokens: number; cost: number; turns: number;
-  input: number; output: number; cache: number; reasoning: number;
+  input: number; output: number; cache: number; cacheWrite: number; reasoning: number;
 }
 
 export interface PeriodRange {
@@ -102,24 +102,25 @@ export function computePeriods(series: DailyAggregate[], g: Period): { cur: PAgg
 }
 
 export function agg(series: DailyAggregate[], from: string, to: string): PAgg {
-  let tokens = 0, cost = 0, turns = 0, input = 0, output = 0, cache = 0, reasoning = 0;
+  let tokens = 0, cost = 0, turns = 0, input = 0, output = 0, cache = 0, cacheWrite = 0, reasoning = 0;
   const ms = new Set<string>();
   const days = new Set<string>();
   for (const r of series) {
     if (r.day >= from && r.day <= to) {
       tokens += r.totalTokens; cost += r.costUsd; turns += r.turns;
-      input += r.inputTokens; output += r.outputTokens; cache += r.cacheReadTokens; reasoning += r.reasoningTokens;
+      input += r.inputTokens; output += r.outputTokens; cache += r.cacheReadTokens;
+      cacheWrite += r.cacheCreationTokens; reasoning += r.reasoningTokens;
       ms.add(r.variantId);
       days.add(r.day);
     }
   }
-  return { tokens, cost, turns, input, output, cache, reasoning, models: ms.size, activeDays: days.size };
+  return { tokens, cost, turns, input, output, cache, cacheWrite, reasoning, models: ms.size, activeDays: days.size };
 }
 
-export function makeBuckets(series: DailyAggregate[], g: Period): Bkt[] {
-  const { from, to } = pRange(g);
+export function makeBuckets(series: DailyAggregate[], g: Period, now = new Date()): Bkt[] {
+  const { from, to } = pRange(g, now);
   const map = new Map<string, Bkt>();
-  for (const bucket of periodBuckets(g)) {
+  for (const bucket of periodBuckets(g, now)) {
     map.set(bucket.key, bucket);
   }
 
@@ -133,17 +134,25 @@ export function makeBuckets(series: DailyAggregate[], g: Period): Bkt[] {
       continue;
     }
     b.tokens += row.totalTokens; b.cost += row.costUsd; b.turns += row.turns;
-    b.input += row.inputTokens; b.output += row.outputTokens; b.cache += row.cacheReadTokens; b.reasoning += row.reasoningTokens;
+    b.input += row.inputTokens; b.output += row.outputTokens; b.cache += row.cacheReadTokens;
+    b.cacheWrite += row.cacheCreationTokens; b.reasoning += row.reasoningTokens;
   }
   return Array.from(map.values()).sort((a, b) => b.key.localeCompare(a.key));
+}
+
+export function previousPeriodAnchor(g: Period, now = new Date()): Date {
+  if (g === "day") { return new Date(now.getTime() - 7 * DAY_MS); }
+  if (g === "week") { return new Date(now.getTime() - 7 * 7 * DAY_MS); }
+  if (g === "month") { return new Date(now.getFullYear(), now.getMonth() - 6, now.getDate()); }
+  if (g === "year") { return new Date(now.getFullYear() - 2, now.getMonth(), now.getDate()); }
+  return new Date(now.getTime() - DAY_MS);
 }
 
 export function wk(day: string): string {
   return toLocalDayStr(weekStart(day));
 }
 
-function periodBuckets(g: Period): Bkt[] {
-  const now = new Date();
+function periodBuckets(g: Period, now = new Date()): Bkt[] {
   const buckets: Bkt[] = [];
 
   if (g === "day") {
@@ -187,7 +196,7 @@ function periodBuckets(g: Period): Bkt[] {
 }
 
 function emptyBucket(key: string, label: string): Bkt {
-  return { key, label, tokens: 0, cost: 0, turns: 0, input: 0, output: 0, cache: 0, reasoning: 0 };
+  return { key, label, tokens: 0, cost: 0, turns: 0, input: 0, output: 0, cache: 0, cacheWrite: 0, reasoning: 0 };
 }
 
 function bucketKey(day: string, g: Period): string {

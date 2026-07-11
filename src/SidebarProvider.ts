@@ -5,6 +5,8 @@ import { CodexConnection, DEFAULT_CODEX_AUTH_FILE, isCodexUsageRateLimitError } 
 import { ClaudeConnection, isClaudeUsageRateLimitError } from "./provider/claude";
 import { mapCodexUsageToRateLimitInfo, type CodexUsageResponse } from "./shared/codexUsage";
 import { mapClaudeUsageToRateLimitInfo, type ClaudeUsageResponse } from "./shared/claudeUsage";
+import type { CostAlertController } from "./host/CostAlertController";
+import type { LanguageController } from "./host/LanguageController";
 import type {
   WebviewRequest,
   HostMessage,
@@ -41,6 +43,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   constructor(
     private readonly _extensionUri: vscode.Uri,
     private readonly coordinator: IngestionCoordinator,
+    private readonly costAlerts: CostAlertController,
+    private readonly language: LanguageController,
     currency: DisplayCurrencyConfig,
   ) {
     this.currency = currency;
@@ -234,6 +238,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
       case "ready":
         // WebView loaded — push initial status
         this.pushStatus();
+        this.pushCostAlertSettings();
+        this.pushLanguage();
         void this.refreshCodexUsage();
         void this.refreshClaudeUsage();
         break;
@@ -272,7 +278,36 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           `tokenWatch.${message.key}`,
         );
         break;
+      case "saveCostAlertSettings":
+        if (typeof message.requestId !== "string" || !message.requestId) {
+          console.warn("[TokenWatch] ignored cost alert settings with an invalid request ID");
+          break;
+        }
+        this.costAlerts.saveRules(message.rules).then(
+          (rules) => {
+            this.postMessage({ type: "costAlertSettingsSaved", requestId: message.requestId, rules });
+          },
+          (error) => {
+            const errorMessage = error instanceof Error ? error.message : "Unable to save cost alerts.";
+            this.postMessage({ type: "costAlertSettingsError", requestId: message.requestId, message: errorMessage });
+          },
+        );
+        break;
+      case "setLanguage":
+        this.language.setLanguage(message.language).then(
+          (language) => this.postMessage({ type: "language", language }),
+          (error) => console.warn("[TokenWatch] language change failed:", error),
+        );
+        break;
     }
+  }
+
+  private pushCostAlertSettings(): void {
+    this.postMessage({ type: "costAlertSettings", rules: this.costAlerts.getRules() });
+  }
+
+  private pushLanguage(): void {
+    this.postMessage({ type: "language", language: this.language.getLanguage() });
   }
 
   private postMessage(message: HostMessage): void {

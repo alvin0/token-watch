@@ -1,6 +1,9 @@
+import { useTranslation } from "../i18n";
+
 type SourceOption = "all" | "codex" | "claude";
 
 export function SourceTabs({ selected, onChange }: { selected: SourceOption; onChange: (s: SourceOption) => void }) {
+  const { t } = useTranslation();
   return (
     <div className="tw-shrink-0 tw-px-3 tw-pb-1.5">
       <div className="tw-inline-flex tw-bg-[#1e1e2e] tw-rounded-md tw-p-[3px]">
@@ -11,7 +14,7 @@ export function SourceTabs({ selected, onChange }: { selected: SourceOption; onC
                 ? "tw-bg-[var(--vscode-button-background)] tw-text-[var(--vscode-button-foreground)]"
                 : "tw-text-[var(--vscode-descriptionForeground)] hover:tw-text-[var(--vscode-foreground)]"
             }`}>
-            {s === "all" ? "All" : s === "codex" ? "Codex" : "Claude"}
+            {s === "all" ? t("common.all") : s === "codex" ? "Codex" : "Claude"}
           </button>
         ))}
       </div>

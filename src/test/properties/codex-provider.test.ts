@@ -208,7 +208,7 @@ suite("Codex provider connection", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     };
-    const options = { authFile, fetch: fetchUsage, now: () => now };
+    const options = { authFile, fetch: fetchUsage, now: () => now, random: () => 0.5 };
     const firstConnection = new CodexConnection(options);
 
     const [first, second] = await Promise.all([
@@ -222,10 +222,10 @@ suite("Codex provider connection", () => {
     assert.strictEqual(callCount, 1);
     assert.deepStrictEqual(firstConnection.usageCacheInfo(), {
       cachedAtUtc: now,
-      retryAtUtc: now + 300_000,
+      retryAtUtc: now + 105_000,
     });
 
-    now += 300_000;
+    now += 105_000;
     await firstConnection.usageInfo();
     assert.strictEqual(callCount, 2);
   });

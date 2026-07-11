@@ -2,6 +2,15 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.1.1]
+
+- Added English, Vietnamese, and Japanese language options.
+- Added daily, weekly, and monthly cost alerts.
+- Added hourly usage charts for recent days.
+- Improved usage charts with clearer summaries, comparisons, and token details.
+- Made recent usage and top models easier to scan and explore.
+- Usage limit information now refreshes more quickly.
+
 ## [0.1.0]
 
 - View total tokens, estimated cost, usage count, and trends by day or week.

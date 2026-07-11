@@ -3,10 +3,12 @@ import { useQuery } from "../hooks/useQuery";
 import { formatCost } from "../format";
 import { computePeriods, fmtT, pRange } from "../lib/periodData";
 import type { Period } from "../lib/periodData";
+import { useTranslation } from "../i18n";
 
 export function TodayInsightsCard() {
   const result = useQuery("dashboard");
   const g = useStore((s) => s.granularity) as Period;
+  const { locale, t } = useTranslation();
   if (g !== "today" || !result || result.view !== "dashboard") { return null; }
 
   const { cur, prev } = computePeriods(result.series, "today");
@@ -19,44 +21,44 @@ export function TodayInsightsCard() {
   const reasoningPct = pct(cur.reasoning, totalTokenParts);
   const tokensPerTurn = cur.turns > 0 ? cur.tokens / cur.turns : 0;
   const costPerTurn = cur.turns > 0 ? cur.cost / cur.turns : 0;
-  const topModel = topModelInsight(todayRows);
-  const costDelta = deltaLabel(cur.cost, prev.cost);
+  const topModel = topModelInsight(todayRows, locale, t);
+  const costDelta = deltaLabel(cur.cost, prev.cost, t);
 
   const insights = [
     {
-      label: "Vs yesterday",
+      label: t("insights.vsYesterday"),
       value: costDelta.value,
       detail: costDelta.detail,
       tone: costDelta.tone,
     },
     {
-      label: "Cache leverage",
+      label: t("insights.cacheLeverage"),
       value: `${cachePct.toFixed(1)}%`,
-      detail: `${fmtT(cur.cache)} cached vs ${fmtT(cur.input)} fresh input`,
+      detail: t("insights.cacheDetail", { cached: fmtT(cur.cache), input: fmtT(cur.input) }),
       tone: cachePct >= 70 ? "good" : cachePct >= 30 ? "neutral" : "warn",
     },
     {
-      label: "Turn weight",
+      label: t("insights.turnWeight"),
       value: fmtT(tokensPerTurn),
-      detail: `${formatCost(costPerTurn)} per turn across ${cur.turns.toLocaleString()} turns`,
+      detail: t("insights.turnDetail", { cost: formatCost(costPerTurn), turns: cur.turns.toLocaleString(locale) }),
       tone: tokensPerTurn >= 100_000 ? "warn" : "neutral",
     },
     {
-      label: "Main model",
+      label: t("insights.mainModel"),
       value: topModel.value,
       detail: topModel.detail,
       tone: topModel.tone,
     },
     {
-      label: "Reasoning mix",
+      label: t("insights.reasoningMix"),
       value: `${reasoningPct.toFixed(1)}%`,
-      detail: `${fmtT(cur.reasoning)} reasoning tokens today`,
+      detail: t("insights.reasoningDetail", { tokens: fmtT(cur.reasoning) }),
       tone: reasoningPct > 15 ? "warn" : reasoningPct > 5 ? "neutral" : "good",
     },
     {
-      label: "Output shape",
+      label: t("insights.outputShape"),
       value: outputShape(cur.input, cur.output),
-      detail: `${fmtT(cur.output)} output from ${fmtT(cur.input)} input`,
+      detail: t("insights.outputDetail", { output: fmtT(cur.output), input: fmtT(cur.input) }),
       tone: "neutral",
     },
   ] as const;
@@ -64,8 +66,8 @@ export function TodayInsightsCard() {
   return (
     <div className="tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e] tw-p-3">
       <div className="tw-flex tw-items-center tw-justify-between tw-mb-2">
-        <span className="tw-text-[10px] tw-font-medium">Today insights</span>
-        <span className="tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">{cur.activeDays === 1 ? "active today" : "no daily streak"}</span>
+        <span className="tw-text-[10px] tw-font-medium">{t("insights.title")}</span>
+        <span className="tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">{cur.activeDays === 1 ? t("insights.activeToday") : t("insights.noStreak")}</span>
       </div>
       <div className="tw-grid tw-grid-cols-2 tw-gap-1.5">
         {insights.map((item) => (
@@ -84,20 +86,24 @@ function pct(value: number, total: number): number {
   return total > 0 ? (value / total) * 100 : 0;
 }
 
-function deltaLabel(cur: number, prev: number): { value: string; detail: string; tone: "good" | "neutral" | "warn" } {
+function deltaLabel(cur: number, prev: number, t: ReturnType<typeof useTranslation>["t"]): { value: string; detail: string; tone: "good" | "neutral" | "warn" } {
   if (prev <= 0) {
-    return { value: formatCost(cur), detail: "no yesterday baseline", tone: "neutral" };
+    return { value: formatCost(cur), detail: t("insights.noBaseline"), tone: "neutral" };
   }
   const delta = ((cur - prev) / prev) * 100;
   const down = delta <= 0;
   return {
     value: `${down ? "↓" : "↑"} ${Math.abs(delta).toFixed(1)}%`,
-    detail: `${formatCost(cur)} today vs ${formatCost(prev)} yesterday`,
+    detail: t("insights.todayVsYesterday", { today: formatCost(cur), yesterday: formatCost(prev) }),
     tone: down ? "good" : "warn",
   };
 }
 
-function topModelInsight(rows: Array<{ variantId: string; totalTokens: number; turns: number }>): { value: string; detail: string; tone: "good" | "neutral" | "warn" } {
+function topModelInsight(
+  rows: Array<{ variantId: string; totalTokens: number; turns: number }>,
+  locale: string,
+  t: ReturnType<typeof useTranslation>["t"],
+): { value: string; detail: string; tone: "good" | "neutral" | "warn" } {
   const total = rows.reduce((sum, r) => sum + r.totalTokens, 0);
   const top = rows.reduce<{ variantId: string; totalTokens: number; turns: number } | undefined>((best, row) => {
     if (!best || row.totalTokens > best.totalTokens) { return row; }
@@ -105,13 +111,13 @@ function topModelInsight(rows: Array<{ variantId: string; totalTokens: number; t
   }, undefined);
 
   if (!top || total <= 0) {
-    return { value: "—", detail: "no model activity yet", tone: "neutral" };
+    return { value: "—", detail: t("insights.noModel"), tone: "neutral" };
   }
 
   const share = (top.totalTokens / total) * 100;
   return {
     value: top.variantId,
-    detail: `${share.toFixed(1)}% of tokens, ${top.turns.toLocaleString()} turns`,
+    detail: t("insights.modelDetail", { share: share.toFixed(1), turns: top.turns.toLocaleString(locale) }),
     tone: share >= 90 ? "warn" : "neutral",
   };
 }

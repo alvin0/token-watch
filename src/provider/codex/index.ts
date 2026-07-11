@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { UsageCacheInfo } from "../../shared/protocol";
+import { randomUsageRetryMs } from "../../shared/usageRetry";
 
 export const DEFAULT_CODEX_AUTH_FILE = "~/.codex/auth.json";
 export const WHAM_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
@@ -10,7 +11,6 @@ export const DEFAULT_CODEX_ISSUER = "https://auth.openai.com";
 export const DEFAULT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 const REFRESH_SAFETY_MARGIN_MS = 30_000;
-const DEFAULT_USAGE_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
 const DEFAULT_FAILURE_RETRY_MS = 60 * 1000;
 
@@ -49,6 +49,7 @@ export interface CodexConnectionOptions {
   userAgent?: string;
   now?: () => number;
   usageCacheTtlMs?: number;
+  random?: () => number;
 }
 
 export interface CodexRequestOptions {
@@ -155,7 +156,7 @@ export class CodexConnection {
     usageInfoCache.set(key, {
       value,
       cachedAt: now,
-      expiresAt: now + (this.options.usageCacheTtlMs ?? DEFAULT_USAGE_CACHE_TTL_MS),
+      expiresAt: now + (this.options.usageCacheTtlMs ?? randomUsageRetryMs(this.options.random)),
     });
     return value;
   }

@@ -1,11 +1,13 @@
 import { useStore } from "../store";
+import { useTranslation } from "../i18n";
 
 export function FooterBar() {
   const freshness = useStore((s) => s.freshness);
-  const lastUpdated = freshness.latestRecordUtc ? new Date(freshness.latestRecordUtc).toLocaleTimeString() : "—";
+  const { locale, t } = useTranslation();
+  const lastUpdated = freshness.latestRecordUtc ? new Date(freshness.latestRecordUtc).toLocaleTimeString(locale) : "—";
   return (
     <div className="tw-shrink-0 tw-border-t tw-border-[#2a2a3a] tw-px-3 tw-py-1.5 tw-flex tw-items-center tw-justify-end tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">
-      <span className="tw-flex tw-items-center tw-gap-1">Last updated: {lastUpdated} <span className="tw-w-[5px] tw-h-[5px] tw-rounded-full tw-bg-[#89d185]" /></span>
+      <span className="tw-flex tw-items-center tw-gap-1">{t("footer.updated", { time: lastUpdated })} <span className="tw-w-[5px] tw-h-[5px] tw-rounded-full tw-bg-[#89d185]" /></span>
     </div>
   );
 }

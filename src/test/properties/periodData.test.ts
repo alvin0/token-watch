@@ -1,6 +1,7 @@
 import * as assert from "assert";
 
-import { currentRangeForPeriod, makeBuckets, pRange } from "../../webview/lib/periodData.js";
+import { currentRangeForPeriod, makeBuckets, pRange, previousPeriodAnchor } from "../../webview/lib/periodData.js";
+import { localDay } from "../../shared/time.js";
 
 suite("Webview period windows", () => {
   test("pRange uses the requested rolling comparison windows", () => {
@@ -53,6 +54,38 @@ suite("Webview period windows", () => {
     assert.strictEqual(makeBuckets([], "week").length, 7);
     assert.strictEqual(makeBuckets([], "month").length, 6);
     assert.strictEqual(makeBuckets([], "year").length, 2);
+  });
+
+  test("previousPeriodAnchor aligns each comparison window", () => {
+    const now = new Date(2026, 5, 3, 12, 0, 0);
+
+    assert.strictEqual(localDay(previousPeriodAnchor("day", now)), "2026-05-27");
+    assert.strictEqual(localDay(previousPeriodAnchor("week", now)), "2026-04-15");
+    assert.strictEqual(localDay(previousPeriodAnchor("month", now)), "2025-12-03");
+    assert.strictEqual(localDay(previousPeriodAnchor("year", now)), "2024-06-03");
+  });
+
+  test("makeBuckets preserves cache-read and cache-write breakdowns", () => {
+    const day = localDay(new Date());
+    const buckets = makeBuckets([{
+      day,
+      source: "claude",
+      variantId: "claude-opus-4.7",
+      baseModel: "claude-opus-4.7",
+      workspace: "",
+      inputTokens: 10,
+      outputTokens: 20,
+      cacheReadTokens: 30,
+      cacheCreationTokens: 40,
+      reasoningTokens: 0,
+      totalTokens: 100,
+      turns: 1,
+      costUsd: 0.5,
+      unknownCostTurns: 0,
+    }], "day");
+
+    assert.strictEqual(buckets[0].cache, 30);
+    assert.strictEqual(buckets[0].cacheWrite, 40);
   });
 
   test("currentRangeForPeriod returns the active visible period", () => {

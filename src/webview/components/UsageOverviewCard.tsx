@@ -34,6 +34,7 @@ export function UsageOverviewCard({
   models,
   costPerTurn,
 }: UsageOverviewCardProps) {
+  const { t } = useTranslation();
   const deltaTone = delta === 0 ? "tw-text-[#f0d36a]" : delta < 0 ? "tw-text-[#f87171]" : "tw-text-[#89d185]";
   const deltaArrow = delta > 0 ? "↑" : delta < 0 ? "↓" : "→";
 
@@ -54,29 +55,29 @@ export function UsageOverviewCard({
             {deltaArrow} {Math.abs(delta).toFixed(1)}%
           </div>
           <div className="tw-mt-0.5 tw-text-[8px] tw-tabular-nums">
-            vs {comparisonCost} {comparisonLabel}
+            {t("overview.vs", { cost: comparisonCost, period: comparisonLabel })}
           </div>
         </div>
       </div>
 
       <div className="tw-border-t tw-border-[#2a2a3a] tw-p-3">
         <div className="tw-flex tw-items-center tw-justify-between tw-gap-3">
-          <div className="tw-text-[10px] tw-font-medium tw-text-[var(--vscode-foreground)]">Token usage</div>
+          <div className="tw-text-[10px] tw-font-medium tw-text-[var(--vscode-foreground)]">{t("overview.tokenUsage")}</div>
           <div className="tw-text-[11px] tw-font-semibold tw-tabular-nums tw-text-[var(--vscode-foreground)]">
-            {totalTokens} total
+            {t("overview.total", { value: totalTokens })}
           </div>
         </div>
 
         <div className="tw-mt-1.5 tw-flex tw-flex-wrap tw-items-center tw-gap-1.5">
-          <LegendChip label={`Cached ${cacheHitPct.toFixed(1)}%`} color="#50c8a8" />
-          <LegendChip label="Input" color="#6aa7ff" />
-          <LegendChip label="Output" color="#4fc1ff" />
+          <LegendChip label={t("overview.cached", { value: cacheHitPct.toFixed(1) })} color="#50c8a8" />
+          <LegendChip label={t("common.input")} color="#6aa7ff" />
+          <LegendChip label={t("common.output")} color="#4fc1ff" />
         </div>
 
         <div className="tw-mt-2.5 tw-grid tw-gap-1.5" style={THREE_COLUMN_GRID}>
-          <TokenMetric label="Cached tokens" value={cachedTokens} tone="cache" />
-          <TokenMetric label="Input tokens" value={inputTokens} tone="input" />
-          <TokenMetric label="Output tokens" value={outputTokens} tone="output" />
+          <TokenMetric label={t("overview.cachedTokens")} value={cachedTokens} tone="cache" />
+          <TokenMetric label={t("overview.inputTokens")} value={inputTokens} tone="input" />
+          <TokenMetric label={t("overview.outputTokens")} value={outputTokens} tone="output" />
         </div>
       </div>
 
@@ -84,10 +85,10 @@ export function UsageOverviewCard({
         className="tw-grid tw-divide-x tw-divide-[#2a2a3a] tw-border-t tw-border-[#2a2a3a] tw-bg-[#141426]"
         style={FOUR_COLUMN_GRID}
       >
-        <FooterMetric label="Turns" value={turns} />
-        <FooterMetric label="Tool calls" value={toolCalls} />
-        <FooterMetric label="Models" value={models} />
-        <FooterMetric label="Cost / turn" value={costPerTurn} />
+        <FooterMetric label={t("common.turns")} value={turns} />
+        <FooterMetric label={t("overview.toolCalls")} value={toolCalls} />
+        <FooterMetric label={t("common.models")} value={models} />
+        <FooterMetric label={t("overview.costPerTurn")} value={costPerTurn} />
       </div>
     </section>
   );
@@ -137,3 +138,4 @@ function FooterMetric({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+import { useTranslation } from "../i18n";

@@ -208,7 +208,7 @@ suite("Dashboard-from-store performance + aggregated-payload regression", () => 
       };
 
       const views: AnalyticsQuery["view"][] = [
-        "dashboard", "series", "variants", "sessions", "tools", "heatmap", "comparison",
+        "dashboard", "hourly", "series", "variants", "sessions", "tools", "heatmap", "comparison",
       ];
 
       for (const view of views) {
@@ -237,7 +237,7 @@ suite("Dashboard-from-store performance + aggregated-payload regression", () => 
     };
 
     const views: AnalyticsQuery["view"][] = [
-      "dashboard", "series", "variants", "sessions", "tools", "heatmap", "comparison",
+      "dashboard", "hourly", "series", "variants", "sessions", "tools", "heatmap", "comparison",
     ];
 
     for (const view of views) {
@@ -285,5 +285,20 @@ suite("Dashboard-from-store performance + aggregated-payload regression", () => 
       Math.abs(shareSum - 100) < 0.01,
       `Tool shares should sum to ~100%, got ${shareSum}`,
     );
+  });
+
+  test("Hourly view returns the selected day's hourly aggregates", () => {
+    const result = analytics.query({
+      view: "hourly",
+      granularity: "day",
+      range: {
+        fromUtc: new Date("2025-01-10T00:00:00").getTime(),
+        toUtc: new Date("2025-01-10T23:59:59").getTime(),
+      },
+    });
+
+    assert.strictEqual(result.view, "hourly");
+    assert.ok(result.hourlySeries.length > 0);
+    assert.ok(result.hourlySeries.every((row) => row.day === "2025-01-10"));
   });
 });

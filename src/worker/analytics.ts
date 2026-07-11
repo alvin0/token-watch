@@ -29,6 +29,8 @@ export class AnalyticsService {
     switch (q.view) {
       case "dashboard":
         return this.dashboard(q);
+      case "hourly":
+        return { view: "hourly", hourlySeries: queries.hourlySeries(this.db, q, this.pricing) };
       case "series":
         return { view: "series", series: queries.dailySeries(this.db, q) };
       case "variants":

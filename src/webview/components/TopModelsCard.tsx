@@ -13,8 +13,9 @@ import {
   type ModelUsageSummary,
   type SortDirection,
 } from "../modelUsage";
+import { useTranslation } from "../i18n";
 
-const COLLAPSED_COUNT = 5;
+const COLLAPSED_COUNT = 3;
 const EXPANDED_COUNT = 10;
 const DETAIL_GRID = { gridTemplateColumns: "repeat(5, minmax(0, 1fr))" };
 
@@ -27,6 +28,7 @@ export function TopModelsCard() {
   const result = useQuery("dashboard");
   const period = useStore((state) => state.granularity) as Period;
   const currency = useStore((state) => state.currency);
+  const { locale, t } = useTranslation();
 
   useEffect(() => {
     if (!modalOpen) { return; }
@@ -95,9 +97,9 @@ export function TopModelsCard() {
     <>
       <section className="tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e]">
         <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-px-3 tw-py-2.5">
-          <span className="tw-text-[10px] tw-font-medium tw-uppercase tw-tracking-wide">Top models</span>
+          <span className="tw-text-[10px] tw-font-medium tw-uppercase tw-tracking-wide">{t("models.top")}</span>
           <span className="tw-text-[9px] tw-tabular-nums tw-text-[var(--vscode-descriptionForeground)]">
-            {allModels.length.toLocaleString()} models
+            {t("models.count", { count: allModels.length.toLocaleString(locale) })}
           </span>
         </div>
 
@@ -114,7 +116,7 @@ export function TopModelsCard() {
             onClick={() => setModalOpen(true)}
             className="tw-cursor-pointer tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-underline"
           >
-            View all {allModels.length.toLocaleString()} models
+            {t("models.viewAll", { count: allModels.length.toLocaleString(locale) })}
           </button>
           {allModels.length > COLLAPSED_COUNT && (
             <button
@@ -123,7 +125,7 @@ export function TopModelsCard() {
               onClick={() => setExpanded((value) => !value)}
               className="tw-flex tw-cursor-pointer tw-items-center tw-gap-1.5 tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-underline"
             >
-              {expanded ? "Show less" : "Show more"}
+              {expanded ? t("common.showLess") : t("common.showMore")}
               <span aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
             </button>
           )}
@@ -141,19 +143,19 @@ export function TopModelsCard() {
           <section
             role="dialog"
             aria-modal="true"
-            aria-label="All models"
+            aria-label={t("models.all")}
             className="tw-flex tw-max-h-full tw-w-full tw-max-w-[720px] tw-flex-col tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#34344a] tw-bg-[#1a1a2e] tw-shadow-2xl"
           >
             <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-border-b tw-border-[#2a2a3a] tw-px-3 tw-py-2.5">
               <div>
-                <div className="tw-text-[11px] tw-font-semibold">All models</div>
+                <div className="tw-text-[11px] tw-font-semibold">{t("models.all")}</div>
                 <div className="tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">
-                  {allModels.length.toLocaleString()} models · click a row for details
+                  {t("models.detailsHint", { count: allModels.length.toLocaleString(locale) })}
                 </div>
               </div>
               <button
                 type="button"
-                aria-label="Close all models"
+                aria-label={t("models.close")}
                 onClick={() => setModalOpen(false)}
                 className="tw-cursor-pointer tw-rounded tw-px-2 tw-py-1 tw-text-[12px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-[#25253a] hover:tw-text-[var(--vscode-foreground)]"
               >
@@ -198,6 +200,7 @@ function ModelsTable({
   sortDirection?: SortDirection;
   onSort?: (key: ModelSortKey) => void;
 }) {
+  const { language, locale, t } = useTranslation();
   return (
     <table className="tw-w-full tw-table-fixed tw-border-collapse">
       <colgroup>
@@ -210,12 +213,12 @@ function ModelsTable({
       </colgroup>
       <thead>
         <tr className="tw-border-t tw-border-[#2a2a3a] tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">
-          <th className="tw-px-3 tw-py-1.5 tw-text-left tw-font-medium">Model</th>
-          <th className="tw-px-1 tw-py-1.5 tw-text-left tw-font-medium">Effort</th>
-          <SortableHeader label="Tokens" sort="tokens" sortable={sortable} active={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Turns" sort="turns" sortable={sortable} active={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Cost" sort="cost" sortable={sortable} active={sortKey} direction={sortDirection} onSort={onSort} />
-          <SortableHeader label="Token share" sort="share" sortable={sortable} active={sortKey} direction={sortDirection} onSort={onSort} />
+          <th className="tw-px-3 tw-py-1.5 tw-text-left tw-font-medium">{t("common.model")}</th>
+          <th className="tw-px-1 tw-py-1.5 tw-text-left tw-font-medium">{t("common.effort")}</th>
+          <SortableHeader label={t("common.tokens")} sort="tokens" sortable={sortable} active={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label={t("common.turns")} sort="turns" sortable={sortable} active={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label={t("common.cost")} sort="cost" sortable={sortable} active={sortKey} direction={sortDirection} onSort={onSort} />
+          <SortableHeader label={t("models.tokenShare")} sort="share" sortable={sortable} active={sortKey} direction={sortDirection} onSort={onSort} />
         </tr>
       </thead>
       <tbody>
@@ -241,7 +244,7 @@ function ModelsTable({
                 </td>
                 <td
                   className="tw-truncate tw-px-1 tw-py-1.5 tw-text-left tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]"
-                  title={model.effort ? `Effort: ${model.effort}` : model.source === "claude" ? "Effort is not reported in the Claude Code session log" : "Effort unavailable"}
+                  title={model.effort ? t("models.effortValue", { effort: model.effort }) : model.source === "claude" ? t("models.effortClaudeMissing") : t("models.effortUnavailable")}
                 >
                   {model.effort ? formatEffortLabel(model.effort) : model.source === "claude" ? "-" : "N/A"}
                 </td>
@@ -249,11 +252,11 @@ function ModelsTable({
                   {fmtT(model.total)}
                 </td>
                 <td className="tw-truncate tw-px-1 tw-py-1.5 tw-text-right tw-tabular-nums tw-text-[var(--vscode-descriptionForeground)]">
-                  {model.turns.toLocaleString()}
+                  {model.turns.toLocaleString(locale)}
                 </td>
                 <td
                   className="tw-truncate tw-px-1 tw-py-1.5 tw-text-right tw-font-medium tw-tabular-nums tw-text-[#cca700]"
-                  title={modelCostTitle(model.cost, model.unknownCostTurns, model.turns, currency)}
+                  title={modelCostTitle(model.cost, model.unknownCostTurns, model.turns, currency, language)}
                 >
                   {formatModelCost(model.cost, model.unknownCostTurns, model.turns)}
                 </td>
@@ -265,11 +268,11 @@ function ModelsTable({
                 <tr className="tw-border-t tw-border-[#25253a] tw-bg-[#141426]">
                   <td colSpan={6} className="tw-px-3 tw-py-2">
                     <div className="tw-grid tw-gap-1.5" style={DETAIL_GRID}>
-                      <DetailMetric label="Input" value={fmtT(model.input)} />
-                      <DetailMetric label="Output" value={fmtT(model.output)} />
-                      <DetailMetric label="Cache" value={fmtT(model.cache)} />
-                      <DetailMetric label="Reasoning" value={fmtT(model.reasoning)} />
-                      <DetailMetric label="Cost / turn" value={formatCostPerTurn(model.turns > 0 ? model.cost / model.turns : 0)} />
+                      <DetailMetric label={t("common.input")} value={fmtT(model.input)} />
+                      <DetailMetric label={t("common.output")} value={fmtT(model.output)} />
+                      <DetailMetric label={t("common.cache")} value={fmtT(model.cache)} />
+                      <DetailMetric label={t("common.reasoning")} value={fmtT(model.reasoning)} />
+                      <DetailMetric label={t("overview.costPerTurn")} value={formatCostPerTurn(model.turns > 0 ? model.cost / model.turns : 0)} />
                     </div>
                   </td>
                 </tr>

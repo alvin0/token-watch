@@ -5,6 +5,8 @@ import { SidebarProvider } from "./SidebarProvider";
 import { IngestionCoordinator } from "./host/IngestionCoordinator";
 import { FileWatcher } from "./host/FileWatcher";
 import { StatusBarController } from "./host/StatusBarController";
+import { CostAlertController } from "./host/CostAlertController";
+import { LanguageController } from "./host/LanguageController";
 import { getConfig, toIngestConfig, loadPricingFromFile } from "./host/config";
 import type { DiagnosticsReport } from "./shared/protocol";
 
@@ -38,8 +40,19 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.window.showWarningMessage("Token Watch: Worker failed to start. Some features may be unavailable.");
   }
 
+  // Cost alerts run in the extension host so notifications still work while the sidebar is closed.
+  const language = new LanguageController(context.globalState);
+  const costAlerts = new CostAlertController(
+    coordinator,
+    context.globalState,
+    undefined,
+    () => language.getLanguage(),
+  );
+  costAlerts.start();
+  context.subscriptions.push(costAlerts);
+
   // Register the sidebar WebView provider
-  const provider = new SidebarProvider(context.extensionUri, coordinator, config.currency);
+  const provider = new SidebarProvider(context.extensionUri, coordinator, costAlerts, language, config.currency);
   context.subscriptions.push(
     provider,
     vscode.window.registerWebviewViewProvider(SidebarProvider.viewId, provider),

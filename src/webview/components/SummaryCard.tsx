@@ -4,11 +4,13 @@ import { formatCost, formatCostPerTurn } from "../format";
 import { computePeriods, fmtT, pRange } from "../lib/periodData";
 import { UsageOverviewCard } from "./UsageOverviewCard";
 import type { Period } from "../lib/periodData";
+import { useTranslation } from "../i18n";
 
 export function SummaryCard() {
   const result = useQuery("dashboard");
   const g = useStore((s) => s.granularity) as Period;
   const sources = useStore((s) => s.sources);
+  const { locale, t } = useTranslation();
   if (!result || result.view !== "dashboard") { return null; }
   const { cur, prev } = computePeriods(result.series, g);
   const range = pRange(g);
@@ -26,18 +28,16 @@ export function SummaryCard() {
   const costPerTurn = cur.turns > 0 ? cur.cost / cur.turns : 0;
   const sourceLabel = !sources ? "" : sources.length === 1 ? ` (${sources[0]})` : "";
   const labels: Record<Period, string> = {
-    today: `Today cost${sourceLabel}`,
-    day: `Last 7 days cost${sourceLabel}`,
-    week: `Last 7 weeks cost${sourceLabel}`,
-    month: `Last 6 months cost${sourceLabel}`,
-    year: `Last 2 years cost${sourceLabel}`,
+    today: t("period.todayCost", { source: sourceLabel }),
+    day: t("period.last7DaysCost", { source: sourceLabel }),
+    week: t("period.last7WeeksCost", { source: sourceLabel }),
+    month: t("period.last6MonthsCost", { source: sourceLabel }),
+    year: t("period.last2YearsCost", { source: sourceLabel }),
   };
   const vs: Record<Period, string> = {
-    today: "yesterday",
-    day: "previous 7 days",
-    week: "previous 7 weeks",
-    month: "previous 6 months",
-    year: "previous 2 years",
+    today: t("period.yesterday"), day: t("period.previous7Days"),
+    week: t("period.previous7Weeks"), month: t("period.previous6Months"),
+    year: t("period.previous2Years"),
   };
 
   return (
@@ -52,9 +52,9 @@ export function SummaryCard() {
       inputTokens={fmtT(cur.input)}
       outputTokens={fmtT(cur.output)}
       cacheHitPct={cacheHitPct}
-      turns={cur.turns.toLocaleString()}
-      toolCalls={toolCalls.toLocaleString()}
-      models={cur.models.toLocaleString()}
+      turns={cur.turns.toLocaleString(locale)}
+      toolCalls={toolCalls.toLocaleString(locale)}
+      models={cur.models.toLocaleString(locale)}
       costPerTurn={formatCostPerTurn(costPerTurn)}
     />
   );

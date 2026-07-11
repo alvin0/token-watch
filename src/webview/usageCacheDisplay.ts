@@ -1,11 +1,6 @@
-const usageTimeFormatter = new Intl.DateTimeFormat("en-US", {
-  hour: "numeric",
-  minute: "2-digit",
-});
-
-export function formatUsageTime(prefix: string, timestamp: number | undefined): string | undefined {
+export function formatUsageTime(prefix: string, timestamp: number | undefined, locale = "en-US"): string | undefined {
   if (!isFiniteNumber(timestamp)) { return undefined; }
-  return `${prefix} ${usageTimeFormatter.format(new Date(timestamp))}`;
+  return `${prefix} ${new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(new Date(timestamp))}`;
 }
 
 function isFiniteNumber(value: number | undefined): value is number {

@@ -4,27 +4,15 @@ import { formatCost, formatCostPerTurn } from "../format";
 import { agg, computePeriods, currentRangeForPeriod, fmtT } from "../lib/periodData";
 import { UsageOverviewCard } from "./UsageOverviewCard";
 import type { Period } from "../lib/periodData";
+import { useTranslation } from "../i18n";
 
 type VisiblePeriod = Exclude<Period, "today">;
-
-const labels: Record<VisiblePeriod, string> = {
-  day: "Current Day",
-  week: "Current Week",
-  month: "Current Month",
-  year: "Current Year",
-};
-
-const averageLabels: Record<VisiblePeriod, string> = {
-  day: "7-day avg",
-  week: "7-week avg",
-  month: "6-month avg",
-  year: "2-year avg",
-};
 
 export function CurrentPeriodCard() {
   const result = useQuery("dashboard");
   const g = useStore((s) => s.granularity) as Period;
   const sources = useStore((s) => s.sources);
+  const { locale, t } = useTranslation();
   if (g === "today" || !result || result.view !== "dashboard") { return null; }
 
   const period = g as VisiblePeriod;
@@ -45,6 +33,14 @@ export function CurrentPeriodCard() {
   const cacheInputBase = cachingTokens + current.input;
   const cacheHitPct = cacheInputBase > 0 ? (cachingTokens / cacheInputBase) * 100 : 0;
   const costPerTurn = current.turns > 0 ? current.cost / current.turns : 0;
+  const labels: Record<VisiblePeriod, string> = {
+    day: t("period.currentDay"), week: t("period.currentWeek"),
+    month: t("period.currentMonth"), year: t("period.currentYear"),
+  };
+  const averageLabels: Record<VisiblePeriod, string> = {
+    day: t("period.avg7Day"), week: t("period.avg7Week"),
+    month: t("period.avg6Month"), year: t("period.avg2Year"),
+  };
 
   return (
     <UsageOverviewCard
@@ -58,9 +54,9 @@ export function CurrentPeriodCard() {
       inputTokens={fmtT(current.input)}
       outputTokens={fmtT(current.output)}
       cacheHitPct={cacheHitPct}
-      turns={current.turns.toLocaleString()}
-      toolCalls={toolCalls.toLocaleString()}
-      models={current.models.toLocaleString()}
+      turns={current.turns.toLocaleString(locale)}
+      toolCalls={toolCalls.toLocaleString(locale)}
+      models={current.models.toLocaleString(locale)}
       costPerTurn={formatCostPerTurn(costPerTurn)}
     />
   );

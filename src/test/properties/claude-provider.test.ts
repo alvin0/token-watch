@@ -65,7 +65,7 @@ suite("Claude provider connection", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
       return new Response(JSON.stringify({ five_hour: { utilization: 10 } }), { status: 200 });
     };
-    const options = { credentialsFile, platform: "linux" as const, fetch: fetchUsage, now: () => now };
+    const options = { credentialsFile, platform: "linux" as const, fetch: fetchUsage, now: () => now, random: () => 0.5 };
 
     const [first, second] = await Promise.all([
       new ClaudeConnection(options).usageInfo(),
@@ -78,7 +78,7 @@ suite("Claude provider connection", () => {
     assert.strictEqual(callCount, 1);
     assert.deepStrictEqual(new ClaudeConnection(options).usageCacheInfo(), {
       cachedAtUtc: now,
-      retryAtUtc: now + 300_000,
+      retryAtUtc: now + 105_000,
     });
   });
 

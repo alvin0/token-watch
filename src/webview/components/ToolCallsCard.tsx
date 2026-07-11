@@ -3,11 +3,11 @@ import type { ToolUsageRow } from "../../shared/storeTypes";
 import { useQuery } from "../hooks/useQuery";
 import {
   filterToolUsage,
-  formatToolSourceSummary,
   summarizeToolUsage,
   toolSourceLabel,
   type ToolSourceFilter,
 } from "../toolUsage";
+import { useTranslation } from "../i18n";
 
 const EXPANDED_TOOL_LIMIT = 6;
 
@@ -16,6 +16,7 @@ export function ToolCallsCard() {
   const [modalOpen, setModalOpen] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<ToolSourceFilter>("all");
   const result = useQuery("dashboard");
+  const { locale, t } = useTranslation();
 
   useEffect(() => {
     if (!modalOpen) { return; }
@@ -30,7 +31,10 @@ export function ToolCallsCard() {
 
   const tools = result.tools;
   const summary = summarizeToolUsage(tools);
-  const sourceSummary = formatToolSourceSummary(summary);
+  const sourceSummary = [
+    summary.codexCalls > 0 ? `Codex ${summary.codexCalls.toLocaleString(locale)} ${t("common.calls").toLocaleLowerCase(locale)}` : "",
+    summary.claudeCalls > 0 ? `Claude Code ${summary.claudeCalls.toLocaleString(locale)} ${t("common.calls").toLocaleLowerCase(locale)}` : "",
+  ].filter(Boolean).join(" · ");
   const visibleTools = tools.slice(0, EXPANDED_TOOL_LIMIT);
   const filteredTools = filterToolUsage(tools, sourceFilter);
 
@@ -39,10 +43,10 @@ export function ToolCallsCard() {
       <section className="tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e]">
         <div className="tw-px-3 tw-py-2.5">
           <div className="tw-flex tw-items-center tw-justify-between tw-gap-3">
-            <span className="tw-text-[10px] tw-font-medium tw-uppercase tw-tracking-wide">Tool calls</span>
+            <span className="tw-text-[10px] tw-font-medium tw-uppercase tw-tracking-wide">{t("tools.title")}</span>
             {summary.totalCalls > 0 && (
               <span className="tw-shrink-0 tw-text-[9px] tw-tabular-nums tw-text-[var(--vscode-descriptionForeground)]">
-                {summary.totalCalls.toLocaleString()} total calls
+                {t("tools.totalCalls", { count: summary.totalCalls.toLocaleString(locale) })}
               </span>
             )}
           </div>
@@ -59,13 +63,13 @@ export function ToolCallsCard() {
                   onClick={() => setExpanded(true)}
                   className="tw-flex tw-shrink-0 tw-cursor-pointer tw-items-center tw-gap-1.5 tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-underline"
                 >
-                  Show more <span aria-hidden="true">⌄</span>
+                  {t("common.showMore")} <span aria-hidden="true">⌄</span>
                 </button>
               )}
             </div>
           ) : (
             <div className="tw-mt-1.5 tw-text-[9px] tw-text-[var(--vscode-descriptionForeground)]">
-              No tool calls recorded
+              {t("tools.noCalls")}
             </div>
           )}
         </div>
@@ -79,7 +83,7 @@ export function ToolCallsCard() {
                 onClick={() => setModalOpen(true)}
                 className="tw-cursor-pointer tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-underline"
               >
-                View all {summary.uniqueTools.toLocaleString()} tools
+                {t("tools.viewAll", { count: summary.uniqueTools.toLocaleString(locale) })}
               </button>
               <button
                 type="button"
@@ -87,7 +91,7 @@ export function ToolCallsCard() {
                 onClick={() => setExpanded(false)}
                 className="tw-flex tw-cursor-pointer tw-items-center tw-gap-1.5 tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-underline"
               >
-                Show less <span aria-hidden="true">⌃</span>
+                {t("common.showLess")} <span aria-hidden="true">⌃</span>
               </button>
             </div>
           </>
@@ -105,19 +109,19 @@ export function ToolCallsCard() {
           <section
             role="dialog"
             aria-modal="true"
-            aria-label="All tool calls"
+            aria-label={t("tools.all")}
             className="tw-flex tw-max-h-full tw-w-full tw-max-w-[720px] tw-flex-col tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#34344a] tw-bg-[#1a1a2e] tw-shadow-2xl"
           >
             <div className="tw-flex tw-items-start tw-justify-between tw-gap-3 tw-border-b tw-border-[#2a2a3a] tw-px-3 tw-py-2.5">
               <div>
-                <div className="tw-text-[11px] tw-font-semibold">All tool calls</div>
+                <div className="tw-text-[11px] tw-font-semibold">{t("tools.all")}</div>
                 <div className="tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">
-                  {summary.totalCalls.toLocaleString()} calls across {summary.uniqueTools.toLocaleString()} tools
+                  {t("tools.summary", { calls: summary.totalCalls.toLocaleString(locale), tools: summary.uniqueTools.toLocaleString(locale) })}
                 </div>
               </div>
               <button
                 type="button"
-                aria-label="Close all tool calls"
+                aria-label={t("tools.close")}
                 onClick={() => setModalOpen(false)}
                 className="tw-cursor-pointer tw-rounded tw-px-2 tw-py-1 tw-text-[12px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-[#25253a] hover:tw-text-[var(--vscode-foreground)]"
               >
@@ -126,7 +130,7 @@ export function ToolCallsCard() {
             </div>
 
             <div className="tw-flex tw-gap-1.5 tw-border-b tw-border-[#2a2a3a] tw-px-3 tw-py-2">
-              <SourceFilter label="All" value="all" current={sourceFilter} onChange={setSourceFilter} />
+              <SourceFilter label={t("common.all")} value="all" current={sourceFilter} onChange={setSourceFilter} />
               <SourceFilter label="Codex" value="codex" current={sourceFilter} onChange={setSourceFilter} />
               <SourceFilter label="Claude Code" value="claude" current={sourceFilter} onChange={setSourceFilter} />
             </div>
@@ -136,7 +140,7 @@ export function ToolCallsCard() {
                 <ToolsTable tools={filteredTools} />
               ) : (
                 <div className="tw-p-4 tw-text-center tw-text-[9px] tw-text-[var(--vscode-descriptionForeground)]">
-                  No tool calls recorded for this source
+                  {t("tools.noSource")}
                 </div>
               )}
             </div>
@@ -148,6 +152,7 @@ export function ToolCallsCard() {
 }
 
 function ToolsTable({ tools }: { tools: ToolUsageRow[] }) {
+  const { locale, t } = useTranslation();
   return (
     <table className="tw-w-full tw-table-fixed tw-border-collapse">
       <colgroup>
@@ -158,10 +163,10 @@ function ToolsTable({ tools }: { tools: ToolUsageRow[] }) {
       </colgroup>
       <thead>
         <tr className="tw-border-t tw-border-[#2a2a3a] tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">
-          <th className="tw-px-3 tw-py-1.5 tw-text-left tw-font-medium">Tool</th>
-          <th className="tw-px-1 tw-py-1.5 tw-text-left tw-font-medium">Source</th>
-          <th className="tw-px-1 tw-py-1.5 tw-text-right tw-font-medium">Calls</th>
-          <th className="tw-px-3 tw-py-1.5 tw-text-right tw-font-medium">Share</th>
+          <th className="tw-px-3 tw-py-1.5 tw-text-left tw-font-medium">{t("common.tool")}</th>
+          <th className="tw-px-1 tw-py-1.5 tw-text-left tw-font-medium">{t("common.source")}</th>
+          <th className="tw-px-1 tw-py-1.5 tw-text-right tw-font-medium">{t("common.calls")}</th>
+          <th className="tw-px-3 tw-py-1.5 tw-text-right tw-font-medium">{t("common.share")}</th>
         </tr>
       </thead>
       <tbody>
@@ -177,7 +182,7 @@ function ToolsTable({ tools }: { tools: ToolUsageRow[] }) {
               {toolSourceLabel(tool.source)}
             </td>
             <td className="tw-truncate tw-px-1 tw-py-1.5 tw-text-right tw-tabular-nums tw-text-[var(--vscode-descriptionForeground)]">
-              {tool.count.toLocaleString()}
+              {tool.count.toLocaleString(locale)}
             </td>
             <td className="tw-truncate tw-px-3 tw-py-1.5 tw-text-right tw-font-medium tw-tabular-nums tw-text-[#50c8a8]">
               {tool.sharePct.toFixed(1)}%

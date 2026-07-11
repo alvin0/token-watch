@@ -8,18 +8,9 @@ import {
 } from "../quotaGroups";
 import { vscodeApi } from "../store";
 import { formatUsageTime } from "../usageCacheDisplay";
+import { useTranslation } from "../i18n";
 
 const TWO_COLUMN_GRID = { gridTemplateColumns: "repeat(2, minmax(0, 1fr))" };
-
-const timeFormatter = new Intl.DateTimeFormat("en-US", {
-  hour: "numeric",
-  minute: "2-digit",
-});
-
-const dateFormatter = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-});
 
 export function ProviderUsageCard({
   provider,
@@ -34,6 +25,7 @@ export function ProviderUsageCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [, refreshRetryState] = useState(0);
+  const { locale, t } = useTranslation();
   const layout = buildProviderQuotaLayout(provider, windows);
 
   useEffect(() => {
@@ -50,8 +42,14 @@ export function ProviderUsageCard({
   }
 
   const hasAdditional = layout.additionalLimitCount > 0;
-  const cachedLabel = formatUsageTime("Cached at", cacheInfo?.cachedAtUtc);
-  const retryAtLabel = formatUsageTime("Retry at", cacheInfo?.retryAtUtc);
+  const collapsedSummary = layout.additionalGroups.length === 1
+    ? t(layout.additionalLimitCount === 1 ? "quota.additionalOne" : "quota.additionalMany", {
+      name: layout.additionalGroups[0].name,
+      count: layout.additionalLimitCount,
+    })
+    : t("quota.additionalTotal", { count: layout.additionalLimitCount });
+  const cachedLabel = formatUsageTime(t("quota.cachedAt"), cacheInfo?.cachedAtUtc, locale);
+  const retryAtLabel = formatUsageTime(t("quota.retryAt"), cacheInfo?.retryAtUtc, locale);
   const retryWaiting = Boolean(cacheInfo?.retryAtUtc && cacheInfo.retryAtUtc > Date.now());
   const retryDisabled = Boolean(cacheInfo?.refreshing) || retryWaiting;
 
@@ -64,28 +62,28 @@ export function ProviderUsageCard({
           </div>
           <div className={`tw-flex tw-shrink-0 tw-items-center tw-gap-1.5 tw-text-[9px] ${cacheInfo?.unavailable && windows.length === 0 ? "tw-text-[var(--vscode-descriptionForeground)]" : "tw-text-[#89d185]"}`}>
             <span className={`tw-h-1.5 tw-w-1.5 tw-rounded-full ${cacheInfo?.unavailable && windows.length === 0 ? "tw-bg-[var(--vscode-descriptionForeground)]" : "tw-bg-[#89d185]"}`} />
-            {cacheInfo?.unavailable && windows.length === 0 ? "Unavailable" : "Active"}
+            {cacheInfo?.unavailable && windows.length === 0 ? t("common.unavailable") : t("common.active")}
           </div>
         </div>
 
         {layout.primaryWindows.length > 0 && (
           <div className="tw-mt-2 tw-grid tw-gap-x-3 tw-gap-y-1.5" style={TWO_COLUMN_GRID}>
             {layout.primaryWindows.map((window) => (
-              <CompactQuota key={window.id} window={window} />
+              <CompactQuota key={window.id} window={window} locale={locale} />
             ))}
           </div>
         )}
 
         {layout.primaryWindows.length === 0 && cacheInfo?.unavailable && (
           <div className="tw-mt-2 tw-text-[9px] tw-text-[var(--vscode-descriptionForeground)]">
-            Usage data is not available
+            {t("quota.dataUnavailable")}
           </div>
         )}
 
         {cacheInfo && (
           <div className="tw-mt-2 tw-flex tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-[#2a2a3a] tw-pt-2">
             <span className="tw-min-w-0 tw-truncate tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">
-              {cachedLabel ?? (cacheInfo.refreshing ? "Fetching usage…" : "No cached data")}
+              {cachedLabel ?? (cacheInfo.refreshing ? t("quota.fetching") : t("quota.noCache"))}
             </span>
             <button
               type="button"
@@ -94,10 +92,10 @@ export function ProviderUsageCard({
               className="tw-shrink-0 tw-rounded tw-border tw-border-[#34344a] tw-px-2 tw-py-0.5 tw-text-[8px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] enabled:tw-cursor-pointer enabled:hover:tw-bg-[#25253a] disabled:tw-cursor-not-allowed disabled:tw-opacity-50"
             >
               {cacheInfo.refreshing
-                ? "Refreshing…"
+                ? t("common.refreshing")
                 : retryWaiting
                   ? retryAtLabel
-                  : "Retry"}
+                  : t("common.retry")}
             </button>
           </div>
         )}
@@ -110,7 +108,7 @@ export function ProviderUsageCard({
           </div>
           <div className="tw-mt-2 tw-grid tw-gap-x-3 tw-gap-y-1.5" style={TWO_COLUMN_GRID}>
             {group.windows.map((window) => (
-              <CompactQuota key={window.id} window={window} showUnavailableReset />
+              <CompactQuota key={window.id} window={window} locale={locale} showUnavailableReset />
             ))}
           </div>
         </div>
@@ -124,10 +122,10 @@ export function ProviderUsageCard({
           className="tw-flex tw-w-full tw-cursor-pointer tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-[#2a2a3a] tw-bg-[#141426] tw-px-3 tw-py-2 tw-text-left hover:tw-bg-[#18182a]"
         >
           <span className="tw-min-w-0 tw-truncate tw-text-[9px] tw-text-[var(--vscode-descriptionForeground)]">
-            {expanded ? "" : layout.collapsedSummary}
+            {expanded ? "" : collapsedSummary}
           </span>
           <span className="tw-flex tw-shrink-0 tw-items-center tw-gap-1.5 tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)]">
-            {expanded ? "Show less" : "Show more"}
+            {expanded ? t("common.showLess") : t("common.showMore")}
             <span aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
           </span>
         </button>
@@ -138,13 +136,16 @@ export function ProviderUsageCard({
 
 function CompactQuota({
   window,
+  locale,
   showUnavailableReset = false,
 }: {
   window: UsageQuotaWindow;
+  locale: string;
   showUnavailableReset?: boolean;
 }) {
   const percent = remainingPercent(window.usedPct);
-  const reset = formatReset(window);
+  const { t } = useTranslation();
+  const reset = formatReset(window, locale);
   return (
     <div className="tw-min-w-0">
       <div className="tw-truncate tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">
@@ -154,7 +155,7 @@ function CompactQuota({
         {percent && <span className="tw-font-semibold tw-text-[var(--vscode-foreground)]">{percent}</span>}
         {(reset || showUnavailableReset) && (
           <span className="tw-truncate tw-text-[var(--vscode-descriptionForeground)]">
-            {reset ? `Reset ${reset}` : "Reset unavailable"}
+            {reset ? t("quota.reset", { value: reset }) : t("quota.resetUnavailable")}
           </span>
         )}
       </div>
@@ -166,7 +167,7 @@ function remainingPercent(usedPercent?: number): string | undefined {
   return isFiniteNumber(usedPercent) ? formatPercent(Math.max(0, 100 - usedPercent)) : undefined;
 }
 
-function formatReset(window: UsageQuotaWindow): string | undefined {
+function formatReset(window: UsageQuotaWindow, locale: string): string | undefined {
   if (!isFiniteNumber(window.resetAtUtc)) {
     return undefined;
   }
@@ -174,8 +175,8 @@ function formatReset(window: UsageQuotaWindow): string | undefined {
     ? window.windowSeconds <= 86_400
     : /5h|session/i.test(window.label);
   return shortWindow
-    ? timeFormatter.format(new Date(window.resetAtUtc))
-    : dateFormatter.format(new Date(window.resetAtUtc));
+    ? new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(new Date(window.resetAtUtc))
+    : new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }).format(new Date(window.resetAtUtc));
 }
 
 function isFiniteNumber(value?: number): value is number {
