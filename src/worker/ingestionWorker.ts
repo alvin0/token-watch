@@ -33,7 +33,7 @@ let config: IngestConfig | undefined;
 let scanInProgress = false;
 let activeScan: ScanRequest | undefined;
 let pendingScan: ScanRequest | undefined;
-let pendingPricing: PricingTable | undefined;
+const pendingPricing: Array<Extract<WorkerRequest, { type: "updatePricing" }>> = [];
 let pendingReset = false;
 let needsDedupKeyMigration = false;
 let needsCodexAccountingMigration = false;
@@ -41,7 +41,7 @@ let activePricingFingerprint = "";
 let pendingFlush = false;
 const pendingAnalyticsQueries: Array<Extract<WorkerRequest, { type: "query" }>> = [];
 let pricingAudit: PricingMergeAudit = {
-  ignoredKnownModelOverrides: [],
+  overriddenBundledModels: [],
   ignoredFallbackOverride: false,
   customModelOverrides: [],
 };
@@ -142,7 +142,7 @@ async function runScanQueue(first?: ScanRequest): Promise<void> {
   let current: ScanRequest | undefined = first;
 
   try {
-    while (current || pendingReset || pendingPricing) {
+    while (current || pendingReset || pendingPricing.length > 0) {
       if (current) {
         pendingScan = undefined;
         activeScan = current;
@@ -195,15 +195,13 @@ async function runScanQueue(first?: ScanRequest): Promise<void> {
           post({ type: "error", scope, message });
         }
         current = pendingScan;
-      } else if (pendingPricing) {
-        const table = pendingPricing;
-        pendingPricing = undefined;
+      } else if (pendingPricing.length > 0) {
+        const request = pendingPricing.shift()!;
         try {
-          handleUpdatePricing(table);
+          handleUpdatePricing(request);
         } catch (err: unknown) {
-          const scope = classifyErrorScope(err, "updatePricing");
           const message = sanitizeErrorMessage(err);
-          post({ type: "error", scope, message });
+          post({ type: "pricingUpdateError", id: request.id, message });
         }
         current = pendingScan;
       }
@@ -359,12 +357,11 @@ function fullDiscovery(sourceRoots: Parameters<typeof scan>[0], now = Date.now()
   return candidates;
 }
 
-function handleUpdatePricing(table: PricingTable): void {
+function handleUpdatePricing(request: Extract<WorkerRequest, { type: "updatePricing" }>): void {
   if (!store || !pricing || !analytics) {
-    post({ type: "error", scope: "updatePricing", message: "Worker not initialized" });
-    return;
+    throw new Error("Worker not initialized");
   }
-  const merged = mergePricingConfig(table);
+  const merged = mergePricingConfig(request.table);
   pricingAudit = merged.audit;
   pricing = new PricingEngine(merged.table, merged.fallbackRate);
   analytics = new AnalyticsService(store.database, pricing);
@@ -381,6 +378,7 @@ function handleUpdatePricing(table: PricingTable): void {
     warnings: analytics.warnings(),
     dataChanged: true,
   });
+  post({ type: "pricingUpdated", id: request.id });
 }
 
 async function handleResetDatabase(): Promise<void> {
@@ -528,9 +526,13 @@ parentPort!.on("message", (req: WorkerRequest) => {
 
       case "updatePricing": {
         if (scanInProgress) {
-          pendingPricing = req.table;
+          pendingPricing.push(req);
         } else {
-          handleUpdatePricing(req.table);
+          try {
+            handleUpdatePricing(req);
+          } catch (err: unknown) {
+            post({ type: "pricingUpdateError", id: req.id, message: sanitizeErrorMessage(err) });
+          }
         }
         break;
       }

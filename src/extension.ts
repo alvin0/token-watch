@@ -7,7 +7,7 @@ import { FileWatcher } from "./host/FileWatcher";
 import { StatusBarController } from "./host/StatusBarController";
 import { CostAlertController } from "./host/CostAlertController";
 import { LanguageController } from "./host/LanguageController";
-import { getConfig, toIngestConfig, loadPricingFromFile } from "./host/config";
+import { effectivePricingOverrides, getConfig, toIngestConfig } from "./host/config";
 import type { DiagnosticsReport } from "./shared/protocol";
 
 let coordinator: IngestionCoordinator | undefined;
@@ -16,11 +16,7 @@ const STARTUP_CATCHUP_SCAN_MS = 10_000;
 
 export async function activate(context: vscode.ExtensionContext) {
   const config = getConfig();
-  // Load pricing from workspace file (pricing.config.jsonc), merge with VS Code settings
-  const filePricing = loadPricingFromFile();
-  if (Object.keys(filePricing).length > 0) {
-    Object.assign(config.pricing.overrides, filePricing);
-  }
+  config.pricing.overrides = effectivePricingOverrides(config.pricing.overrides);
   const ingestConfig = toIngestConfig(config);
   const globalStoragePath = context.globalStorageUri.fsPath;
 
@@ -100,7 +96,7 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   // Status bar
-  const statusBar = new StatusBarController(coordinator, config.statusBar.enabled);
+  const statusBar = new StatusBarController(coordinator, config.statusBar.enabled, language);
   context.subscriptions.push(statusBar);
 
   // File watcher
@@ -138,7 +134,9 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         // Pricing changes trigger recompute
         if (e.affectsConfiguration("tokenWatch.pricing")) {
-          coordinator?.updatePricing(newConfig.pricing.overrides);
+          void coordinator?.updatePricing(effectivePricingOverrides(newConfig.pricing.overrides)).catch((error) => {
+            console.error("[TokenWatch] pricing update failed:", error);
+          });
         }
       }
     }),
@@ -177,7 +175,7 @@ function renderDiagnosticsReport(report: DiagnosticsReport): string {
   lines.push("");
 
   lines.push("## Pricing");
-  lines.push(`Ignored known-model overrides: ${listOrNone(report.pricing.ignoredKnownModelOverrides)}`);
+  lines.push(`Overridden bundled models: ${listOrNone(report.pricing.overriddenBundledModels)}`);
   lines.push(`Ignored $fallback override: ${report.pricing.ignoredFallbackOverride ? "yes" : "no"}`);
   lines.push(`Custom model overrides: ${listOrNone(report.pricing.customModelOverrides)}`);
   lines.push("");

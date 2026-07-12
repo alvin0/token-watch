@@ -2,10 +2,12 @@ import { useStore } from "../store";
 import { useQuery } from "../hooks/useQuery";
 import { computePeriods, fmtT } from "../lib/periodData";
 import type { Period } from "../lib/periodData";
+import { useTranslation } from "../i18n";
 
 export function CompositionCard() {
   const result = useQuery("dashboard");
   const g = useStore((s) => s.granularity) as Period;
+  const { t } = useTranslation();
   if (!result || result.view !== "dashboard") { return null; }
   const { cur } = computePeriods(result.series, g);
   const { input, output, cache, reasoning } = cur;
@@ -13,14 +15,14 @@ export function CompositionCard() {
   if (total === 0) { return null; }
 
   const cachePct = cache / total;
-  const insight = cachePct > 0.5 ? "High cache usage reduced total cost."
-    : cachePct < 0.1 ? "Low cache usage may increase cost."
-    : reasoning / total > 0.1 ? "Reasoning tokens are unusually high."
-    : "Balanced token distribution.";
+  const insight = cachePct > 0.5 ? t("composition.highCache")
+    : cachePct < 0.1 ? t("composition.lowCache")
+    : reasoning / total > 0.1 ? t("composition.highReasoning")
+    : t("composition.balanced");
 
   return (
     <div className="tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e] tw-p-3">
-      <div className="tw-text-[10px] tw-font-medium tw-mb-1.5">Token composition</div>
+      <div className="tw-text-[10px] tw-font-medium tw-mb-1.5">{t("composition.title")}</div>
       <div className="tw-flex tw-h-[6px] tw-rounded-full tw-overflow-hidden tw-mb-2">
         {input > 0 && <div style={{ flex: input, backgroundColor: "#4fc1ff" }} />}
         {output > 0 && <div style={{ flex: output, backgroundColor: "#cca700" }} />}
@@ -28,10 +30,10 @@ export function CompositionCard() {
         {reasoning > 0 && <div style={{ flex: reasoning, backgroundColor: "#b180d7" }} />}
       </div>
       <div className="tw-flex tw-justify-between tw-text-[9px]">
-        <Dot color="#4fc1ff" label="Input" value={fmtT(input)} />
-        <Dot color="#cca700" label="Output" value={fmtT(output)} />
-        <Dot color="#50c8a8" label="Cache" value={fmtT(cache)} />
-        <Dot color="#b180d7" label="Reasoning" value={fmtT(reasoning)} />
+        <Dot color="#4fc1ff" label={t("common.input")} value={fmtT(input)} />
+        <Dot color="#cca700" label={t("common.output")} value={fmtT(output)} />
+        <Dot color="#50c8a8" label={t("common.cache")} value={fmtT(cache)} />
+        <Dot color="#b180d7" label={t("common.reasoning")} value={fmtT(reasoning)} />
       </div>
       <div className="tw-mt-1.5 tw-text-[9px] tw-text-[var(--vscode-descriptionForeground)] tw-flex tw-items-center tw-gap-1">
         <span className="tw-text-[#89d185]">✓</span>{insight}

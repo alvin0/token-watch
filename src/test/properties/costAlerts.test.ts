@@ -24,20 +24,29 @@ import {
 suite("Cost threshold alerts", () => {
   test("validates positive budgets, IDs, periods, and duplicate period/budget pairs", () => {
     assert.deepStrictEqual(validateCostAlertRules([
-      { id: "daily-1", period: "day", budgetUsd: 10 },
-      { id: "weekly-1", period: "week", budgetUsd: 10 },
+      { id: "daily-1", period: "day", source: "all", budgetUsd: 10 },
+      { id: "weekly-1", period: "week", source: "codex", budgetUsd: 10 },
     ]), [
-      { id: "daily-1", period: "day", budgetUsd: 10 },
-      { id: "weekly-1", period: "week", budgetUsd: 10 },
+      { id: "daily-1", period: "day", source: "all", budgetUsd: 10 },
+      { id: "weekly-1", period: "week", source: "codex", budgetUsd: 10 },
     ]);
 
     assert.throws(() => validateCostAlertRules([{ id: "bad id", period: "day", budgetUsd: 10 }]), /invalid ID/);
     assert.throws(() => validateCostAlertRules([{ id: "bad-budget", period: "day", budgetUsd: 0 }]), /greater than/);
     assert.throws(() => validateCostAlertRules([{ id: "bad-period", period: "year", budgetUsd: 10 }]), /invalid period/);
+    assert.throws(() => validateCostAlertRules([{ id: "bad-source", period: "day", source: "other", budgetUsd: 10 }]), /invalid source/);
     assert.throws(() => validateCostAlertRules([
-      { id: "one", period: "month", budgetUsd: 25 },
-      { id: "two", period: "month", budgetUsd: 25 },
-    ]), /same period and budget/);
+      { id: "one", period: "month", source: "all", budgetUsd: 25 },
+      { id: "two", period: "month", source: "all", budgetUsd: 25 },
+    ]), /same source, period, and budget/);
+
+    assert.deepStrictEqual(validateCostAlertRules([
+      { id: "legacy", period: "day", budgetUsd: 10 },
+    ]), [{ id: "legacy", period: "day", source: "all", budgetUsd: 10 }]);
+    assert.doesNotThrow(() => validateCostAlertRules([
+      { id: "codex", period: "day", source: "codex", budgetUsd: 10 },
+      { id: "claude", period: "day", source: "claude", budgetUsd: 10 },
+    ]));
   });
 
   test("uses local calendar day, Monday week, and calendar month boundaries", () => {
@@ -50,15 +59,15 @@ suite("Cost threshold alerts", () => {
     assert.strictEqual(periodKey("month", wednesday), "2026-07");
 
     const earliest = earliestPeriodStart([
-      { id: "day", period: "day", budgetUsd: 1 },
-      { id: "month", period: "month", budgetUsd: 1 },
+      { id: "day", period: "day", source: "all", budgetUsd: 1 },
+      { id: "month", period: "month", source: "all", budgetUsd: 1 },
     ], wednesday);
     assert.strictEqual(localDay(earliest), "2026-07-01");
   });
 
   test("emits 80, 95, and 100 percent alerts at exact boundaries", () => {
     const now = new Date(2026, 6, 15, 12);
-    const rule: CostAlertRule = { id: "daily", period: "day", budgetUsd: 10 };
+    const rule: CostAlertRule = { id: "daily", period: "day", source: "all", budgetUsd: 10 };
     let acknowledgements: CostAlertAcknowledgement[] = [];
 
     let alerts = pendingCostAlerts([rule], [dailyRow(now, 8)], acknowledgements, now);
@@ -76,7 +85,7 @@ suite("Cost threshold alerts", () => {
 
   test("a jump shows only the highest level and confirming it acknowledges lower levels", () => {
     const now = new Date(2026, 6, 15, 12);
-    const rule: CostAlertRule = { id: "daily", period: "day", budgetUsd: 10 };
+    const rule: CostAlertRule = { id: "daily", period: "day", source: "all", budgetUsd: 10 };
     const alert = pendingCostAlerts([rule], [dailyRow(now, 12)], [], now)[0];
     assert.strictEqual(alert.level, 100);
     assert.deepStrictEqual(
@@ -85,9 +94,26 @@ suite("Cost threshold alerts", () => {
     );
   });
 
+  test("applies each alert only to its selected source", () => {
+    const now = new Date(2026, 6, 15, 12);
+    const alerts = pendingCostAlerts([
+      { id: "all", period: "day", source: "all", budgetUsd: 10 },
+      { id: "codex", period: "day", source: "codex", budgetUsd: 5 },
+      { id: "claude", period: "day", source: "claude", budgetUsd: 10 },
+    ], [
+      dailyRow(now, 6, 0, "codex"),
+      dailyRow(now, 4, 0, "claude"),
+    ], [], now);
+
+    assert.deepStrictEqual(alerts.map((alert) => [alert.rule.id, alert.level, alert.costUsd]), [
+      ["all", 100, 10],
+      ["codex", 100, 6],
+    ]);
+  });
+
   test("prunes deleted rules, duplicate acknowledgements, and previous periods", () => {
     const now = new Date(2026, 6, 15, 12);
-    const rule: CostAlertRule = { id: "daily", period: "day", budgetUsd: 10 };
+    const rule: CostAlertRule = { id: "daily", period: "day", source: "all", budgetUsd: 10 };
     const current = { ruleId: "daily", periodKey: "2026-07-15", level: 80 as const };
     assert.deepStrictEqual(pruneAcknowledgements([rule], [
       current,
@@ -107,7 +133,7 @@ suite("Cost threshold alerts", () => {
 
   test("Confirm persists the reached level while dismiss leaves it unacknowledged", async () => {
     const now = new Date();
-    const rule: CostAlertRule = { id: "daily", period: "day", budgetUsd: 10 };
+    const rule: CostAlertRule = { id: "daily", period: "day", source: "all", budgetUsd: 10 };
 
     const confirmedState = seededState([rule]);
     const confirmedMessages: string[] = [];
@@ -143,14 +169,99 @@ suite("Cost threshold alerts", () => {
     dismissed.dispose();
   });
 
-  test("editing a rule clears its acknowledgements", async () => {
+  test("editing a rule source clears its acknowledgements", async () => {
     const now = new Date();
     const state = seededState(
-      [{ id: "daily", period: "day", budgetUsd: 10 }],
+      [{ id: "daily", period: "day", source: "all", budgetUsd: 10 }],
       [{ ruleId: "daily", periodKey: periodKey("day", now), level: 80 }],
     );
     const controller = new CostAlertController(new FakeCoordinator([]), state as unknown as vscode.Memento);
-    await controller.saveRules([{ id: "daily", period: "day", budgetUsd: 20 }]);
+    await controller.saveRules([{ id: "daily", period: "day", source: "claude", budgetUsd: 10 }]);
+    const stored = state.get<{ acknowledgements: CostAlertAcknowledgement[] }>(COST_ALERT_ACKS_STORAGE_KEY);
+    assert.deepStrictEqual(stored?.acknowledgements, []);
+    controller.dispose();
+  });
+
+  test("changing source cancels a pending notification for the old source", async () => {
+    const now = new Date();
+    let releaseQuery: ((result: AnalyticsResult) => void) | undefined;
+    const coordinator = new FakeCoordinator([], () => {
+      if (coordinator.queryCount === 1) {
+        return new Promise<AnalyticsResult>((resolve) => { releaseQuery = resolve; });
+      }
+      return Promise.resolve({ view: "series", series: [] });
+    });
+    let notifications = 0;
+    const controller = new CostAlertController(
+      coordinator,
+      seededState([{ id: "daily", period: "day", source: "codex", budgetUsd: 10 }]) as unknown as vscode.Memento,
+      async () => { notifications++; return undefined; },
+    );
+
+    const evaluation = controller.evaluateNow();
+    assert.ok(releaseQuery);
+    await controller.saveRules([{ id: "daily", period: "day", source: "claude", budgetUsd: 10 }]);
+    await evaluation;
+    releaseQuery({ view: "series", series: [dailyRow(now, 10, 0, "codex")] });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(notifications, 0);
+    controller.dispose();
+  });
+
+  test("saving starts the new alert evaluation without waiting for an old notification", async () => {
+    const now = new Date();
+    let oldNotificationShown = false;
+    let releaseOldNotification: ((action: string | undefined) => void) | undefined;
+    const messages: string[] = [];
+    const controller = new CostAlertController(
+      new FakeCoordinator([dailyRow(now, 8)]),
+      seededState([{ id: "old-alert", period: "day", source: "all", budgetUsd: 10 }]) as unknown as vscode.Memento,
+      (message) => {
+        messages.push(message);
+        if (!oldNotificationShown) {
+          oldNotificationShown = true;
+          return new Promise((resolve) => { releaseOldNotification = resolve; });
+        }
+        return Promise.resolve(undefined);
+      },
+    );
+
+    const oldEvaluation = controller.evaluateNow();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(releaseOldNotification);
+
+    await controller.saveRules([{ id: "new-alert", period: "day", source: "all", budgetUsd: 10 }]);
+    await oldEvaluation;
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(messages.length, 2);
+    assert.ok(messages[1].startsWith("Token Watch: All · Daily cost reached 80%"));
+    releaseOldNotification(undefined);
+    controller.dispose();
+  });
+
+  test("deleting and recreating the same alert notifies again", async () => {
+    const now = new Date();
+    const oldRule: CostAlertRule = { id: "old-alert", period: "day", source: "all", budgetUsd: 10 };
+    const state = seededState(
+      [oldRule],
+      [{ ruleId: oldRule.id, periodKey: periodKey("day", now), level: 80 }],
+    );
+    const messages: string[] = [];
+    const controller = new CostAlertController(
+      new FakeCoordinator([dailyRow(now, 8)]),
+      state as unknown as vscode.Memento,
+      async (message) => { messages.push(message); return undefined; },
+    );
+
+    await controller.saveRules([]);
+    await new Promise((resolve) => setImmediate(resolve));
+    await controller.saveRules([{ id: "new-alert", period: "day", source: "all", budgetUsd: 10 }]);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(messages.length, 1);
+    assert.ok(messages[0].startsWith("Token Watch: All · Daily cost reached 80%"));
     const stored = state.get<{ acknowledgements: CostAlertAcknowledgement[] }>(COST_ALERT_ACKS_STORAGE_KEY);
     assert.deepStrictEqual(stored?.acknowledgements, []);
     controller.dispose();
@@ -162,7 +273,7 @@ suite("Cost threshold alerts", () => {
     let actionLabel = "";
     const controller = new CostAlertController(
       new FakeCoordinator([dailyRow(now, 8)]),
-      seededState([{ id: "daily", period: "day", budgetUsd: 10 }]) as unknown as vscode.Memento,
+      seededState([{ id: "daily", period: "day", source: "codex", budgetUsd: 10 }]) as unknown as vscode.Memento,
       async (message, action) => {
         notification = message;
         actionLabel = action;
@@ -172,7 +283,7 @@ suite("Cost threshold alerts", () => {
     );
 
     await controller.evaluateNow();
-    assert.ok(notification.includes("Chi phí Hàng ngày đã đạt 80%"));
+    assert.ok(notification.includes("Codex · Chi phí Hàng ngày đã đạt 80%"));
     assert.strictEqual(actionLabel, "Xác nhận");
     controller.dispose();
   });
@@ -188,7 +299,7 @@ suite("Cost threshold alerts", () => {
     });
     const controller = new CostAlertController(
       coordinator,
-      seededState([{ id: "daily", period: "day", budgetUsd: 10 }]) as unknown as vscode.Memento,
+      seededState([{ id: "daily", period: "day", source: "all", budgetUsd: 10 }]) as unknown as vscode.Memento,
     );
 
     const first = controller.evaluateNow();
@@ -250,10 +361,10 @@ function seededState(rules: CostAlertRule[], acknowledgements?: CostAlertAcknowl
   return state;
 }
 
-function dailyRow(now: Date, costUsd: number, unknownCostTurns = 0): DailyAggregate {
+function dailyRow(now: Date, costUsd: number, unknownCostTurns = 0, source: "codex" | "claude" = "codex"): DailyAggregate {
   return {
     day: localDay(now),
-    source: "codex",
+    source,
     variantId: "gpt-5",
     baseModel: "gpt-5",
     workspace: "",

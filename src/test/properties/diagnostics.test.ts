@@ -11,7 +11,7 @@ suite("Diagnostics report tests", () => {
   test("Reports pricing audit, long-context gaps, midnight sessions, folder-day drift, and reconciliation mismatches", async () => {
     const db = await freshDb();
     const audit: PricingDiagnostics = {
-      ignoredKnownModelOverrides: ["gpt-5"],
+      overriddenBundledModels: ["gpt-5"],
       ignoredFallbackOverride: true,
       customModelOverrides: ["custom-large"],
     };

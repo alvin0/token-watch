@@ -5,6 +5,8 @@ export const LANGUAGE_STORAGE_KEY = "tokenWatch.language.v1";
 
 export class LanguageController {
   private language: AppLanguage;
+  private readonly languageChanged = new vscode.EventEmitter<AppLanguage>();
+  readonly onDidChange = this.languageChanged.event;
 
   constructor(private readonly globalState: vscode.Memento) {
     const stored = globalState.get<unknown>(LANGUAGE_STORAGE_KEY);
@@ -21,6 +23,7 @@ export class LanguageController {
     }
     await this.globalState.update(LANGUAGE_STORAGE_KEY, value);
     this.language = value;
+    this.languageChanged.fire(value);
     return value;
   }
 }

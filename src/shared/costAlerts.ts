@@ -1,4 +1,4 @@
-import type { CostAlertPeriod, CostAlertRule } from "./protocol";
+import type { CostAlertPeriod, CostAlertRule, CostAlertSource } from "./protocol";
 import type { DailyAggregate } from "./storeTypes";
 import { localDay } from "./time";
 
@@ -43,21 +43,29 @@ export function validateCostAlertRules(value: unknown): CostAlertRule[] {
     if (!isCostAlertPeriod(rule.period)) {
       throw new Error(`Alert ${index + 1} has an invalid period.`);
     }
+    const source = rule.source === undefined ? "all" : rule.source;
+    if (!isCostAlertSource(source)) {
+      throw new Error(`Alert ${index + 1} has an invalid source.`);
+    }
     if (typeof rule.budgetUsd !== "number" || !Number.isFinite(rule.budgetUsd) || rule.budgetUsd <= 0) {
       throw new Error(`Alert ${index + 1} must have a budget greater than $0.`);
     }
 
-    const budgetKey = `${rule.period}:${rule.budgetUsd}`;
+    const budgetKey = `${source}:${rule.period}:${rule.budgetUsd}`;
     if (budgets.has(budgetKey)) {
-      throw new Error("Two alerts cannot use the same period and budget.");
+      throw new Error("Two alerts cannot use the same source, period, and budget.");
     }
     budgets.add(budgetKey);
-    return { id, period: rule.period, budgetUsd: rule.budgetUsd };
+    return { id, period: rule.period, source, budgetUsd: rule.budgetUsd };
   });
 }
 
 export function isCostAlertPeriod(value: unknown): value is CostAlertPeriod {
   return value === "day" || value === "week" || value === "month";
+}
+
+export function isCostAlertSource(value: unknown): value is CostAlertSource {
+  return value === "all" || value === "codex" || value === "claude";
 }
 
 export function periodStart(period: CostAlertPeriod, now: Date): Date {
@@ -99,7 +107,7 @@ export function pendingCostAlerts(
     let costUsd = 0;
     let unknownCostTurns = 0;
     for (const row of series) {
-      if (row.day >= startDay) {
+      if (row.day >= startDay && (rule.source === "all" || row.source === rule.source)) {
         costUsd += row.costUsd;
         unknownCostTurns += row.unknownCostTurns;
       }

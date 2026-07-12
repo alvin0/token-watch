@@ -2,8 +2,8 @@
  * Bundled default pricing table (USD per 1K tokens).
  *
  * Models are auto-discovered from logs. Any model not in this table will use
- * the bundled fallback rate. Config files may add custom models, but bundled
- * pricing wins for known model ids.
+ * the bundled fallback rate. Custom pricing may add models or override a
+ * matching bundled model id.
  */
 
 import type { PricingTable } from "./types.js";

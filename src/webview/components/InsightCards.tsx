@@ -3,10 +3,12 @@ import { useQuery } from "../hooks/useQuery";
 import { formatCost } from "../format";
 import { computePeriods, fmtT } from "../lib/periodData";
 import type { Period } from "../lib/periodData";
+import { useTranslation } from "../i18n";
 
 export function InsightCards() {
   const result = useQuery("dashboard");
   const g = useStore((s) => s.granularity) as Period;
+  const { locale, t } = useTranslation();
   if (!result || result.view !== "dashboard") { return null; }
   const { cur, peakLabel } = computePeriods(result.series, g);
 
@@ -19,10 +21,10 @@ export function InsightCards() {
 
     return (
       <div className="tw-grid tw-grid-cols-2 tw-gap-1.5">
-        <MiniCard icon="" label="Cache hit" value={`${cacheHit.toFixed(1)}%`} />
-        <MiniCard icon="" label="Tokens / turn" value={fmtT(tokensPerTurn)} />
-        <MiniCard icon="" label="Turns today" value={cur.turns.toLocaleString()} />
-        <MiniCard icon="" label="Reasoning mix" value={`${reasoningMix.toFixed(1)}%`} />
+        <MiniCard icon="" label={t("insights.cacheHit")} value={`${cacheHit.toFixed(1)}%`} />
+        <MiniCard icon="" label={t("insights.tokensPerTurn")} value={fmtT(tokensPerTurn)} />
+        <MiniCard icon="" label={t("insights.turnsToday")} value={cur.turns.toLocaleString(locale)} />
+        <MiniCard icon="" label={t("insights.reasoningMix")} value={`${reasoningMix.toFixed(1)}%`} />
       </div>
     );
   }
@@ -46,10 +48,10 @@ export function InsightCards() {
 
   return (
     <div className="tw-grid tw-grid-cols-2 tw-gap-1.5">
-      <MiniCard icon="" label="Cache saved" value={formatCost(cacheSaved)} />
-      <MiniCard icon="" label="Avg / turn" value={formatCost(avgTurn)} />
-      <MiniCard icon="" label="Active models" value={String(cur.models)} />
-      <MiniCard icon="" label="Peak" value={peakLabel} />
+      <MiniCard icon="" label={t("insights.cacheSaved")} value={formatCost(cacheSaved)} />
+      <MiniCard icon="" label={t("insights.avgPerTurn")} value={formatCost(avgTurn)} />
+      <MiniCard icon="" label={t("insights.activeModels")} value={String(cur.models)} />
+      <MiniCard icon="" label={t("insights.peak")} value={peakLabel} />
     </div>
   );
 }

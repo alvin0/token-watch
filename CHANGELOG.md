@@ -2,6 +2,13 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.1.2]
+
+- Added custom model pricing, with prices entered in USD per 1 million tokens.
+- Custom prices can replace bundled prices and update usage costs across the dashboard.
+- Cost alerts can now track all usage, Codex only, or Claude Code only.
+- Improved language support across the status bar, alerts, and usage insights.
+
 ## [0.1.1]
 
 - Added English, Vietnamese, and Japanese language options.

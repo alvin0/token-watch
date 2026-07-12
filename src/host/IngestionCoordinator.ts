@@ -16,6 +16,12 @@ export class IngestionCoordinator implements vscode.Disposable {
   private worker: Worker | null = null;
   private pendingQueries = new Map<string, { resolve: (r: AnalyticsResult) => void; reject: (e: Error) => void }>();
   private pendingDiagnostics = new Map<string, { resolve: (r: DiagnosticsReport) => void; reject: (e: Error) => void }>();
+  private pendingPricingUpdates = new Map<string, {
+    fingerprint: string;
+    waiters: Array<{ resolve: () => void; reject: (e: Error) => void }>;
+  }>();
+  private pricingUpdateIdsByFingerprint = new Map<string, string>();
+  private lastAppliedPricingFingerprint: string | undefined;
   private readonly _onChanged = new vscode.EventEmitter<FreshnessInfo>();
   readonly onChanged = this._onChanged.event;
   private readonly _onScanComplete = new vscode.EventEmitter<FreshnessInfo>();
@@ -99,8 +105,32 @@ export class IngestionCoordinator implements vscode.Disposable {
     this.send({ type: "resetDatabase" });
   }
 
-  updatePricing(table: PricingTable): void {
-    this.send({ type: "updatePricing", table });
+  updatePricing(table: PricingTable): Promise<void> {
+    if (this.disposed) {
+      return Promise.reject(new Error(COORDINATOR_DISPOSED_MESSAGE));
+    }
+    if (!this.worker) {
+      return Promise.reject(new Error("Worker not available"));
+    }
+    const fingerprint = JSON.stringify(table);
+    if (fingerprint === this.lastAppliedPricingFingerprint) {
+      return Promise.resolve();
+    }
+    const existingId = this.pricingUpdateIdsByFingerprint.get(fingerprint);
+    if (existingId) {
+      const existing = this.pendingPricingUpdates.get(existingId);
+      if (existing) {
+        return new Promise<void>((resolve, reject) => {
+          existing.waiters.push({ resolve, reject });
+        });
+      }
+    }
+    const id = randomUUID();
+    return new Promise<void>((resolve, reject) => {
+      this.pendingPricingUpdates.set(id, { fingerprint, waiters: [{ resolve, reject }] });
+      this.pricingUpdateIdsByFingerprint.set(fingerprint, id);
+      this.send({ type: "updatePricing", id, table });
+    });
   }
 
   dispose(): void {
@@ -160,6 +190,12 @@ export class IngestionCoordinator implements vscode.Disposable {
           }
           break;
         }
+        case "pricingUpdated":
+          this.settlePricingUpdate(event.id);
+          break;
+        case "pricingUpdateError":
+          this.settlePricingUpdate(event.id, new Error(event.message));
+          break;
         case "ingestComplete":
           this._onScanComplete.fire(event.freshness);
           if (event.dataChanged) {
@@ -202,6 +238,26 @@ export class IngestionCoordinator implements vscode.Disposable {
     for (const [id, { reject }] of this.pendingDiagnostics) {
       reject(new Error(reason));
       this.pendingDiagnostics.delete(id);
+    }
+    for (const [id, pending] of this.pendingPricingUpdates) {
+      for (const waiter of pending.waiters) {
+        waiter.reject(new Error(reason));
+      }
+      this.pricingUpdateIdsByFingerprint.delete(pending.fingerprint);
+      this.pendingPricingUpdates.delete(id);
+    }
+  }
+
+  private settlePricingUpdate(id: string, error?: Error): void {
+    const pending = this.pendingPricingUpdates.get(id);
+    if (!pending) { return; }
+    this.pendingPricingUpdates.delete(id);
+    this.pricingUpdateIdsByFingerprint.delete(pending.fingerprint);
+    if (!error) {
+      this.lastAppliedPricingFingerprint = pending.fingerprint;
+    }
+    for (const waiter of pending.waiters) {
+      if (error) { waiter.reject(error); } else { waiter.resolve(); }
     }
   }
 }

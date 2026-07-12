@@ -134,19 +134,19 @@ suite("PricingEngine property tests", () => {
     });
   });
 
-  test("Known bundled pricing and fallback overrides are ignored, custom models are accepted", () => {
+  test("Custom pricing overrides bundled models, fallback overrides are ignored, and model ids stay unique", () => {
     const merged = mergePricingConfig({
       "gpt-5": { inputPer1K: 999, outputPer1K: 999 },
       "$fallback": { inputPer1K: 999, outputPer1K: 999 },
       "custom-model": { inputPer1K: 0.123, outputPer1K: 0.456 },
     });
 
-    assert.deepStrictEqual(merged.table["gpt-5"], DEFAULT_PRICING["gpt-5"]);
+    assert.deepStrictEqual(merged.table["gpt-5"], { inputPer1K: 999, outputPer1K: 999 });
     assert.deepStrictEqual(merged.fallbackRate, FALLBACK_RATE);
     assert.deepStrictEqual(merged.table["custom-model"], { inputPer1K: 0.123, outputPer1K: 0.456 });
-    assert.deepStrictEqual(merged.audit.ignoredKnownModelOverrides, ["gpt-5"]);
+    assert.deepStrictEqual(merged.audit.overriddenBundledModels, ["gpt-5"]);
     assert.strictEqual(merged.audit.ignoredFallbackOverride, true);
-    assert.deepStrictEqual(merged.audit.customModelOverrides, ["custom-model"]);
+    assert.deepStrictEqual(merged.audit.customModelOverrides, ["custom-model", "gpt-5"]);
   });
 
   test("Long-context pricing uses explicit long-context model above threshold", () => {

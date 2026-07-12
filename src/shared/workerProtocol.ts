@@ -37,7 +37,7 @@ export interface IngestConfig {
     codex: SourceConfig;
     claude: SourceConfig;
   };
-  /** User pricing additions; bundled defaults win for known models (Req 6.4, 10.3). */
+  /** User pricing additions and overrides; user entries win for matching model ids. */
   pricingOverrides: PricingTable;
   /** Secondary display currency config (Req 6.5). */
   currency: DisplayCurrencyConfig;
@@ -59,7 +59,7 @@ export type WorkerRequest =
   | { type: "diagnostics"; id: string }
   | { type: "scanAndIngest"; reason: "activation" | "watch" | "manual"; forceFull?: boolean; changedPaths?: string[] }
   | { type: "resetDatabase" }
-  | { type: "updatePricing"; table: PricingTable }
+  | { type: "updatePricing"; id: string; table: PricingTable }
   | { type: "flush" };
 
 /** Worker → host events. */
@@ -68,6 +68,8 @@ export type WorkerEvent =
   | { type: "queryResult"; id: string; result: AnalyticsResult }
   | { type: "queryError"; id: string; message: string }
   | { type: "diagnosticsResult"; id: string; result: DiagnosticsReport }
+  | { type: "pricingUpdated"; id: string }
+  | { type: "pricingUpdateError"; id: string; message: string }
   | { type: "progress"; processed: number; total: number; partial: boolean }
   | { type: "ingestComplete"; freshness: FreshnessInfo; warnings: WarningInfo; dataChanged: boolean }
   | { type: "error"; scope: string; message: string };

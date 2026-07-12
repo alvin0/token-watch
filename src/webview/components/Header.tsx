@@ -1,12 +1,15 @@
 import { useRef, useState } from "react";
 import { useStore, vscodeApi } from "../store";
 import { CostAlertSettingsDialog } from "./CostAlertSettingsDialog";
+import { PricingSettingsDialog } from "./PricingSettingsDialog";
 import { useTranslation } from "../i18n";
 import type { AppLanguage } from "../../shared/i18n";
 
 export function Header({ status }: { status: string }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pricingOpen, setPricingOpen] = useState(false);
   const alertButtonRef = useRef<HTMLButtonElement>(null);
+  const pricingButtonRef = useRef<HTMLButtonElement>(null);
   const setLanguage = useStore((state) => state.setLanguage);
   const { language, t } = useTranslation();
   const c = status === "Live" ? "#89d185" : status === "Scanning" || status === "Stale" ? "#cca700" : "#888";
@@ -47,6 +50,19 @@ export function Header({ status }: { status: string }) {
             <option value="ja">JA</option>
           </select>
           <button
+            ref={pricingButtonRef}
+            type="button"
+            title={t("pricing.title")}
+            aria-label={t("pricing.title")}
+            aria-haspopup="dialog"
+            onClick={() => setPricingOpen(true)}
+            className="tw-flex tw-h-6 tw-w-6 tw-cursor-pointer tw-items-center tw-justify-center tw-rounded tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-[#25253a] hover:tw-text-[var(--vscode-foreground)]"
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24" className="tw-h-3.5 tw-w-3.5 tw-fill-none tw-stroke-current" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2v20M17 6.5c0-1.9-2.2-3.5-5-3.5S7 4.3 7 6s1.8 2.6 5 3.5 5 1.8 5 4.5-2.2 4-5 4-5-1.6-5-3.5" />
+            </svg>
+          </button>
+          <button
             ref={alertButtonRef}
             type="button"
             title={t("header.alerts")}
@@ -63,6 +79,10 @@ export function Header({ status }: { status: string }) {
         </div>
       </div>
       {settingsOpen && <CostAlertSettingsDialog onClose={closeSettings} />}
+      {pricingOpen && <PricingSettingsDialog onClose={() => {
+        setPricingOpen(false);
+        requestAnimationFrame(() => pricingButtonRef.current?.focus());
+      }} />}
     </>
   );
 }

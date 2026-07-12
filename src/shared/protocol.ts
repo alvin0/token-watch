@@ -102,7 +102,7 @@ export interface ClaudeRateLimitInfo {
 }
 
 export interface PricingDiagnostics {
-  ignoredKnownModelOverrides: string[];
+  overriddenBundledModels: string[];
   ignoredFallbackOverride: boolean;
   customModelOverrides: string[];
 }
@@ -185,10 +185,12 @@ export interface UsageCacheInfo {
 }
 
 export type CostAlertPeriod = "day" | "week" | "month";
+export type CostAlertSource = "all" | Source;
 
 export interface CostAlertRule {
   id: string;
   period: CostAlertPeriod;
+  source: CostAlertSource;
   budgetUsd: number;
 }
 
@@ -201,6 +203,7 @@ export type WebviewRequest =
   | { type: "refreshUsage"; provider: UsageProvider }
   | { type: "openSetting"; key: string }
   | { type: "setLanguage"; language: AppLanguage }
+  | { type: "savePricingSettings"; requestId: string; table: PricingTable }
   | { type: "saveCostAlertSettings"; requestId: string; rules: CostAlertRule[] };
 
 /** Host → WebView messages. */
@@ -212,6 +215,9 @@ export type HostMessage =
   | { type: "costAlertSettings"; rules: CostAlertRule[] }
   | { type: "costAlertSettingsSaved"; requestId: string; rules: CostAlertRule[] }
   | { type: "costAlertSettingsError"; requestId: string; message: string }
+  | { type: "pricingSettings"; table: PricingTable }
+  | { type: "pricingSettingsSaved"; requestId: string; table: PricingTable }
+  | { type: "pricingSettingsError"; requestId: string; message: string }
   | { type: "language"; language: AppLanguage }
   | {
       type: "status";

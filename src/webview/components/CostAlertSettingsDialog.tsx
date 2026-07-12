@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { CostAlertPeriod, CostAlertRule } from "../../shared/protocol";
+import type { CostAlertPeriod, CostAlertRule, CostAlertSource } from "../../shared/protocol";
 import { useStore } from "../store";
 import { useTranslation } from "../i18n";
 
 interface DraftRule {
   id: string;
   period: CostAlertPeriod;
+  source: CostAlertSource;
   budgetUsd: string;
 }
 
@@ -131,7 +132,7 @@ export function CostAlertSettingsDialog({ onClose }: { onClose: () => void }) {
                         ×
                       </button>
                     </div>
-                    <div className="tw-mt-2 tw-grid tw-grid-cols-2 tw-gap-2">
+                    <div className="tw-mt-2 tw-grid tw-grid-cols-3 tw-gap-2">
                       <label className="tw-flex tw-flex-col tw-gap-1 tw-text-[10px] tw-text-[var(--vscode-descriptionForeground)]">
                         {t("alerts.period")}
                         <select
@@ -143,6 +144,19 @@ export function CostAlertSettingsDialog({ onClose }: { onClose: () => void }) {
                           <option value="day">{t("alerts.daily")}</option>
                           <option value="week">{t("alerts.weekly")}</option>
                           <option value="month">{t("alerts.monthly")}</option>
+                        </select>
+                      </label>
+                      <label className="tw-flex tw-flex-col tw-gap-1 tw-text-[10px] tw-text-[var(--vscode-descriptionForeground)]">
+                        {t("alerts.source")}
+                        <select
+                          value={draft.source}
+                          disabled={saving}
+                          onChange={(event) => updateDraft(draft.id, { source: event.target.value as CostAlertSource })}
+                          className="tw-h-7 tw-rounded tw-border tw-border-[var(--vscode-dropdown-border,#3c3c4f)] tw-bg-[var(--vscode-dropdown-background,#222236)] tw-px-2 tw-text-[11px] tw-text-[var(--vscode-dropdown-foreground,var(--vscode-foreground))] tw-outline-none focus:tw-border-[var(--vscode-focusBorder)]"
+                        >
+                          <option value="all">{t("alerts.sourceAll")}</option>
+                          <option value="codex">{t("alerts.sourceCodex")}</option>
+                          <option value="claude">{t("alerts.sourceClaude")}</option>
                         </select>
                       </label>
                       <label className="tw-flex tw-flex-col tw-gap-1 tw-text-[10px] tw-text-[var(--vscode-descriptionForeground)]">
@@ -208,11 +222,11 @@ export function CostAlertSettingsDialog({ onClose }: { onClose: () => void }) {
 }
 
 function toDrafts(rules: CostAlertRule[]): DraftRule[] {
-  return rules.map((rule) => ({ ...rule, budgetUsd: String(rule.budgetUsd) }));
+  return rules.map((rule) => ({ ...rule, source: rule.source ?? "all", budgetUsd: String(rule.budgetUsd) }));
 }
 
 function newDraft(): DraftRule {
-  return { id: crypto.randomUUID(), period: "day", budgetUsd: "" };
+  return { id: crypto.randomUUID(), period: "day", source: "all", budgetUsd: "" };
 }
 
 function validateDrafts(
@@ -229,7 +243,7 @@ function validateDrafts(
       errors[draft.id] = t("alerts.invalidBudget");
       continue;
     }
-    const duplicateKey = `${draft.period}:${budgetUsd}`;
+    const duplicateKey = `${draft.source}:${draft.period}:${budgetUsd}`;
     const duplicateId = seen.get(duplicateKey);
     if (duplicateId) {
       errors[draft.id] = t("alerts.duplicate");
@@ -237,7 +251,7 @@ function validateDrafts(
       continue;
     }
     seen.set(duplicateKey, draft.id);
-    rules.push({ id: draft.id, period: draft.period, budgetUsd });
+    rules.push({ id: draft.id, period: draft.period, source: draft.source, budgetUsd });
   }
 
   return Object.keys(errors).length > 0 ? { errors } : { rules, errors };

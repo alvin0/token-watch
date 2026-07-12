@@ -1,6 +1,6 @@
 // Token Watch — Pricing Configuration
 // Rates are USD per 1,000 tokens.
-// Bundled pricing wins for known models; this file only adds custom models.
+// Custom pricing overrides bundled pricing when model ids match.
 // "$fallback" entries are ignored to avoid stale fallback rates.
 //
 // Format per model:

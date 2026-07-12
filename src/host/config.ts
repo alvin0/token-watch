@@ -125,6 +125,11 @@ export function loadPricingFromFile(): PricingTable {
   return {};
 }
 
+/** Merge user settings with workspace-file additions. Workspace-file entries win. */
+export function effectivePricingOverrides(settings: PricingTable): PricingTable {
+  return { ...settings, ...loadPricingFromFile() };
+}
+
 function readPricingFile(filePath: string): PricingTable | null {
   try {
     if (!fs.existsSync(filePath)) { return null; }

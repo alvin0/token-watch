@@ -165,5 +165,5 @@ export interface ModelRate {
   outputPer1K?: number;
 }
 
-/** Map of base model id → its rates. Bundled defaults win for known models. */
+/** Map of base model id → its rates. Custom entries override matching bundled models. */
 export type PricingTable = Record<string, ModelRate>;

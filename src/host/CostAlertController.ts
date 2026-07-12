@@ -15,6 +15,7 @@ import {
 export const COST_ALERT_RULES_STORAGE_KEY = "tokenWatch.costAlerts.rules.v1";
 export const COST_ALERT_ACKS_STORAGE_KEY = "tokenWatch.costAlerts.acknowledgements.v1";
 const STORAGE_VERSION = 1;
+const EVALUATION_INVALIDATED = Symbol("evaluation-invalidated");
 
 export interface CostAlertCoordinator {
   query(query: AnalyticsQuery): Promise<AnalyticsResult>;
@@ -39,6 +40,9 @@ export class CostAlertController implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private evaluationPromise: Promise<void> | undefined;
   private evaluationQueued = false;
+  private rulesRevision = 0;
+  private evaluationInvalidated: Promise<typeof EVALUATION_INVALIDATED>;
+  private invalidateEvaluation: () => void = () => undefined;
   private storageQueue: Promise<void> = Promise.resolve();
   private started = false;
   private disposed = false;
@@ -49,6 +53,7 @@ export class CostAlertController implements vscode.Disposable {
     private readonly notify: CostAlertNotifier = (message, action) => vscode.window.showWarningMessage(message, action),
     private readonly getLanguage: () => AppLanguage = () => "en",
   ) {
+    this.evaluationInvalidated = this.createEvaluationInvalidation();
     this.rules = loadRules(globalState.get<unknown>(COST_ALERT_RULES_STORAGE_KEY));
     this.acknowledgements = loadAcknowledgements(globalState.get<unknown>(COST_ALERT_ACKS_STORAGE_KEY));
   }
@@ -68,10 +73,13 @@ export class CostAlertController implements vscode.Disposable {
 
   async saveRules(value: unknown): Promise<CostAlertRule[]> {
     const nextRules = validateCostAlertRules(value);
+    this.invalidateEvaluation();
+    this.evaluationInvalidated = this.createEvaluationInvalidation();
+    this.rulesRevision++;
     const previousRules = new Map(this.rules.map((rule) => [rule.id, rule]));
     const unchangedIds = new Set(nextRules.flatMap((rule) => {
       const previous = previousRules.get(rule.id);
-      return previous && previous.period === rule.period && previous.budgetUsd === rule.budgetUsd ? [rule.id] : [];
+      return previous && previous.period === rule.period && previous.source === rule.source && previous.budgetUsd === rule.budgetUsd ? [rule.id] : [];
     }));
 
     const nextAcknowledgements = pruneAcknowledgements(
@@ -122,6 +130,7 @@ export class CostAlertController implements vscode.Disposable {
   dispose(): void {
     if (this.disposed) { return; }
     this.disposed = true;
+    this.invalidateEvaluation();
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
@@ -129,6 +138,8 @@ export class CostAlertController implements vscode.Disposable {
   }
 
   private async runEvaluation(): Promise<void> {
+    const revision = this.rulesRevision;
+    const invalidated = this.evaluationInvalidated;
     const now = new Date();
     const pruned = pruneAcknowledgements(this.rules, this.acknowledgements, now);
     if (pruned.length !== this.acknowledgements.length) {
@@ -138,21 +149,25 @@ export class CostAlertController implements vscode.Disposable {
     if (this.rules.length === 0) { return; }
 
     const rulesSnapshot = this.getRules();
-    const result = await this.coordinator.query({
+    const result = await Promise.race([this.coordinator.query({
       view: "series",
       granularity: "day",
       range: { fromUtc: earliestPeriodStart(rulesSnapshot, now).getTime(), toUtc: now.getTime() },
-    });
-    if (this.disposed || result.view !== "series") { return; }
+    }), invalidated]);
+    if (result === EVALUATION_INVALIDATED || this.disposed || revision !== this.rulesRevision || result.view !== "series") { return; }
 
     const alerts = pendingCostAlerts(rulesSnapshot, result.series, this.acknowledgements, now);
     for (const alert of alerts) {
-      if (this.disposed) { return; }
+      if (this.disposed || revision !== this.rulesRevision) { return; }
       if (!this.ruleStillMatches(alert)) { continue; }
       const language = this.getLanguage();
       const confirmAction = translate(language, "common.confirm");
-      const action = await this.notify(formatAlertMessage(alert, language), confirmAction);
-      if (action === confirmAction && this.ruleStillMatches(alert) && periodKey(alert.rule.period, new Date()) === alert.periodKey) {
+      const action = await Promise.race([
+        this.notify(formatAlertMessage(alert, language), confirmAction),
+        invalidated,
+      ]);
+      if (action === EVALUATION_INVALIDATED) { return; }
+      if (action === confirmAction && revision === this.rulesRevision && this.ruleStillMatches(alert) && periodKey(alert.rule.period, new Date()) === alert.periodKey) {
         this.acknowledgements = acknowledgeThrough(this.acknowledgements, alert);
         await this.persistAcknowledgements();
       }
@@ -161,7 +176,7 @@ export class CostAlertController implements vscode.Disposable {
 
   private ruleStillMatches(alert: PendingCostAlert): boolean {
     return this.rules.some((rule) =>
-      rule.id === alert.rule.id && rule.period === alert.rule.period && rule.budgetUsd === alert.rule.budgetUsd,
+      rule.id === alert.rule.id && rule.period === alert.rule.period && rule.source === alert.rule.source && rule.budgetUsd === alert.rule.budgetUsd,
     );
   }
 
@@ -176,6 +191,12 @@ export class CostAlertController implements vscode.Disposable {
     const queued = this.storageQueue.then(write);
     this.storageQueue = queued.catch(() => undefined);
     return queued;
+  }
+
+  private createEvaluationInvalidation(): Promise<typeof EVALUATION_INVALIDATED> {
+    return new Promise((resolve) => {
+      this.invalidateEvaluation = () => resolve(EVALUATION_INVALIDATED);
+    });
   }
 }
 
@@ -204,7 +225,9 @@ function loadAcknowledgements(value: unknown): CostAlertAcknowledgement[] {
 
 function formatAlertMessage(alert: PendingCostAlert, language: AppLanguage): string {
   const periodKey = alert.rule.period === "day" ? "alerts.daily" : alert.rule.period === "week" ? "alerts.weekly" : "alerts.monthly";
+  const sourceKey = alert.rule.source === "codex" ? "alerts.sourceCodex" : alert.rule.source === "claude" ? "alerts.sourceClaude" : "alerts.sourceAll";
   const message = translate(language, "alerts.notification", {
+    source: translate(language, sourceKey),
     period: translate(language, periodKey),
     level: alert.level,
     cost: formatUsd(alert.costUsd),

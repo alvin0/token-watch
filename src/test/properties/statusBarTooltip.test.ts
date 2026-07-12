@@ -44,6 +44,15 @@ suite('Status bar tooltip', () => {
     assert.ok(!tooltip.includes('Total:'));
   });
 
+  test('localizes tooltip labels for the selected application language', () => {
+    const tooltip = buildStatusBarTooltip(summary, undefined, undefined, undefined, undefined, 'vi');
+
+    assert.ok(tooltip.startsWith('Token Watch · Mức sử dụng hiện tại\n\n'));
+    assert.ok(tooltip.includes('12.3K token · $1.23 · 7 lượt'));
+    assert.ok(tooltip.includes('Đầu vào 1.0K · Đầu ra 2.0K · Suy luận 300'));
+    assert.ok(tooltip.includes('Cache đọc 400 · ghi 500'));
+  });
+
   test('includes codex usage section when rate limit is present', () => {
     const tooltip = buildStatusBarTooltip(summary, {
       primaryPct: 17,

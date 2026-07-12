@@ -10,14 +10,14 @@ import {
 import { mapClaudeUsageToRateLimitInfo, type ClaudeUsageResponse } from '../shared/claudeUsage';
 import type { AnalyticsResult, ClaudeRateLimitInfo, RateLimitInfo, UsageQuotaWindow } from '../shared/protocol';
 import type { DailyAggregate } from '../shared/storeTypes';
+import { localeTag, translate, type AppLanguage } from '../shared/i18n';
+import type { LanguageController } from './LanguageController';
 
 /**
  * Manages the status bar item showing today's token usage and cost.
  * Refreshes on coordinator data changes; respects the tokenWatch.statusBar.enabled setting.
  */
 const CODEX_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
-const CODEX_USAGE_NOT_AVAILABLE_MESSAGE = 'Codex usage not available';
-const CLAUDE_USAGE_NOT_AVAILABLE_MESSAGE = 'Claude Code usage not available';
 
 export interface StatusBarUsageSummary {
   tokens: number;
@@ -51,6 +51,7 @@ export class StatusBarController implements vscode.Disposable {
   constructor(
     private readonly coordinator: IngestionCoordinator,
     enabled: boolean,
+    private readonly language?: LanguageController,
   ) {
     this.enabled = enabled;
     this.item = vscode.window.createStatusBarItem(
@@ -61,6 +62,7 @@ export class StatusBarController implements vscode.Disposable {
 
     this.disposables.push(
       coordinator.onChanged(() => this.refresh()),
+      ...(language ? [language.onDidChange(() => this.updateItem())] : []),
     );
 
     void this.refreshCodexUsage(true);
@@ -132,6 +134,7 @@ export class StatusBarController implements vscode.Disposable {
       this.latestCodexUsageMessage,
       this.latestClaudeRateLimit,
       this.latestClaudeUsageMessage,
+      this.language?.getLanguage(),
     );
 
     if (this.enabled) {
@@ -159,7 +162,7 @@ export class StatusBarController implements vscode.Disposable {
           }
           this.lastCodexUsageRefreshAt = Date.now();
           this.latestRateLimit = undefined;
-          this.latestCodexUsageMessage = CODEX_USAGE_NOT_AVAILABLE_MESSAGE;
+          this.latestCodexUsageMessage = "unavailable";
           this.updateItem();
           return;
         }
@@ -179,7 +182,7 @@ export class StatusBarController implements vscode.Disposable {
         if (!this.disposed) {
           this.lastCodexUsageRefreshAt = Date.now();
           if (!this.latestRateLimit) {
-            this.latestCodexUsageMessage = CODEX_USAGE_NOT_AVAILABLE_MESSAGE;
+            this.latestCodexUsageMessage = "unavailable";
           }
           if (!isCodexUsageRateLimitError(err)) {
             console.warn('[TokenWatch] Codex usage refresh failed:', err);
@@ -223,7 +226,7 @@ export class StatusBarController implements vscode.Disposable {
         if (!this.disposed) {
           this.lastClaudeUsageRefreshAt = Date.now();
           if (!this.latestClaudeRateLimit) {
-            this.latestClaudeUsageMessage = CLAUDE_USAGE_NOT_AVAILABLE_MESSAGE;
+            this.latestClaudeUsageMessage = "unavailable";
           }
           if (!isClaudeUsageRateLimitError(err)) {
             console.warn('[TokenWatch] Claude usage refresh failed:', err);
@@ -268,28 +271,29 @@ export function buildStatusBarTooltip(
   codexUsageMessage?: string,
   claudeRateLimit?: ClaudeRateLimitInfo,
   claudeUsageMessage?: string,
+  language: AppLanguage = "en",
 ): string {
   const lines = [
-    'Token Watch · Current usage',
+    translate(language, "statusBar.currentUsage"),
     '',
-    `${formatTooltipTokens(usage.tokens)} tokens · $${formatCost(usage.cost)} · ${usage.turns.toLocaleString()} turns`,
-    `Input ${formatTooltipTokens(usage.inputTokens)} · Output ${formatTooltipTokens(usage.outputTokens)} · Reasoning ${formatTooltipTokens(usage.reasoningTokens)}`,
-    `Cache ${formatTooltipTokens(usage.cacheReadTokens)} read · ${formatTooltipTokens(usage.cacheCreationTokens)} write`,
+    translate(language, "statusBar.usageSummary", { tokens: formatTooltipTokens(usage.tokens), cost: formatCost(usage.cost), turns: usage.turns.toLocaleString(localeTag(language)) }),
+    translate(language, "statusBar.tokenBreakdown", { input: formatTooltipTokens(usage.inputTokens), output: formatTooltipTokens(usage.outputTokens), reasoning: formatTooltipTokens(usage.reasoningTokens) }),
+    translate(language, "statusBar.cacheBreakdown", { read: formatTooltipTokens(usage.cacheReadTokens), write: formatTooltipTokens(usage.cacheCreationTokens) }),
   ];
 
   if (codexUsageMessage) {
-    lines.push('', 'CODEX', 'Usage not available');
+    lines.push('', 'CODEX', translate(language, "statusBar.usageUnavailable"));
   } else {
-    const codexLines = buildCodexUsageLines(rateLimit);
+    const codexLines = buildCodexUsageLines(rateLimit, language);
     if (codexLines.length > 0) {
       lines.push('', ...codexLines);
     }
   }
 
   if (claudeUsageMessage) {
-    lines.push('', 'CLAUDE CODE', 'Usage not available');
+    lines.push('', 'CLAUDE CODE', translate(language, "statusBar.usageUnavailable"));
   } else {
-    const claudeLines = buildClaudeUsageLines(claudeRateLimit);
+    const claudeLines = buildClaudeUsageLines(claudeRateLimit, language);
     if (claudeLines.length > 0) {
       lines.push('', ...claudeLines);
     }
@@ -298,29 +302,30 @@ export function buildStatusBarTooltip(
   return lines.join('\n');
 }
 
-function buildCodexUsageLines(rateLimit?: RateLimitInfo): string[] {
+function buildCodexUsageLines(rateLimit: RateLimitInfo | undefined, language: AppLanguage): string[] {
   if (!rateLimit) {
     return [];
   }
-  return buildCompactUsageLines('CODEX', rateLimit.windows, ['codex:primary', 'codex:secondary']);
+  return buildCompactUsageLines('CODEX', rateLimit.windows, ['codex:primary', 'codex:secondary'], language);
 }
 
-function buildClaudeUsageLines(rateLimit?: ClaudeRateLimitInfo): string[] {
+function buildClaudeUsageLines(rateLimit: ClaudeRateLimitInfo | undefined, language: AppLanguage): string[] {
   if (!rateLimit) {
     return [];
   }
-  return buildCompactUsageLines('CLAUDE CODE', rateLimit.windows, ['session', 'weekly']);
+  return buildCompactUsageLines('CLAUDE CODE', rateLimit.windows, ['session', 'weekly'], language);
 }
 
 function buildCompactUsageLines(
   title: string,
   windows: UsageQuotaWindow[],
   primaryIds: string[],
+  language: AppLanguage,
 ): string[] {
   const primarySet = new Set(primaryIds);
   const detailLines = windows
     .filter((window) => primarySet.has(window.id))
-    .map(formatPrimaryQuota)
+    .map((window) => formatPrimaryQuota(window, language))
     .filter((line): line is string => Boolean(line));
 
   const groups = new Map<string, UsageQuotaWindow[]>();
@@ -333,7 +338,7 @@ function buildCompactUsageLines(
   }
   for (const [group, groupWindows] of groups) {
     const parts = groupWindows
-      .map(formatGroupedQuota)
+      .map((window) => formatGroupedQuota(window, language))
       .filter((line): line is string => Boolean(line));
     if (parts.length > 0) {
       detailLines.push(`${compactGroupName(group)} · ${parts.join(' · ')}`);
@@ -343,21 +348,21 @@ function buildCompactUsageLines(
   return detailLines.length > 0 ? [title, ...detailLines] : [];
 }
 
-function formatPrimaryQuota(window: UsageQuotaWindow): string | undefined {
+function formatPrimaryQuota(window: UsageQuotaWindow, language: AppLanguage): string | undefined {
   const percent = remainingPercent(window.usedPct);
-  const reset = formatCompactReset(window);
+  const reset = formatCompactReset(window, language);
   if (!percent && !reset) { return undefined; }
-  const parts = [`${compactWindowLabel(window.label)}${percent ? ` ${percent} left` : ''}`];
-  if (reset) { parts.push(`resets ${reset}`); }
+  const parts = [`${compactWindowLabel(window.label, language)}${percent ? ` ${translate(language, "statusBar.left", { percent })}` : ''}`];
+  if (reset) { parts.push(translate(language, "statusBar.resets", { value: reset })); }
   return parts.join(' · ');
 }
 
-function formatGroupedQuota(window: UsageQuotaWindow): string | undefined {
+function formatGroupedQuota(window: UsageQuotaWindow, language: AppLanguage): string | undefined {
   const percent = remainingPercent(window.usedPct);
-  const reset = formatCompactReset(window);
+  const reset = formatCompactReset(window, language);
   if (!percent && !reset) { return undefined; }
-  const parts = [`${compactWindowLabel(window.label)}${percent ? ` ${percent}` : ''}`];
-  if (!percent && reset) { parts.push(`resets ${reset}`); }
+  const parts = [`${compactWindowLabel(window.label, language)}${percent ? ` ${percent}` : ''}`];
+  if (!percent && reset) { parts.push(translate(language, "statusBar.resets", { value: reset })); }
   return parts.join(' · ');
 }
 
@@ -375,13 +380,13 @@ function compactGroupName(group: string): string {
     .replace(/^Fable(?:\s+\d+)?$/i, 'Fable');
 }
 
-function compactWindowLabel(label: string): string {
-  if (/weekly|\bweek\b/i.test(label)) { return 'Week'; }
+function compactWindowLabel(label: string, language: AppLanguage): string {
+  if (/weekly|\bweek\b/i.test(label)) { return translate(language, "statusBar.week"); }
   const duration = label.match(/\b\d+(?:\.\d+)?[hmds]\b/i)?.[0];
   return duration ?? label.replace(/\s+limit$/i, '');
 }
 
-function formatCompactReset(window: UsageQuotaWindow): string | undefined {
+function formatCompactReset(window: UsageQuotaWindow, language: AppLanguage): string | undefined {
   if (typeof window.resetAtUtc !== 'number' || !Number.isFinite(window.resetAtUtc)) {
     return undefined;
   }
@@ -389,7 +394,10 @@ function formatCompactReset(window: UsageQuotaWindow): string | undefined {
     ? window.windowSeconds <= 86_400
     : /\b\d+h\b|session/i.test(window.label);
   const date = new Date(window.resetAtUtc);
-  return shortWindow ? resetTimeFormatter.format(date) : resetDateTimeFormatter.format(date);
+  return new Intl.DateTimeFormat(localeTag(language), shortWindow
+    ? { hour: '2-digit', minute: '2-digit', hour12: false }
+    : { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false },
+  ).format(date);
 }
 
 function remainingPercent(usedPercent?: number): string | undefined {
@@ -424,17 +432,3 @@ function formatTooltipTokens(n: number): string {
 function formatCost(usd: number): string {
   return usd.toFixed(2);
 }
-
-const resetTimeFormatter = new Intl.DateTimeFormat('en-GB', {
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-});
-
-const resetDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-});

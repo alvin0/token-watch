@@ -2,7 +2,7 @@ import { DEFAULT_PRICING, FALLBACK_RATE } from "./defaultPricing.js";
 import type { ModelRate, PricingTable } from "./types.js";
 
 export interface PricingMergeAudit {
-  ignoredKnownModelOverrides: string[];
+  overriddenBundledModels: string[];
   ignoredFallbackOverride: boolean;
   customModelOverrides: string[];
 }
@@ -15,7 +15,7 @@ export interface MergedPricingConfig {
 
 export function mergePricingConfig(overrides: PricingTable = {}): MergedPricingConfig {
   const custom: PricingTable = {};
-  const ignoredKnownModelOverrides: string[] = [];
+  const overriddenBundledModels: string[] = [];
   let ignoredFallbackOverride = false;
 
   for (const [model, rate] of Object.entries(overrides)) {
@@ -27,8 +27,7 @@ export function mergePricingConfig(overrides: PricingTable = {}): MergedPricingC
       continue;
     }
     if (Object.hasOwn(DEFAULT_PRICING, model)) {
-      ignoredKnownModelOverrides.push(model);
-      continue;
+      overriddenBundledModels.push(model);
     }
     custom[model] = rate;
   }
@@ -37,7 +36,7 @@ export function mergePricingConfig(overrides: PricingTable = {}): MergedPricingC
     table: { ...DEFAULT_PRICING, ...custom },
     fallbackRate: FALLBACK_RATE,
     audit: {
-      ignoredKnownModelOverrides: ignoredKnownModelOverrides.sort(),
+      overriddenBundledModels: overriddenBundledModels.sort(),
       ignoredFallbackOverride,
       customModelOverrides: Object.keys(custom).sort(),
     },

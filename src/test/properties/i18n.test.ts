@@ -26,6 +26,15 @@ suite("Application localization", () => {
     assert.strictEqual(state.get(LANGUAGE_STORAGE_KEY), "ja");
     await assert.rejects(() => controller.setLanguage("fr"), /Unsupported language/);
   });
+
+  test("emits the selected language after it changes", async () => {
+    const controller = new LanguageController(new MemoryMemento() as unknown as vscode.Memento);
+    const changes: string[] = [];
+    controller.onDidChange((language) => changes.push(language));
+
+    await controller.setLanguage("vi");
+    assert.deepStrictEqual(changes, ["vi"]);
+  });
 });
 
 class MemoryMemento {

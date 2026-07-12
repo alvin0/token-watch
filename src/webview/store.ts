@@ -12,7 +12,7 @@ import type {
   HostMessage,
   WebviewRequest,
 } from "../shared/protocol";
-import type { Source, Effort } from "../shared/types";
+import type { Source, Effort, PricingTable } from "../shared/types";
 import type { AppLanguage } from "../shared/i18n";
 import type { HourlyAggregate } from "../shared/storeTypes";
 import { queryRangeForPeriod } from "./lib/periodData";
@@ -56,6 +56,8 @@ export interface StatusSlice {
   currency?: DisplayCurrencyConfig;
   costAlertRules: CostAlertRule[];
   costAlertSettingsLoaded: boolean;
+  pricingTable: PricingTable;
+  pricingSettingsLoaded: boolean;
   language: AppLanguage;
 }
 
@@ -68,6 +70,7 @@ interface Actions {
   requestDailyHourly: (day: string) => void;
   clearDailyHourly: () => void;
   saveCostAlertRules: (rules: CostAlertRule[]) => Promise<void>;
+  savePricingTable: (table: PricingTable) => Promise<void>;
   setLanguage: (language: AppLanguage) => void;
 }
 
@@ -82,8 +85,10 @@ let activeDailyHourlyQueryId: string | undefined;
 let currentDailyHourlyDay: string | undefined;
 let refreshQueued = false;
 let costAlertSaveCounter = 0;
+let pricingSaveCounter = 0;
 const queryGenerations = new Map<string, number>();
 const pendingCostAlertSaves = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
+const pendingPricingSaves = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
 function nextId(): string {
   return `q-${++queryCounter}`;
 }
@@ -120,6 +125,8 @@ export const useStore = create<Store>((set, get) => ({
   currency: undefined,
   costAlertRules: [],
   costAlertSettingsLoaded: false,
+  pricingTable: {},
+  pricingSettingsLoaded: false,
   language: "en",
 
   // Actions
@@ -247,6 +254,14 @@ export const useStore = create<Store>((set, get) => ({
     });
   },
 
+  savePricingTable(table) {
+    const requestId = `pricing-save-${++pricingSaveCounter}`;
+    return new Promise<void>((resolve, reject) => {
+      pendingPricingSaves.set(requestId, { resolve, reject });
+      vscodeApi.postMessage({ type: "savePricingSettings", requestId, table } satisfies WebviewRequest);
+    });
+  },
+
   setLanguage(language) {
     const msg: WebviewRequest = { type: "setLanguage", language };
     vscodeApi.postMessage(msg);
@@ -304,6 +319,22 @@ window.addEventListener("message", (event: MessageEvent<HostMessage>) => {
     case "costAlertSettingsError": {
       const pending = pendingCostAlertSaves.get(msg.requestId);
       pendingCostAlertSaves.delete(msg.requestId);
+      pending?.reject(new Error(msg.message));
+      break;
+    }
+    case "pricingSettings":
+      useStore.setState({ pricingTable: msg.table, pricingSettingsLoaded: true });
+      break;
+    case "pricingSettingsSaved": {
+      useStore.setState({ pricingTable: msg.table, pricingSettingsLoaded: true });
+      const pending = pendingPricingSaves.get(msg.requestId);
+      pendingPricingSaves.delete(msg.requestId);
+      pending?.resolve();
+      break;
+    }
+    case "pricingSettingsError": {
+      const pending = pendingPricingSaves.get(msg.requestId);
+      pendingPricingSaves.delete(msg.requestId);
       pending?.reject(new Error(msg.message));
       break;
     }

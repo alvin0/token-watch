@@ -7,6 +7,8 @@ import { mapCodexUsageToRateLimitInfo, type CodexUsageResponse } from "./shared/
 import { mapClaudeUsageToRateLimitInfo, type ClaudeUsageResponse } from "./shared/claudeUsage";
 import type { CostAlertController } from "./host/CostAlertController";
 import type { LanguageController } from "./host/LanguageController";
+import { effectivePricingOverrides, getConfig } from "./host/config";
+import type { ModelRate, PricingTable } from "./shared/types";
 import type {
   WebviewRequest,
   HostMessage,
@@ -239,6 +241,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
         // WebView loaded — push initial status
         this.pushStatus();
         this.pushCostAlertSettings();
+        this.pushPricingSettings();
         this.pushLanguage();
         void this.refreshCodexUsage();
         void this.refreshClaudeUsage();
@@ -263,7 +266,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
         this.coordinator.rescan();
         break;
       case "updatePricing":
-        this.coordinator.updatePricing(message.table);
+        void this.coordinator.updatePricing(message.table).catch((error) => {
+          console.error("[TokenWatch] pricing update failed:", error);
+        });
         break;
       case "refreshUsage":
         if (message.provider === "codex") {
@@ -293,6 +298,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           },
         );
         break;
+      case "savePricingSettings":
+        if (typeof message.requestId !== "string" || !message.requestId) {
+          console.warn("[TokenWatch] ignored pricing settings with an invalid request ID");
+          break;
+        }
+        this.savePricingSettings(message.table).then(
+          (table) => this.postMessage({ type: "pricingSettingsSaved", requestId: message.requestId, table }),
+          (error) => {
+            const errorMessage = error instanceof Error ? error.message : "Unable to save custom pricing.";
+            this.postMessage({ type: "pricingSettingsError", requestId: message.requestId, message: errorMessage });
+          },
+        );
+        break;
       case "setLanguage":
         this.language.setLanguage(message.language).then(
           (language) => this.postMessage({ type: "language", language }),
@@ -304,6 +322,35 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 
   private pushCostAlertSettings(): void {
     this.postMessage({ type: "costAlertSettings", rules: this.costAlerts.getRules() });
+  }
+
+  private pushPricingSettings(): void {
+    this.postMessage({ type: "pricingSettings", table: getConfig().pricing.overrides });
+  }
+
+  private async savePricingSettings(table: PricingTable): Promise<PricingTable> {
+    const validated: PricingTable = {};
+    for (const [rawModel, rawRate] of Object.entries(table)) {
+      const model = rawModel.trim();
+      if (!model || model.startsWith("$")) {
+        throw new Error(`Invalid custom model ID: ${rawModel}`);
+      }
+      validated[model] = validateModelRate(rawRate, model);
+    }
+    const pricingConfig = vscode.workspace.getConfiguration("tokenWatch");
+    const inspected = pricingConfig.inspect<PricingTable>("pricing.overrides");
+    const target = inspected?.workspaceFolderValue !== undefined
+      ? vscode.ConfigurationTarget.WorkspaceFolder
+      : inspected?.workspaceValue !== undefined
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+    await pricingConfig.update(
+      "pricing.overrides",
+      validated,
+      target,
+    );
+    await this.coordinator.updatePricing(effectivePricingOverrides(validated));
+    return validated;
   }
 
   private pushLanguage(): void {
@@ -347,4 +394,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 </body>
 </html>`;
   }
+}
+
+function validateModelRate(rate: ModelRate, model: string): ModelRate {
+  const validated: ModelRate = {};
+  for (const key of ["inputPer1K", "cachedInputPer1K", "cacheCreationPer1K", "outputPer1K"] as const) {
+    const value = rate[key];
+    if (value !== undefined) {
+      if (!Number.isFinite(value) || value < 0) {
+        throw new Error(`Invalid ${key} rate for ${model}`);
+      }
+      validated[key] = value;
+    }
+  }
+  if (validated.inputPer1K === undefined || validated.outputPer1K === undefined) {
+    throw new Error(`Input and output rates are required for ${model}`);
+  }
+  return validated;
 }
