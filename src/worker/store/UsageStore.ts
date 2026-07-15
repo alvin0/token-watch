@@ -21,10 +21,12 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
 
 import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
 import type { ModelRate, Source } from "../../shared/types.js";
@@ -37,6 +39,8 @@ import { PricingEngine } from "../pricing.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const FULL_DISCOVERY_META_KEY = "last_full_discovery_utc";
+const WRITE_LOCK_STALE_MS = 5 * 60 * 1000;
+const SNAPSHOT_READ_ATTEMPTS = 3;
 
 interface FileCatalogCandidate {
   filePath: string;
@@ -59,10 +63,22 @@ export interface CursorRankInfo {
 
 type CatalogIngestDecision = "skip" | "append" | "reingest" | "firstRead";
 
+export class ConcurrentUsageStoreWriteError extends Error {
+  constructor() {
+    super("Usage database changed in another VS Code window; refusing to overwrite it");
+    this.name = "ConcurrentUsageStoreWriteError";
+  }
+}
+
+export function isConcurrentUsageStoreWriteError(error: unknown): error is ConcurrentUsageStoreWriteError {
+  return error instanceof ConcurrentUsageStoreWriteError;
+}
+
 export class UsageStore {
   private db: Database | null = null;
   private dbPath: string = "";
   private sqlJs: initSqlJs.SqlJsStatic | null = null;
+  private persistedFileIdentity: string | undefined;
 
   async open(dbPath: string, sqlJs?: initSqlJs.SqlJsStatic): Promise<void> {
     this.dbPath = dbPath;
@@ -70,10 +86,12 @@ export class UsageStore {
     this.sqlJs = SQL;
 
     if (existsSync(dbPath)) {
-      const buffer = readFileSync(dbPath);
-      this.db = new SQL.Database(buffer);
+      const snapshot = readStableSnapshot(dbPath);
+      this.db = new SQL.Database(snapshot.buffer);
+      this.persistedFileIdentity = snapshot.identity;
     } else {
       this.db = new SQL.Database();
+      this.persistedFileIdentity = undefined;
     }
   }
 
@@ -137,19 +155,37 @@ export class UsageStore {
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
-    const tempPath = `${this.dbPath}.tmp`;
-    const fd = openSync(tempPath, "w");
+    const lockPath = `${this.dbPath}.lock`;
+    const lock = acquireWriteLock(lockPath);
     try {
-      writeFileSync(fd, data);
-      fsyncSync(fd);
+      const currentFileIdentity = existsSync(this.dbPath)
+        ? fileIdentity(this.dbPath)
+        : undefined;
+      if (currentFileIdentity !== this.persistedFileIdentity) {
+        throw new ConcurrentUsageStoreWriteError();
+      }
+      const tempPath = `${this.dbPath}.${process.pid}.${randomUUID()}.tmp`;
+      const fd = openSync(tempPath, "w");
+      try {
+        writeFileSync(fd, data);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      try {
+        renameSync(tempPath, this.dbPath);
+        this.persistedFileIdentity = fileIdentity(this.dbPath);
+      } catch (error) {
+        try { unlinkSync(tempPath); } catch { /* best-effort cleanup */ }
+        throw error;
+      }
     } finally {
-      closeSync(fd);
-    }
-    try {
-      renameSync(tempPath, this.dbPath);
-    } catch (error) {
-      try { unlinkSync(tempPath); } catch { /* best-effort cleanup */ }
-      throw error;
+      closeSync(lock.fd);
+      try {
+        if (readFileSync(lockPath, "utf8") === lock.owner) {
+          unlinkSync(lockPath);
+        }
+      } catch { /* best-effort cleanup */ }
     }
   }
 
@@ -158,8 +194,10 @@ export class UsageStore {
     if (!this.sqlJs || !this.dbPath || !existsSync(this.dbPath)) {
       throw new Error("Cannot reload store before a persisted database has been opened");
     }
+    const snapshot = readStableSnapshot(this.dbPath);
     this.db?.close();
-    this.db = new this.sqlJs.Database(readFileSync(this.dbPath));
+    this.db = new this.sqlJs.Database(snapshot.buffer);
+    this.persistedFileIdentity = snapshot.identity;
   }
 
   getCursor(filePath: string): FileCursor | undefined {
@@ -1143,6 +1181,82 @@ export class UsageStore {
     }
     const value = Number(result[0].values[0][0]);
     return Number.isFinite(value) ? value : undefined;
+  }
+}
+
+function fileIdentity(path: string): string {
+  const stats = statSync(path, { bigint: true });
+  return [stats.dev, stats.ino, stats.size, stats.mtimeNs, stats.ctimeNs].join(":");
+}
+
+function readStableSnapshot(path: string): { buffer: Buffer; identity: string } {
+  for (let attempt = 0; attempt < SNAPSHOT_READ_ATTEMPTS; attempt += 1) {
+    try {
+      const identityBefore = fileIdentity(path);
+      const buffer = readFileSync(path);
+      const identityAfter = fileIdentity(path);
+      if (identityBefore === identityAfter) {
+        return { buffer, identity: identityAfter };
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+  throw new ConcurrentUsageStoreWriteError();
+}
+
+function acquireWriteLock(lockPath: string): { fd: number; owner: string } {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let fd: number;
+    try {
+      fd = openSync(lockPath, "wx");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") {
+        throw error;
+      }
+      let ownerPid: number;
+      let lockAgeMs: number;
+      try {
+        ownerPid = Number(readFileSync(lockPath, "utf8").split(":", 1)[0]);
+        lockAgeMs = Date.now() - statSync(lockPath).mtimeMs;
+      } catch (readError) {
+        if ((readError as NodeJS.ErrnoException).code === "ENOENT") {
+          continue;
+        }
+        throw readError;
+      }
+      const ownerIsDead = Number.isInteger(ownerPid) && ownerPid > 0 && !isProcessAlive(ownerPid);
+      if (attempt === 0 && (ownerIsDead || lockAgeMs > WRITE_LOCK_STALE_MS)) {
+        try { unlinkSync(lockPath); } catch { /* another process recovered it */ }
+        continue;
+      }
+      throw new ConcurrentUsageStoreWriteError();
+    }
+    const owner = `${process.pid}:${randomUUID()}`;
+    try {
+      writeFileSync(fd, owner);
+      return { fd, owner };
+    } catch (error) {
+      closeSync(fd);
+      try { unlinkSync(lockPath); } catch { /* best-effort cleanup */ }
+      throw error;
+    }
+  }
+  throw new ConcurrentUsageStoreWriteError();
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 

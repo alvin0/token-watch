@@ -12,12 +12,24 @@ import type { AnalyticsResult, ClaudeRateLimitInfo, RateLimitInfo, UsageQuotaWin
 import type { DailyAggregate } from '../shared/storeTypes';
 import { localeTag, translate, type AppLanguage } from '../shared/i18n';
 import type { LanguageController } from './LanguageController';
+import { UsageRefreshTimer } from './UsageRefreshTimer';
 
 /**
  * Manages the status bar item showing today's token usage and cost.
  * Refreshes on coordinator data changes; respects the tokenWatch.statusBar.enabled setting.
  */
 const CODEX_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+
+export function millisecondsUntilNextLocalDay(now: Date): number {
+  const nextDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  return nextDay.getTime() - now.getTime();
+}
+
+export function localDayRange(now: Date): { fromUtc: number; toUtc: number } {
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfNextDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  return { fromUtc: startOfDay.getTime(), toUtc: startOfNextDay.getTime() - 1 };
+}
 
 export interface StatusBarUsageSummary {
   tokens: number;
@@ -45,8 +57,15 @@ export class StatusBarController implements vscode.Disposable {
   private lastClaudeUsageRefreshAt = 0;
   private latestCodexUsageMessage: string | undefined;
   private latestClaudeUsageMessage: string | undefined;
+  private dayRolloverTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly codexConnection = new CodexConnection({ authFile: DEFAULT_CODEX_AUTH_FILE });
   private readonly claudeConnection = new ClaudeConnection();
+  private readonly codexUsageTimer = new UsageRefreshTimer(() => {
+    void this.refreshCodexUsage(true);
+  });
+  private readonly claudeUsageTimer = new UsageRefreshTimer(() => {
+    void this.refreshClaudeUsage(true);
+  });
 
   constructor(
     private readonly coordinator: IngestionCoordinator,
@@ -65,25 +84,26 @@ export class StatusBarController implements vscode.Disposable {
       ...(language ? [language.onDidChange(() => this.updateItem())] : []),
     );
 
-    void this.refreshCodexUsage(true);
-    void this.refreshClaudeUsage(true);
+    if (enabled) {
+      void this.refreshCodexUsage(true);
+      void this.refreshClaudeUsage(true);
+    }
     void this.refresh();
+    this.scheduleDayRollover();
   }
 
   async refresh(): Promise<void> {
     const version = ++this.refreshVersion;
     void this.refreshCodexUsage();
     void this.refreshClaudeUsage();
-    const now = new Date();
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const endOfDay = new Date(startOfDay.getTime() + 86_400_000 - 1);
+    const range = localDayRange(new Date());
 
     let result: AnalyticsResult;
     try {
       result = await this.coordinator.query({
         view: 'series',
         granularity: 'day',
-        range: { fromUtc: startOfDay.getTime(), toUtc: endOfDay.getTime() },
+        range,
       });
     } catch (err) {
       if (!this.disposed && version === this.refreshVersion) {
@@ -103,21 +123,39 @@ export class StatusBarController implements vscode.Disposable {
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
     if (enabled) {
-      void this.refreshCodexUsage();
-      void this.refreshClaudeUsage();
+      void this.refreshCodexUsage(true);
+      void this.refreshClaudeUsage(true);
       this.item.show();
     } else {
+      this.clearUsageTimers();
       this.item.hide();
     }
   }
 
   dispose(): void {
     this.disposed = true;
+    this.clearUsageTimers();
+    if (this.dayRolloverTimer) {
+      clearTimeout(this.dayRolloverTimer);
+      this.dayRolloverTimer = undefined;
+    }
     this.item.dispose();
     for (const d of this.disposables) {
       d.dispose();
     }
     this.disposables = [];
+  }
+
+  private scheduleDayRollover(): void {
+    const delay = millisecondsUntilNextLocalDay(new Date());
+    this.dayRolloverTimer = setTimeout(() => {
+      this.dayRolloverTimer = undefined;
+      if (this.disposed) {
+        return;
+      }
+      this.scheduleDayRollover();
+      void this.refresh();
+    }, delay);
   }
 
   private updateItem(): void {
@@ -143,7 +181,7 @@ export class StatusBarController implements vscode.Disposable {
   }
 
   private async refreshCodexUsage(force = false): Promise<void> {
-    if (this.disposed) {
+    if (this.disposed || !this.enabled) {
       return;
     }
     if (this.rateLimitRefreshPromise) {
@@ -191,6 +229,7 @@ export class StatusBarController implements vscode.Disposable {
         }
       } finally {
         this.rateLimitRefreshPromise = undefined;
+        this.scheduleCodexUsageRefresh();
       }
     })();
 
@@ -199,7 +238,7 @@ export class StatusBarController implements vscode.Disposable {
   }
 
   private async refreshClaudeUsage(force = false): Promise<void> {
-    if (this.disposed) {
+    if (this.disposed || !this.enabled) {
       return;
     }
     if (this.claudeRateLimitRefreshPromise) {
@@ -235,11 +274,35 @@ export class StatusBarController implements vscode.Disposable {
         }
       } finally {
         this.claudeRateLimitRefreshPromise = undefined;
+        this.scheduleClaudeUsageRefresh();
       }
     })();
 
     this.claudeRateLimitRefreshPromise = refreshPromise;
     return refreshPromise;
+  }
+
+  private scheduleCodexUsageRefresh(): void {
+    if (this.disposed || !this.enabled) {
+      this.codexUsageTimer.clear();
+      return;
+    }
+    const cache = this.codexConnection.usageCacheInfo();
+    this.codexUsageTimer.schedule(cache.retryPending ? cache.retryAtUtc : undefined);
+  }
+
+  private scheduleClaudeUsageRefresh(): void {
+    if (this.disposed || !this.enabled) {
+      this.claudeUsageTimer.clear();
+      return;
+    }
+    const cache = this.claudeConnection.usageCacheInfo();
+    this.claudeUsageTimer.schedule(cache.retryPending ? cache.retryAtUtc : undefined);
+  }
+
+  private clearUsageTimers(): void {
+    this.codexUsageTimer.clear();
+    this.claudeUsageTimer.clear();
   }
 }
 

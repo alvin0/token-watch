@@ -135,7 +135,10 @@ suite("Claude provider connection", () => {
     await assert.rejects(connection.usageInfo(), /network unavailable/);
     await assert.rejects(connection.usageInfo({ force: true }), ClaudeUsageRateLimitError);
     assert.strictEqual(callCount, 1);
-    assert.deepStrictEqual(connection.usageCacheInfo(), { retryAtUtc: now + 60_000 });
+    assert.deepStrictEqual(connection.usageCacheInfo(), {
+      retryAtUtc: now + 60_000,
+      retryPending: true,
+    });
   });
 
   test("refreshes expired Claude OAuth credentials and persists rotated tokens", async () => {

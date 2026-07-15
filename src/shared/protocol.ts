@@ -180,6 +180,7 @@ export type UsageProvider = "codex" | "claude";
 export interface UsageCacheInfo {
   cachedAtUtc?: number;
   retryAtUtc?: number;
+  retryPending?: boolean;
   refreshing?: boolean;
   unavailable?: boolean;
 }

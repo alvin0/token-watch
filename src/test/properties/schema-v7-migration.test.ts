@@ -1,10 +1,10 @@
 import * as assert from "node:assert";
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import initSqlJs from "sql.js";
 
-import { UsageStore } from "../../worker/store/UsageStore.js";
+import { ConcurrentUsageStoreWriteError, UsageStore } from "../../worker/store/UsageStore.js";
 import { SCHEMA_SQL, SCHEMA_VERSION } from "../../worker/store/schema.js";
 
 suite("Schema v7 migration", () => {
@@ -49,6 +49,10 @@ suite("Schema v7 migration", () => {
       assert.strictEqual(store.getCursor("/non-empty.jsonl")?.parseRevision, 1);
       store.flush();
       assert.strictEqual(existsSync(`${path}.tmp`), false);
+      assert.deepStrictEqual(
+        readdirSync(tmpdir()).filter((name) => name.startsWith(`${basename(path)}.`) && name.endsWith(".tmp")),
+        [],
+      );
     } finally {
       store.close();
       try { unlinkSync(path); } catch { /* ignore */ }
@@ -67,6 +71,56 @@ suite("Schema v7 migration", () => {
     await assert.rejects(() => store.migrateOrRebuild(), /newer than supported/);
     assert.ok(db.exec("SELECT name FROM sqlite_master WHERE name = 'usage_record'").length > 0);
     store.close();
+  });
+
+  test("refuses to overwrite a snapshot changed by another store", async () => {
+    const SQL = await initSqlJs();
+    const path = join(tmpdir(), `token-watch-concurrent-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const seed = new UsageStore();
+    const first = new UsageStore();
+    const second = new UsageStore();
+    const verify = new UsageStore();
+    try {
+      await seed.open(path, SQL);
+      await seed.migrateOrRebuild();
+      seed.flush();
+      seed.close();
+
+      await first.open(path, SQL);
+      await second.open(path, SQL);
+      first.setMeta("writer:first", "kept");
+      first.flush();
+      second.setMeta("writer:second", "must-not-overwrite");
+
+      assert.throws(() => second.flush(), ConcurrentUsageStoreWriteError);
+
+      writeFileSync(`${path}.lock`, `${process.pid}:other-worker`);
+      assert.throws(() => first.flush(), ConcurrentUsageStoreWriteError);
+      assert.strictEqual(existsSync(`${path}.lock`), true);
+      unlinkSync(`${path}.lock`);
+
+      writeFileSync(`${path}.lock`, "");
+      assert.throws(() => first.flush(), ConcurrentUsageStoreWriteError);
+      unlinkSync(`${path}.lock`);
+
+      await verify.open(path, SQL);
+      assert.strictEqual(verify.getMeta("writer:first"), "kept");
+      assert.strictEqual(verify.getMeta("writer:second"), undefined);
+
+      second.reload();
+      assert.strictEqual(second.getMeta("writer:first"), "kept");
+      second.setMeta("writer:second", "after-reload");
+      second.flush();
+      verify.reload();
+      assert.strictEqual(verify.getMeta("writer:second"), "after-reload");
+    } finally {
+      seed.close();
+      first.close();
+      second.close();
+      verify.close();
+      try { unlinkSync(path); } catch { /* ignore */ }
+      try { unlinkSync(`${path}.lock`); } catch { /* ignore */ }
+    }
   });
 
   test("migrates v7 to v8 without changing usage token data", async () => {

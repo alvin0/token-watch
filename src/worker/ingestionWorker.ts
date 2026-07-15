@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { copyFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import initSqlJs from "sql.js";
-import { UsageStore } from "./store/UsageStore.js";
+import { isConcurrentUsageStoreWriteError, UsageStore } from "./store/UsageStore.js";
 import { PricingEngine } from "./pricing.js";
 import { AnalyticsService } from "./analytics.js";
 import { mergePricingConfig, type PricingMergeAudit } from "../shared/pricingMerge.js";
@@ -56,6 +56,20 @@ const AGGREGATE_ALGORITHM_VERSION = "2";
 
 function post(event: WorkerEvent): void {
   parentPort!.postMessage(event);
+}
+
+function reloadAfterConcurrentWrite(): void {
+  if (!store || !pricing) {
+    return;
+  }
+  store.reload();
+  analytics = new AnalyticsService(store.database, pricing);
+  post({
+    type: "ingestComplete",
+    freshness: analytics.freshness(),
+    warnings: analytics.warnings(),
+    dataChanged: true,
+  });
 }
 
 /**
@@ -149,7 +163,13 @@ async function runScanQueue(first?: ScanRequest): Promise<void> {
         try {
           await handleScanAndIngest(current);
         } catch (err: unknown) {
-          if (store && pricing && current.forceFull) {
+          if (store && pricing && isConcurrentUsageStoreWriteError(err)) {
+            try {
+              reloadAfterConcurrentWrite();
+            } catch {
+              // Preserve the concurrent-write error; reload is best-effort.
+            }
+          } else if (store && pricing && current.forceFull) {
             try {
               store.reload();
               analytics = new AnalyticsService(store.database, pricing);
@@ -184,8 +204,12 @@ async function runScanQueue(first?: ScanRequest): Promise<void> {
         } catch (err: unknown) {
           if (store && pricing) {
             try {
-              store.reload();
-              analytics = new AnalyticsService(store.database, pricing);
+              if (isConcurrentUsageStoreWriteError(err)) {
+                reloadAfterConcurrentWrite();
+              } else {
+                store.reload();
+                analytics = new AnalyticsService(store.database, pricing);
+              }
             } catch {
               // Preserve the reset error; reload is best-effort.
             }
@@ -210,7 +234,15 @@ async function runScanQueue(first?: ScanRequest): Promise<void> {
     scanInProgress = false;
     if (pendingFlush && store) {
       pendingFlush = false;
-      store.flush();
+      try {
+        store.flush();
+      } catch (error) {
+        if (isConcurrentUsageStoreWriteError(error)) {
+          reloadAfterConcurrentWrite();
+        } else {
+          post({ type: "error", scope: "flush", message: sanitizeErrorMessage(error) });
+        }
+      }
     }
     drainPendingAnalyticsQueries();
     if (pendingScan) {
@@ -361,17 +393,33 @@ function handleUpdatePricing(request: Extract<WorkerRequest, { type: "updatePric
   if (!store || !pricing || !analytics) {
     throw new Error("Worker not initialized");
   }
-  const merged = mergePricingConfig(request.table);
-  pricingAudit = merged.audit;
-  pricing = new PricingEngine(merged.table, merged.fallbackRate);
-  analytics = new AnalyticsService(store.database, pricing);
-  queries.rebuildAggregates(store.database, pricing);
-  store.setMeta(PRICING_FINGERPRINT_META_KEY, pricingFingerprint(merged.table, merged.fallbackRate));
-  activePricingFingerprint = pricingFingerprint(merged.table, merged.fallbackRate);
-  store.setMeta(AGGREGATE_ALGORITHM_META_KEY, AGGREGATE_ALGORITHM_VERSION);
-  // Recompute unmapped models with new pricing table
-  store.recordUnmappedModels(pricing.unmappedModels(store.distinctModels()), pricing.fallbackModelRate());
-  store.flush();
+  const previousPricing = pricing;
+  const previousPricingAudit = pricingAudit;
+  const previousPricingFingerprint = activePricingFingerprint;
+  try {
+    const merged = mergePricingConfig(request.table);
+    pricingAudit = merged.audit;
+    pricing = new PricingEngine(merged.table, merged.fallbackRate);
+    analytics = new AnalyticsService(store.database, pricing);
+    queries.rebuildAggregates(store.database, pricing);
+    store.setMeta(PRICING_FINGERPRINT_META_KEY, pricingFingerprint(merged.table, merged.fallbackRate));
+    activePricingFingerprint = pricingFingerprint(merged.table, merged.fallbackRate);
+    store.setMeta(AGGREGATE_ALGORITHM_META_KEY, AGGREGATE_ALGORITHM_VERSION);
+    // Recompute unmapped models with new pricing table
+    store.recordUnmappedModels(pricing.unmappedModels(store.distinctModels()), pricing.fallbackModelRate());
+    store.flush();
+  } catch (error) {
+    pricing = previousPricing;
+    pricingAudit = previousPricingAudit;
+    activePricingFingerprint = previousPricingFingerprint;
+    if (isConcurrentUsageStoreWriteError(error)) {
+      reloadAfterConcurrentWrite();
+    } else {
+      store.reload();
+      analytics = new AnalyticsService(store.database, pricing);
+    }
+    throw error;
+  }
   post({
     type: "ingestComplete",
     freshness: analytics.freshness(),
@@ -469,7 +517,15 @@ async function handleInit(req: Extract<WorkerRequest, { type: "init" }>): Promis
   store.setMeta(PRICING_FINGERPRINT_META_KEY, expectedPricingFingerprint);
   store.setMeta(AGGREGATE_ALGORITHM_META_KEY, AGGREGATE_ALGORITHM_VERSION);
   store.recordUnmappedModels(pricing.unmappedModels(store.distinctModels()), pricing.fallbackModelRate());
-  store.flush();
+  try {
+    store.flush();
+  } catch (error) {
+    if (!isConcurrentUsageStoreWriteError(error)) {
+      throw error;
+    }
+    store.reload();
+    analytics = new AnalyticsService(store.database, pricing);
+  }
 
   post({ type: "ready", schema });
 }

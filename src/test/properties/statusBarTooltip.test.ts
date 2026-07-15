@@ -1,5 +1,11 @@
 import * as assert from 'node:assert';
-import { buildStatusBarTooltip, summarizeDailySeries, type StatusBarUsageSummary } from '../../host/StatusBarController.js';
+import {
+  buildStatusBarTooltip,
+  localDayRange,
+  millisecondsUntilNextLocalDay,
+  summarizeDailySeries,
+  type StatusBarUsageSummary,
+} from '../../host/StatusBarController.js';
 
 suite('Status bar tooltip', () => {
   const summary: StatusBarUsageSummary = {
@@ -31,6 +37,34 @@ suite('Status bar tooltip', () => {
       tokens: 165, cost: 1.5, inputTokens: 11, outputTokens: 22,
       cacheReadTokens: 33, cacheCreationTokens: 44, reasoningTokens: 55, turns: 3,
     });
+  });
+
+  test('schedules the next refresh at the following local midnight', () => {
+    const now = new Date(2026, 6, 15, 23, 59, 30, 250);
+
+    assert.strictEqual(millisecondsUntilNextLocalDay(now), 29_750);
+    assert.deepStrictEqual(localDayRange(now), {
+      fromUtc: new Date(2026, 6, 15).getTime(),
+      toUtc: new Date(2026, 6, 16).getTime() - 1,
+    });
+  });
+
+  test('uses the actual local-day length across daylight-saving transitions', () => {
+    const originalTimezone = process.env.TZ;
+    try {
+      process.env.TZ = 'America/New_York';
+      const springForward = localDayRange(new Date(2026, 2, 8, 12));
+      const fallBack = localDayRange(new Date(2026, 10, 1, 12));
+
+      assert.strictEqual(springForward.toUtc - springForward.fromUtc + 1, 23 * 60 * 60 * 1000);
+      assert.strictEqual(fallBack.toUtc - fallBack.fromUtc + 1, 25 * 60 * 60 * 1000);
+    } finally {
+      if (originalTimezone === undefined) {
+        delete process.env.TZ;
+      } else {
+        process.env.TZ = originalTimezone;
+      }
+    }
   });
 
   test('uses the compact current-usage summary layout', () => {

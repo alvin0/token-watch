@@ -19,6 +19,7 @@ import type {
   UsageCacheInfo,
   WarningInfo,
 } from "./shared/protocol";
+import { UsageRefreshTimer } from "./host/UsageRefreshTimer";
 
 const USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -41,6 +42,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   private lastCodexUsageRefreshAt = 0;
   private lastClaudeUsageRefreshAt = 0;
   private disposed = false;
+  private readonly codexUsageTimer = new UsageRefreshTimer(() => {
+    void this.refreshCodexUsage(true);
+  });
+  private readonly claudeUsageTimer = new UsageRefreshTimer(() => {
+    void this.refreshClaudeUsage(true);
+  });
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -82,8 +89,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     };
 
     webviewView.webview.html = this._getHtml(webviewView.webview);
-    void this.refreshCodexUsage(true);
-    void this.refreshClaudeUsage(true);
+    if (webviewView.visible) {
+      void this.refreshCodexUsage(true);
+      void this.refreshClaudeUsage(true);
+    }
 
     // WebView → host message relay
     webviewView.webview.onDidReceiveMessage(
@@ -95,9 +104,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     );
 
     this.disposables.push(
+      webviewView.onDidChangeVisibility(() => {
+        if (this.view !== webviewView) {
+          return;
+        }
+        if (webviewView.visible) {
+          void this.refreshCodexUsage(true);
+          void this.refreshClaudeUsage(true);
+        } else {
+          this.clearUsageTimers();
+        }
+      }),
       webviewView.onDidDispose(() => {
         if (this.view === webviewView) {
           this.view = undefined;
+          this.clearUsageTimers();
         }
       }),
     );
@@ -107,6 +128,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     if (this.disposed) { return; }
     this.disposed = true;
     this.view = undefined;
+    this.clearUsageTimers();
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
@@ -133,6 +155,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   }
 
   private async refreshClaudeUsage(force = false, bypassCache = false): Promise<void> {
+    if (!this.isUsageActive()) {
+      return;
+    }
     if (this.claudeRateLimitRefreshPromise) {
       return this.claudeRateLimitRefreshPromise;
     }
@@ -176,6 +201,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           unavailable: !this.latestClaudeRateLimit,
         };
         this.pushStatus();
+        this.scheduleClaudeUsageRefresh();
       });
 
     this.claudeRateLimitRefreshPromise = refreshPromise;
@@ -183,6 +209,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   }
 
   private async refreshCodexUsage(force = false, bypassCache = false): Promise<void> {
+    if (!this.isUsageActive()) {
+      return;
+    }
     if (this.rateLimitRefreshPromise) {
       return this.rateLimitRefreshPromise;
     }
@@ -226,10 +255,38 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           unavailable: !this.latestRateLimit,
         };
         this.pushStatus();
+        this.scheduleCodexUsageRefresh();
       });
 
     this.rateLimitRefreshPromise = refreshPromise;
     return refreshPromise;
+  }
+
+  private isUsageActive(): boolean {
+    return !this.disposed && Boolean(this.view?.visible);
+  }
+
+  private scheduleCodexUsageRefresh(): void {
+    if (!this.isUsageActive()) {
+      this.codexUsageTimer.clear();
+      return;
+    }
+    const cache = this.codexConnection.usageCacheInfo();
+    this.codexUsageTimer.schedule(cache.retryPending ? cache.retryAtUtc : undefined);
+  }
+
+  private scheduleClaudeUsageRefresh(): void {
+    if (!this.isUsageActive()) {
+      this.claudeUsageTimer.clear();
+      return;
+    }
+    const cache = this.claudeConnection.usageCacheInfo();
+    this.claudeUsageTimer.schedule(cache.retryPending ? cache.retryAtUtc : undefined);
+  }
+
+  private clearUsageTimers(): void {
+    this.codexUsageTimer.clear();
+    this.claudeUsageTimer.clear();
   }
 
   private handleWebviewMessage(message: WebviewRequest): void {

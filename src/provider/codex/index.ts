@@ -128,7 +128,7 @@ export class CodexConnection {
     return {
       ...(cached ? { cachedAtUtc: cached.cachedAt } : {}),
       ...(cooldown > now
-        ? { retryAtUtc: cooldown }
+        ? { retryAtUtc: cooldown, retryPending: true }
         : cached && cached.expiresAt > now
           ? { retryAtUtc: cached.expiresAt }
           : {}),

@@ -52,6 +52,40 @@ export function ProviderUsageCard({
   const retryAtLabel = formatUsageTime(t("quota.retryAt"), cacheInfo?.retryAtUtc, locale);
   const retryWaiting = Boolean(cacheInfo?.retryAtUtc && cacheInfo.retryAtUtc > Date.now());
   const retryDisabled = Boolean(cacheInfo?.refreshing) || retryWaiting;
+  const retryLabel = cacheInfo?.refreshing
+    ? t("common.refreshing")
+    : retryWaiting
+      ? retryAtLabel
+      : t("common.retry");
+  const unavailable = Boolean(
+    cacheInfo?.unavailable
+    && layout.primaryWindows.length === 0
+    && layout.additionalLimitCount === 0,
+  );
+
+  if (unavailable) {
+    return (
+      <section className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e] tw-px-3 tw-py-2.5">
+        <div className="tw-min-w-0 tw-truncate tw-text-[10px] tw-font-medium tw-uppercase tw-tracking-wide">
+          {title}
+        </div>
+        <div className="tw-flex tw-shrink-0 tw-items-center tw-gap-2">
+          <div className="tw-flex tw-items-center tw-gap-1.5 tw-text-[9px] tw-text-[var(--vscode-descriptionForeground)]">
+            <span className="tw-h-1.5 tw-w-1.5 tw-rounded-full tw-bg-[var(--vscode-descriptionForeground)]" />
+            {t("common.unavailable")}
+          </div>
+          <button
+            type="button"
+            disabled={retryDisabled}
+            onClick={() => vscodeApi.postMessage({ type: "refreshUsage", provider })}
+            className="tw-rounded tw-border tw-border-[#34344a] tw-px-2 tw-py-0.5 tw-text-[8px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] enabled:tw-cursor-pointer enabled:hover:tw-bg-[#25253a] disabled:tw-cursor-not-allowed disabled:tw-opacity-50"
+          >
+            {retryLabel}
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e]">
@@ -60,9 +94,9 @@ export function ProviderUsageCard({
           <div className="tw-truncate tw-text-[10px] tw-font-medium tw-uppercase tw-tracking-wide">
             {title}
           </div>
-          <div className={`tw-flex tw-shrink-0 tw-items-center tw-gap-1.5 tw-text-[9px] ${cacheInfo?.unavailable && windows.length === 0 ? "tw-text-[var(--vscode-descriptionForeground)]" : "tw-text-[#89d185]"}`}>
-            <span className={`tw-h-1.5 tw-w-1.5 tw-rounded-full ${cacheInfo?.unavailable && windows.length === 0 ? "tw-bg-[var(--vscode-descriptionForeground)]" : "tw-bg-[#89d185]"}`} />
-            {cacheInfo?.unavailable && windows.length === 0 ? t("common.unavailable") : t("common.active")}
+          <div className="tw-flex tw-shrink-0 tw-items-center tw-gap-1.5 tw-text-[9px] tw-text-[#89d185]">
+            <span className="tw-h-1.5 tw-w-1.5 tw-rounded-full tw-bg-[#89d185]" />
+            {t("common.active")}
           </div>
         </div>
 
@@ -71,12 +105,6 @@ export function ProviderUsageCard({
             {layout.primaryWindows.map((window) => (
               <CompactQuota key={window.id} window={window} locale={locale} />
             ))}
-          </div>
-        )}
-
-        {layout.primaryWindows.length === 0 && cacheInfo?.unavailable && (
-          <div className="tw-mt-2 tw-text-[9px] tw-text-[var(--vscode-descriptionForeground)]">
-            {t("quota.dataUnavailable")}
           </div>
         )}
 
@@ -91,11 +119,7 @@ export function ProviderUsageCard({
               onClick={() => vscodeApi.postMessage({ type: "refreshUsage", provider })}
               className="tw-shrink-0 tw-rounded tw-border tw-border-[#34344a] tw-px-2 tw-py-0.5 tw-text-[8px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] enabled:tw-cursor-pointer enabled:hover:tw-bg-[#25253a] disabled:tw-cursor-not-allowed disabled:tw-opacity-50"
             >
-              {cacheInfo.refreshing
-                ? t("common.refreshing")
-                : retryWaiting
-                  ? retryAtLabel
-                  : t("common.retry")}
+              {retryLabel}
             </button>
           </div>
         )}

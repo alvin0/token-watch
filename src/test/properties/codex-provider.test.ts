@@ -253,7 +253,10 @@ suite("Codex provider connection", () => {
     await assert.rejects(connection.usageInfo(), CodexUsageRateLimitError);
     await assert.rejects(connection.usageInfo({ force: true }), CodexUsageRateLimitError);
     assert.strictEqual(callCount, 1);
-    assert.deepStrictEqual(connection.usageCacheInfo(), { retryAtUtc: now + 90_000 });
+    assert.deepStrictEqual(connection.usageCacheInfo(), {
+      retryAtUtc: now + 90_000,
+      retryPending: true,
+    });
   });
 
   test("parses environments info JSON from WHAM_ENVIRONMENTS_ENDPOINT", async () => {
