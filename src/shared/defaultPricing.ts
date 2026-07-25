@@ -67,6 +67,7 @@ export const DEFAULT_PRICING: PricingTable = {
   "o4-mini": { inputPer1K: 0.0011, cachedInputPer1K: 0.000275, outputPer1K: 0.0044 },
   "codex-mini-latest": { inputPer1K: 0.0015, cachedInputPer1K: 0.000375, outputPer1K: 0.006 },
   // Claude (cacheCreationPer1K uses Anthropic's 5m cache write price)
+  "claude-opus-5": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, cacheCreationPer1K: 0.00625, outputPer1K: 0.025 },
   "claude-opus-4.8": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, cacheCreationPer1K: 0.00625, outputPer1K: 0.025 },
   "claude-opus-4-8": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, cacheCreationPer1K: 0.00625, outputPer1K: 0.025 },
   "claude-opus-4.7": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, cacheCreationPer1K: 0.00625, outputPer1K: 0.025 },

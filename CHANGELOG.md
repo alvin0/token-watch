@@ -2,6 +2,10 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.1.3]
+
+- Added bundled pricing for Claude Opus 5.
+
 ## [0.1.2]
 
 - Added custom model pricing, with prices entered in USD per 1 million tokens.

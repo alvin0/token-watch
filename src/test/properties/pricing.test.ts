@@ -84,6 +84,12 @@ suite("PricingEngine property tests", () => {
   });
 
   test("Bundled Claude pricing matches current Anthropic MTok rates", () => {
+    assert.deepStrictEqual(DEFAULT_PRICING["claude-opus-5"], {
+      inputPer1K: 0.005,
+      cachedInputPer1K: 0.0005,
+      cacheCreationPer1K: 0.00625,
+      outputPer1K: 0.025,
+    });
     assert.deepStrictEqual(DEFAULT_PRICING["claude-opus-4.8"], {
       inputPer1K: 0.005,
       cachedInputPer1K: 0.0005,
