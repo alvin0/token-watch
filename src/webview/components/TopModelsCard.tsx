@@ -83,6 +83,9 @@ export function TopModelsCard() {
   const visibleCount = expanded ? EXPANDED_COUNT : COLLAPSED_COUNT;
   const visibleModels = allModels.slice(0, visibleCount);
   const sortedModels = sortModelUsage(allModels, sortKey, sortDirection);
+  const hiddenModels = allModels.length - visibleModels.length;
+  const canToggle = allModels.length > COLLAPSED_COUNT;
+  const showFooter = hiddenModels > 0 || canToggle;
 
   const changeSort = (key: ModelSortKey) => {
     if (key === sortKey) {
@@ -110,26 +113,30 @@ export function TopModelsCard() {
           currency={currency}
         />
 
-        <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-[#2a2a3a] tw-bg-[#141426] tw-px-3 tw-py-2">
-          <button
-            type="button"
-            onClick={() => setModalOpen(true)}
-            className="tw-cursor-pointer tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-underline"
-          >
-            {t("models.viewAll", { count: allModels.length.toLocaleString(locale) })}
-          </button>
-          {allModels.length > COLLAPSED_COUNT && (
-            <button
-              type="button"
-              aria-expanded={expanded}
-              onClick={() => setExpanded((value) => !value)}
-              className="tw-flex tw-cursor-pointer tw-items-center tw-gap-1.5 tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-underline"
-            >
-              {expanded ? t("common.showLess") : t("common.showMore")}
-              <span aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
-            </button>
-          )}
-        </div>
+        {showFooter && (
+          <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-[#2a2a3a] tw-bg-[#141426] tw-px-3 tw-py-2">
+            {hiddenModels > 0 ? (
+              <button
+                type="button"
+                onClick={() => setModalOpen(true)}
+                className="tw-cursor-pointer tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-underline"
+              >
+                {t("models.viewAll", { count: allModels.length.toLocaleString(locale) })}
+              </button>
+            ) : <span />}
+            {canToggle && (
+              <button
+                type="button"
+                aria-expanded={expanded}
+                onClick={() => setExpanded((value) => !value)}
+                className="tw-flex tw-cursor-pointer tw-items-center tw-gap-1.5 tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-underline"
+              >
+                {expanded ? t("common.showLess") : t("common.showMore")}
+                <span aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
+              </button>
+            )}
+          </div>
+        )}
       </section>
 
       {modalOpen && (

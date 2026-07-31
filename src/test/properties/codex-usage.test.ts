@@ -1,6 +1,7 @@
 import * as assert from "node:assert";
 
 import {
+  codexPlanInfo,
   formatDurationShort,
   formatPercent,
   mapCodexUsageToRateLimitInfo,
@@ -96,6 +97,15 @@ suite("Codex usage mapping", () => {
     });
 
     assert.ok(!info?.windows.some((window) => /spark/i.test(window.label)));
+  });
+
+  test("labels the ChatGPT plan of the signed-in account", () => {
+    assert.deepStrictEqual(codexPlanInfo("prolite"), { id: "prolite", label: "Pro Lite" });
+    assert.deepStrictEqual(codexPlanInfo(" Plus "), { id: "plus", label: "Plus" });
+    assert.deepStrictEqual(codexPlanInfo("team"), { id: "team", label: "Team" });
+    assert.deepStrictEqual(codexPlanInfo("future_tier"), { id: "future_tier", label: "Future Tier" });
+    assert.strictEqual(codexPlanInfo(""), undefined);
+    assert.strictEqual(codexPlanInfo(undefined), undefined);
   });
 
   test("formats compact remaining-time and percentage labels", () => {

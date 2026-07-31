@@ -167,6 +167,40 @@ suite('Status bar tooltip', () => {
     assert.ok(!tooltip.includes('GPT-5.3-Codex-Spark'));
   });
 
+  test('shows the account plan next to each provider heading', () => {
+    const tooltip = buildStatusBarTooltip(
+      summary,
+      { windows: [{ id: 'codex:primary', label: '5h limit', usedPct: 17 }] },
+      undefined,
+      { windows: [{ id: 'session', label: '5h limit', usedPct: 12 }] },
+      undefined,
+      'en',
+      { id: 'prolite', label: 'Pro Lite' },
+      { id: 'team', label: 'Team' },
+    );
+
+    assert.ok(tooltip.includes('\nCODEX (Pro Lite)\n'));
+    assert.ok(tooltip.includes('\nCLAUDE CODE (Team)\n'));
+    assert.ok(!/plan/i.test(tooltip));
+  });
+
+  test('shows the account plan when usage itself is unavailable', () => {
+    const tooltip = buildStatusBarTooltip(
+      summary,
+      undefined,
+      'Codex usage not available',
+      undefined,
+      'Claude Code usage not available',
+      'vi',
+      { id: 'prolite', label: 'Pro Lite' },
+      { id: 'team', label: 'Team' },
+    );
+
+    assert.ok(tooltip.includes('CODEX (Pro Lite)\nKhông có dữ liệu sử dụng'));
+    assert.ok(tooltip.includes('CLAUDE CODE (Team)\nKhông có dữ liệu sử dụng'));
+    assert.ok(!/gói/i.test(tooltip));
+  });
+
   test('shows unavailable message when Claude Code usage cannot be fetched', () => {
     const tooltip = buildStatusBarTooltip(
       summary,

@@ -11,6 +11,7 @@ import {
   WHAM_USAGE_ENDPOINT,
   readCodexAuthMode,
   readCodexAuthSnapshot,
+  readCodexPlanType,
   resolveCodexAuthPath,
 } from "../../provider/codex/index.js";
 
@@ -52,6 +53,36 @@ suite("Codex provider connection", () => {
     const authMode = await readCodexAuthMode(authFile);
 
     assert.strictEqual(authMode, "browser");
+  });
+
+  test("reads the ChatGPT plan from the id_token claims", async () => {
+    const authFile = join(tmpDir, "auth.json");
+    writeFileSync(
+      authFile,
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: {
+          id_token: makeJwt({ "https://api.openai.com/auth": { chatgpt_plan_type: "prolite" } }),
+          access_token: "access-token",
+          refresh_token: "refresh-token",
+        },
+      }),
+    );
+
+    assert.strictEqual(await readCodexPlanType(authFile), "prolite");
+  });
+
+  test("reports no plan when the auth file carries no id_token", async () => {
+    const authFile = join(tmpDir, "auth.json");
+    writeFileSync(
+      authFile,
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: { access_token: "access-token", refresh_token: "refresh-token" },
+      }),
+    );
+
+    assert.strictEqual(await readCodexPlanType(authFile), undefined);
   });
 
   test("rejects unsupported auth_mode when reading auth snapshot", async () => {

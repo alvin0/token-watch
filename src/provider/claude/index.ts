@@ -27,6 +27,7 @@ interface ClaudeAiOauthCredentials {
   refreshToken?: string;
   expiresAt?: number;
   refreshTokenExpiresAt?: number;
+  subscriptionType?: string;
   [key: string]: unknown;
 }
 
@@ -39,6 +40,7 @@ export interface ClaudeAuthSnapshot {
   accessToken: string;
   refreshToken: string;
   expiresAt?: number;
+  subscriptionType?: string;
   credentials: ClaudeCredentials;
   storage: "file" | "keychain";
   path?: string;
@@ -261,14 +263,21 @@ function authSnapshot(
   if (!refreshToken) {
     throw new Error("Claude credentials are missing claudeAiOauth.refreshToken");
   }
+  const subscriptionType = typeof oauth?.subscriptionType === "string" ? oauth.subscriptionType.trim() : "";
   return {
     accessToken,
     refreshToken,
     ...(isFiniteNumber(oauth?.expiresAt) ? { expiresAt: oauth.expiresAt } : {}),
+    ...(subscriptionType ? { subscriptionType } : {}),
     credentials,
     storage,
     ...(filePath ? { path: filePath } : {}),
   };
+}
+
+/** Subscription tier of the signed-in Claude account, read from the stored credentials. */
+export async function readClaudeSubscriptionType(options: ClaudeConnectionOptions = {}): Promise<string | undefined> {
+  return (await readClaudeAuthSnapshot(options)).subscriptionType;
 }
 
 async function refreshClaudeAuthSnapshot(

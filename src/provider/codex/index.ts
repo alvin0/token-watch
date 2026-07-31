@@ -231,6 +231,14 @@ export async function readCodexAuthMode(authFile = DEFAULT_CODEX_AUTH_FILE): Pro
   return typeof auth.auth_mode === "string" ? auth.auth_mode : undefined;
 }
 
+/** ChatGPT plan of the signed-in account, read from the `id_token` claims. */
+export async function readCodexPlanType(authFile = DEFAULT_CODEX_AUTH_FILE): Promise<string | undefined> {
+  const resolved = resolveCodexAuthPath(authFile);
+  const auth = await readCodexAuthFile(resolved);
+  const idToken = typeof auth.tokens?.id_token === "string" ? auth.tokens.id_token : undefined;
+  return idToken ? extractPlanType(idToken) : undefined;
+}
+
 export function resolveCodexAuthPath(authFile = DEFAULT_CODEX_AUTH_FILE) {
   if (authFile === "~") {return os.homedir();}
   if (authFile.startsWith("~/") || authFile.startsWith("~\\")) {
@@ -369,19 +377,34 @@ function accessTokenExpiresAt(accessToken: string) {
 }
 
 function extractAccountId(token: string) {
+  const claims = decodeTokenClaims(token);
+  if (!claims) {return undefined;}
+  return claims.chatgpt_account_id
+    || claims["https://api.openai.com/auth"]?.chatgpt_account_id
+    || claims.organizations?.[0]?.id;
+}
+
+function extractPlanType(token: string) {
+  const claims = decodeTokenClaims(token);
+  if (!claims) {return undefined;}
+  return claims.chatgpt_plan_type || claims["https://api.openai.com/auth"]?.chatgpt_plan_type;
+}
+
+interface CodexTokenClaims {
+  chatgpt_account_id?: string;
+  chatgpt_plan_type?: string;
+  organizations?: Array<{ id: string }>;
+  "https://api.openai.com/auth"?: {
+    chatgpt_account_id?: string;
+    chatgpt_plan_type?: string;
+  };
+}
+
+function decodeTokenClaims(token: string): CodexTokenClaims | undefined {
   const payload = token.split(".")[1];
   if (!payload) {return undefined;}
   try {
-    const claims = JSON.parse(Buffer.from(payload, "base64url").toString()) as {
-      chatgpt_account_id?: string;
-      organizations?: Array<{ id: string }>;
-      "https://api.openai.com/auth"?: {
-        chatgpt_account_id?: string;
-      };
-    };
-    return claims.chatgpt_account_id
-      || claims["https://api.openai.com/auth"]?.chatgpt_account_id
-      || claims.organizations?.[0]?.id;
+    return JSON.parse(Buffer.from(payload, "base64url").toString()) as CodexTokenClaims;
   } catch {
     return undefined;
   }

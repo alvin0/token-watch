@@ -177,6 +177,12 @@ export interface DisplayCurrencyConfig {
 
 export type UsageProvider = "codex" | "claude";
 
+/** Subscription plan of the signed-in account for a usage provider, informational. */
+export interface UsagePlanInfo {
+  id?: string;      // raw provider value, e.g. "prolite", "max_20x"
+  label: string;    // display label, e.g. "Pro Lite", "Max 20×"
+}
+
 export interface UsageCacheInfo {
   cachedAtUtc?: number;
   retryAtUtc?: number;
@@ -228,5 +234,7 @@ export type HostMessage =
       claudeRateLimit?: ClaudeRateLimitInfo;
       codexUsageCache?: UsageCacheInfo;
       claudeUsageCache?: UsageCacheInfo;
+      codexPlan?: UsagePlanInfo;
+      claudePlan?: UsagePlanInfo;
       currency?: DisplayCurrencyConfig;   // Req 6.5
     };

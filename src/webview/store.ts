@@ -8,6 +8,7 @@ import type {
   RateLimitInfo,
   DisplayCurrencyConfig,
   UsageCacheInfo,
+  UsagePlanInfo,
   CostAlertRule,
   HostMessage,
   WebviewRequest,
@@ -53,6 +54,8 @@ export interface StatusSlice {
   claudeRateLimit?: ClaudeRateLimitInfo;
   codexUsageCache?: UsageCacheInfo;
   claudeUsageCache?: UsageCacheInfo;
+  codexPlan?: UsagePlanInfo;
+  claudePlan?: UsagePlanInfo;
   currency?: DisplayCurrencyConfig;
   costAlertRules: CostAlertRule[];
   costAlertSettingsLoaded: boolean;
@@ -122,6 +125,8 @@ export const useStore = create<Store>((set, get) => ({
   claudeRateLimit: undefined,
   codexUsageCache: undefined,
   claudeUsageCache: undefined,
+  codexPlan: undefined,
+  claudePlan: undefined,
   currency: undefined,
   costAlertRules: [],
   costAlertSettingsLoaded: false,
@@ -350,6 +355,8 @@ window.addEventListener("message", (event: MessageEvent<HostMessage>) => {
         claudeRateLimit: msg.claudeRateLimit,
         codexUsageCache: msg.codexUsageCache,
         claudeUsageCache: msg.claudeUsageCache,
+        codexPlan: msg.codexPlan,
+        claudePlan: msg.claudePlan,
         currency: msg.currency,
       });
       break;

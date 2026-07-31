@@ -5,6 +5,7 @@ import { CodexConnection, DEFAULT_CODEX_AUTH_FILE, isCodexUsageRateLimitError } 
 import { ClaudeConnection, isClaudeUsageRateLimitError } from "./provider/claude";
 import { mapCodexUsageToRateLimitInfo, type CodexUsageResponse } from "./shared/codexUsage";
 import { mapClaudeUsageToRateLimitInfo, type ClaudeUsageResponse } from "./shared/claudeUsage";
+import { resolveClaudePlan, resolveCodexPlan } from "./host/usagePlan";
 import type { CostAlertController } from "./host/CostAlertController";
 import type { LanguageController } from "./host/LanguageController";
 import { effectivePricingOverrides, getConfig } from "./host/config";
@@ -17,6 +18,7 @@ import type {
   ClaudeRateLimitInfo,
   RateLimitInfo,
   UsageCacheInfo,
+  UsagePlanInfo,
   WarningInfo,
 } from "./shared/protocol";
 import { UsageRefreshTimer } from "./host/UsageRefreshTimer";
@@ -35,6 +37,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   private latestClaudeRateLimit: ClaudeRateLimitInfo | undefined;
   private latestCodexUsageCache: UsageCacheInfo | undefined;
   private latestClaudeUsageCache: UsageCacheInfo | undefined;
+  private latestCodexPlan: UsagePlanInfo | undefined;
+  private latestClaudePlan: UsagePlanInfo | undefined;
   private readonly codexConnection = new CodexConnection({ authFile: DEFAULT_CODEX_AUTH_FILE });
   private readonly claudeConnection = new ClaudeConnection();
   private rateLimitRefreshPromise: Promise<void> | undefined;
@@ -150,8 +154,18 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
       claudeRateLimit: this.latestClaudeRateLimit,
       codexUsageCache: this.latestCodexUsageCache,
       claudeUsageCache: this.latestClaudeUsageCache,
+      codexPlan: this.latestCodexPlan,
+      claudePlan: this.latestClaudePlan,
       currency: this.currency,
     });
+  }
+
+  private async refreshCodexPlan(planType?: string): Promise<void> {
+    this.latestCodexPlan = await resolveCodexPlan(planType, this.latestCodexPlan);
+  }
+
+  private async refreshClaudePlan(): Promise<void> {
+    this.latestClaudePlan = await resolveClaudePlan(this.latestClaudePlan);
   }
 
   private async refreshClaudeUsage(force = false, bypassCache = false): Promise<void> {
@@ -192,7 +206,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           unavailable: !this.latestClaudeRateLimit,
         };
       })
-      .finally(() => {
+      .finally(async () => {
+        await this.refreshClaudePlan();
         this.lastClaudeUsageRefreshAt = Date.now();
         this.claudeRateLimitRefreshPromise = undefined;
         this.latestClaudeUsageCache = {
@@ -226,8 +241,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     };
     this.pushStatus();
 
+    let codexPlanType: string | undefined;
     const refreshPromise = this.codexConnection.usageInfo<CodexUsageResponse>({ force: bypassCache })
       .then((usage) => {
+        codexPlanType = usage.plan_type;
         const rateLimit = mapCodexUsageToRateLimitInfo(usage);
         if (rateLimit) {
           this.latestRateLimit = rateLimit;
@@ -246,7 +263,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           unavailable: !this.latestRateLimit,
         };
       })
-      .finally(() => {
+      .finally(async () => {
+        await this.refreshCodexPlan(codexPlanType);
         this.lastCodexUsageRefreshAt = Date.now();
         this.rateLimitRefreshPromise = undefined;
         this.latestCodexUsageCache = {

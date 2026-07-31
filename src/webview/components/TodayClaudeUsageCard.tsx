@@ -5,10 +5,11 @@ import { useTranslation } from "../i18n";
 export function TodayClaudeUsageCard() {
   const rateLimit = useStore((s) => s.claudeRateLimit);
   const cacheInfo = useStore((s) => s.claudeUsageCache);
+  const plan = useStore((s) => s.claudePlan);
   const { t } = useTranslation();
   if (!rateLimit && !cacheInfo) {
     return null;
   }
 
-  return <ProviderUsageCard provider="claude" title={t("quota.claude")} windows={rateLimit?.windows ?? []} cacheInfo={cacheInfo} />;
+  return <ProviderUsageCard provider="claude" title={t("quota.claude")} windows={rateLimit?.windows ?? []} cacheInfo={cacheInfo} plan={plan} />;
 }

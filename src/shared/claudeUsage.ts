@@ -1,4 +1,4 @@
-import type { ClaudeRateLimitInfo, UsageQuotaWindow } from "./protocol";
+import type { ClaudeRateLimitInfo, UsagePlanInfo, UsageQuotaWindow } from "./protocol";
 
 export interface ClaudeUsageResponse {
   five_hour?: ClaudeUsageWindow | null;
@@ -43,6 +43,26 @@ export function mapClaudeUsageToRateLimitInfo(
     weeklyResetAtUtc: timestamp(weekly?.resets_at),
     windows,
   };
+}
+
+/** Subscription slugs stored on `claudeAiOauth.subscriptionType`. */
+const CLAUDE_PLAN_LABELS: Record<string, string> = {
+  free: "Free",
+  pro: "Pro",
+  max: "Max",
+  max_5x: "Max 5×",
+  max_20x: "Max 20×",
+  team: "Team",
+  enterprise: "Enterprise",
+};
+
+/** Map a Claude subscription slug to the plan shown next to Claude Code quotas. */
+export function claudePlanInfo(subscriptionType?: string): UsagePlanInfo | undefined {
+  const id = subscriptionType?.trim().toLowerCase();
+  if (!id) {
+    return undefined;
+  }
+  return { id, label: CLAUDE_PLAN_LABELS[id] ?? humanize(id) };
 }
 
 function collectClaudeWindows(usage: ClaudeUsageResponse): UsageQuotaWindow[] {

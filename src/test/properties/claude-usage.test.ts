@@ -1,5 +1,5 @@
 import * as assert from "node:assert";
-import { mapClaudeUsageToRateLimitInfo } from "../../shared/claudeUsage.js";
+import { claudePlanInfo, mapClaudeUsageToRateLimitInfo } from "../../shared/claudeUsage.js";
 
 suite("Claude usage mapping", () => {
   test("maps Claude Code five-hour and weekly quota windows", () => {
@@ -79,6 +79,15 @@ suite("Claude usage mapping", () => {
 
     assert.deepStrictEqual(info?.windows.map((window) => window.label), ["5h limit", "Weekly"]);
     assert.ok(!info?.windows.some((window) => /fable/i.test(window.label)));
+  });
+
+  test("labels the subscription plan of the signed-in account", () => {
+    assert.deepStrictEqual(claudePlanInfo("team"), { id: "team", label: "Team" });
+    assert.deepStrictEqual(claudePlanInfo("max_20x"), { id: "max_20x", label: "Max 20×" });
+    assert.deepStrictEqual(claudePlanInfo(" Pro "), { id: "pro", label: "Pro" });
+    assert.deepStrictEqual(claudePlanInfo("future_tier"), { id: "future_tier", label: "Future Tier" });
+    assert.strictEqual(claudePlanInfo(""), undefined);
+    assert.strictEqual(claudePlanInfo(undefined), undefined);
   });
 
   test("omits scoped limits that contain no usage values", () => {

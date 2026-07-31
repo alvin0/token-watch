@@ -8,7 +8,8 @@ import {
   type CodexUsageResponse,
 } from '../shared/codexUsage';
 import { mapClaudeUsageToRateLimitInfo, type ClaudeUsageResponse } from '../shared/claudeUsage';
-import type { AnalyticsResult, ClaudeRateLimitInfo, RateLimitInfo, UsageQuotaWindow } from '../shared/protocol';
+import type { AnalyticsResult, ClaudeRateLimitInfo, RateLimitInfo, UsagePlanInfo, UsageQuotaWindow } from '../shared/protocol';
+import { resolveClaudePlan, resolveCodexPlan } from './usagePlan';
 import type { DailyAggregate } from '../shared/storeTypes';
 import { localeTag, translate, type AppLanguage } from '../shared/i18n';
 import type { LanguageController } from './LanguageController';
@@ -57,6 +58,8 @@ export class StatusBarController implements vscode.Disposable {
   private lastClaudeUsageRefreshAt = 0;
   private latestCodexUsageMessage: string | undefined;
   private latestClaudeUsageMessage: string | undefined;
+  private latestCodexPlan: UsagePlanInfo | undefined;
+  private latestClaudePlan: UsagePlanInfo | undefined;
   private dayRolloverTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly codexConnection = new CodexConnection({ authFile: DEFAULT_CODEX_AUTH_FILE });
   private readonly claudeConnection = new ClaudeConnection();
@@ -173,6 +176,8 @@ export class StatusBarController implements vscode.Disposable {
       this.latestClaudeRateLimit,
       this.latestClaudeUsageMessage,
       this.language?.getLanguage(),
+      this.latestCodexPlan,
+      this.latestClaudePlan,
     );
 
     if (this.enabled) {
@@ -200,6 +205,7 @@ export class StatusBarController implements vscode.Disposable {
           }
           this.lastCodexUsageRefreshAt = Date.now();
           this.latestRateLimit = undefined;
+          this.latestCodexPlan = undefined;
           this.latestCodexUsageMessage = "unavailable";
           this.updateItem();
           return;
@@ -210,6 +216,7 @@ export class StatusBarController implements vscode.Disposable {
           return;
         }
         const rateLimit = mapCodexUsageToRateLimitInfo(usage);
+        this.latestCodexPlan = await resolveCodexPlan(usage.plan_type, this.latestCodexPlan);
         this.lastCodexUsageRefreshAt = Date.now();
         this.latestCodexUsageMessage = undefined;
         if (rateLimit) {
@@ -218,6 +225,7 @@ export class StatusBarController implements vscode.Disposable {
         this.updateItem();
       } catch (err) {
         if (!this.disposed) {
+          this.latestCodexPlan = await resolveCodexPlan(undefined, this.latestCodexPlan);
           this.lastCodexUsageRefreshAt = Date.now();
           if (!this.latestRateLimit) {
             this.latestCodexUsageMessage = "unavailable";
@@ -250,6 +258,7 @@ export class StatusBarController implements vscode.Disposable {
 
     const refreshPromise = (async () => {
       try {
+        this.latestClaudePlan = await resolveClaudePlan(this.latestClaudePlan);
         const usage = await this.claudeConnection.usageInfo<ClaudeUsageResponse>();
         if (this.disposed) {
           return;
@@ -335,6 +344,8 @@ export function buildStatusBarTooltip(
   claudeRateLimit?: ClaudeRateLimitInfo,
   claudeUsageMessage?: string,
   language: AppLanguage = "en",
+  codexPlan?: UsagePlanInfo,
+  claudePlan?: UsagePlanInfo,
 ): string {
   const lines = [
     translate(language, "statusBar.currentUsage"),
@@ -345,18 +356,18 @@ export function buildStatusBarTooltip(
   ];
 
   if (codexUsageMessage) {
-    lines.push('', 'CODEX', translate(language, "statusBar.usageUnavailable"));
+    lines.push('', providerTitle('CODEX', codexPlan), translate(language, "statusBar.usageUnavailable"));
   } else {
-    const codexLines = buildCodexUsageLines(rateLimit, language);
+    const codexLines = buildCodexUsageLines(rateLimit, language, codexPlan);
     if (codexLines.length > 0) {
       lines.push('', ...codexLines);
     }
   }
 
   if (claudeUsageMessage) {
-    lines.push('', 'CLAUDE CODE', translate(language, "statusBar.usageUnavailable"));
+    lines.push('', providerTitle('CLAUDE CODE', claudePlan), translate(language, "statusBar.usageUnavailable"));
   } else {
-    const claudeLines = buildClaudeUsageLines(claudeRateLimit, language);
+    const claudeLines = buildClaudeUsageLines(claudeRateLimit, language, claudePlan);
     if (claudeLines.length > 0) {
       lines.push('', ...claudeLines);
     }
@@ -365,18 +376,23 @@ export function buildStatusBarTooltip(
   return lines.join('\n');
 }
 
-function buildCodexUsageLines(rateLimit: RateLimitInfo | undefined, language: AppLanguage): string[] {
-  if (!rateLimit) {
-    return [];
-  }
-  return buildCompactUsageLines('CODEX', rateLimit.windows, ['codex:primary', 'codex:secondary'], language);
+/** Provider heading, carrying the account plan when it is known, e.g. `CODEX (Pro Lite)`. */
+function providerTitle(title: string, plan?: UsagePlanInfo): string {
+  return plan ? `${title} (${plan.label})` : title;
 }
 
-function buildClaudeUsageLines(rateLimit: ClaudeRateLimitInfo | undefined, language: AppLanguage): string[] {
+function buildCodexUsageLines(rateLimit: RateLimitInfo | undefined, language: AppLanguage, plan?: UsagePlanInfo): string[] {
   if (!rateLimit) {
     return [];
   }
-  return buildCompactUsageLines('CLAUDE CODE', rateLimit.windows, ['session', 'weekly'], language);
+  return buildCompactUsageLines(providerTitle('CODEX', plan), rateLimit.windows, ['codex:primary', 'codex:secondary'], language);
+}
+
+function buildClaudeUsageLines(rateLimit: ClaudeRateLimitInfo | undefined, language: AppLanguage, plan?: UsagePlanInfo): string[] {
+  if (!rateLimit) {
+    return [];
+  }
+  return buildCompactUsageLines(providerTitle('CLAUDE CODE', plan), rateLimit.windows, ['session', 'weekly'], language);
 }
 
 function buildCompactUsageLines(

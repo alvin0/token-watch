@@ -2,6 +2,14 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.1.4]
+
+- The Codex and Claude Code usage cards now show your account plan next to the title, for example `Codex Usage (Pro Lite)`.
+- The status bar tooltip shows the same plan next to each provider.
+- The plan still shows when usage data cannot be loaded, because it is read from your local sign-in details.
+- Top models no longer shows `View all models` when every model is already listed.
+- Updated bundled pricing for GPT-5.6 Terra and GPT-5.6 Luna.
+
 ## [0.1.3]
 
 - Added bundled pricing for Claude Opus 5.

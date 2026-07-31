@@ -1,4 +1,4 @@
-import type { RateLimitInfo, UsageQuotaWindow } from "./protocol";
+import type { RateLimitInfo, UsagePlanInfo, UsageQuotaWindow } from "./protocol";
 
 export interface CodexUsageResponse {
   plan_type?: string;
@@ -48,6 +48,37 @@ export function mapCodexUsageToRateLimitInfo(usage: CodexUsageResponse, fetchedA
     weeklyResetAtUtc: normalizeResetAtUtc(secondary?.reset_at),
     windows,
   };
+}
+
+/** ChatGPT plan slugs seen on `plan_type` / the `chatgpt_plan_type` id_token claim. */
+const CODEX_PLAN_LABELS: Record<string, string> = {
+  free: "Free",
+  go: "Go",
+  plus: "Plus",
+  pro: "Pro",
+  prolite: "Pro Lite",
+  pro_lite: "Pro Lite",
+  business: "Business",
+  team: "Team",
+  enterprise: "Enterprise",
+  edu: "Edu",
+};
+
+/** Map a ChatGPT plan slug to the plan shown next to Codex quotas. */
+export function codexPlanInfo(planType?: string): UsagePlanInfo | undefined {
+  const id = planType?.trim().toLowerCase();
+  if (!id) {
+    return undefined;
+  }
+  return { id, label: CODEX_PLAN_LABELS[id] ?? humanizePlan(id) };
+}
+
+function humanizePlan(id: string): string {
+  return id
+    .split(/[_\-\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function appendCodexWindows(

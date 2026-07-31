@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { formatPercent } from "../../shared/codexUsage";
-import type { UsageCacheInfo, UsageQuotaWindow } from "../../shared/protocol";
+import type { UsageCacheInfo, UsagePlanInfo, UsageQuotaWindow } from "../../shared/protocol";
 import {
   buildProviderQuotaLayout,
   quotaWindowLabel,
@@ -17,11 +17,13 @@ export function ProviderUsageCard({
   title,
   windows,
   cacheInfo,
+  plan,
 }: {
   provider: QuotaProvider;
   title: string;
   windows: UsageQuotaWindow[];
   cacheInfo?: UsageCacheInfo;
+  plan?: UsagePlanInfo;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [, refreshRetryState] = useState(0);
@@ -66,8 +68,11 @@ export function ProviderUsageCard({
   if (unavailable) {
     return (
       <section className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e] tw-px-3 tw-py-2.5">
-        <div className="tw-min-w-0 tw-truncate tw-text-[10px] tw-font-medium tw-uppercase tw-tracking-wide">
-          {title}
+        <div className="tw-flex tw-min-w-0 tw-items-center tw-gap-1.5">
+          <span className="tw-min-w-0 tw-truncate tw-text-[10px] tw-font-medium tw-uppercase tw-tracking-wide">
+            {title}
+          </span>
+          <PlanBadge plan={plan} />
         </div>
         <div className="tw-flex tw-shrink-0 tw-items-center tw-gap-2">
           <div className="tw-flex tw-items-center tw-gap-1.5 tw-text-[9px] tw-text-[var(--vscode-descriptionForeground)]">
@@ -91,8 +96,11 @@ export function ProviderUsageCard({
     <section className="tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e]">
       <div className="tw-p-3">
         <div className="tw-flex tw-items-center tw-justify-between tw-gap-3">
-          <div className="tw-truncate tw-text-[10px] tw-font-medium tw-uppercase tw-tracking-wide">
-            {title}
+          <div className="tw-flex tw-min-w-0 tw-items-center tw-gap-1.5">
+            <span className="tw-min-w-0 tw-truncate tw-text-[10px] tw-font-medium tw-uppercase tw-tracking-wide">
+              {title}
+            </span>
+            <PlanBadge plan={plan} />
           </div>
           <div className="tw-flex tw-shrink-0 tw-items-center tw-gap-1.5 tw-text-[9px] tw-text-[#89d185]">
             <span className="tw-h-1.5 tw-w-1.5 tw-rounded-full tw-bg-[#89d185]" />
@@ -155,6 +163,22 @@ export function ProviderUsageCard({
         </button>
       )}
     </section>
+  );
+}
+
+/** Subscription plan of the signed-in account for this provider, e.g. "(Pro Lite)". */
+function PlanBadge({ plan }: { plan?: UsagePlanInfo }) {
+  const { t } = useTranslation();
+  if (!plan) {
+    return null;
+  }
+  return (
+    <span
+      title={t("quota.planTitle")}
+      className="tw-shrink-0 tw-truncate tw-text-[9px] tw-font-medium tw-text-[var(--vscode-descriptionForeground)]"
+    >
+      ({plan.label})
+    </span>
   );
 }
 

@@ -8,6 +8,7 @@ import {
   ClaudeConnection,
   ClaudeUsageRateLimitError,
   readClaudeAuthSnapshot,
+  readClaudeSubscriptionType,
   resolveClaudeCredentialsPath,
 } from "../../provider/claude/index.js";
 
@@ -33,6 +34,12 @@ suite("Claude provider connection", () => {
     assert.strictEqual(snapshot.accessToken, "access-token");
     assert.strictEqual(snapshot.refreshToken, "refresh-token");
     assert.strictEqual(snapshot.storage, "file");
+  });
+
+  test("reads the subscription tier of the signed-in account", async () => {
+    const credentialsFile = writeCredentials(tmpDir, Date.now() + 60_000);
+
+    assert.strictEqual(await readClaudeSubscriptionType({ credentialsFile, platform: "linux" }), "pro");
   });
 
   test("calls the Claude usage endpoint with OAuth headers", async () => {
