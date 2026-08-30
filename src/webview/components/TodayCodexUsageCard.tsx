@@ -11,5 +11,14 @@ export function TodayCodexUsageCard() {
     return null;
   }
 
-  return <ProviderUsageCard provider="codex" title={t("quota.codex")} windows={rateLimit?.windows ?? []} cacheInfo={cacheInfo} plan={plan} />;
+  return (
+    <ProviderUsageCard
+      provider="codex"
+      title={t("quota.codex")}
+      windows={rateLimit?.windows ?? []}
+      cacheInfo={cacheInfo}
+      plan={plan}
+      limitResets={rateLimit?.limitResets}
+    />
+  );
 }

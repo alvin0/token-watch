@@ -17,7 +17,7 @@ export function RecentPeriodsCard() {
   const total = sumBuckets(buckets);
 
   return (
-    <section className="tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e]">
+    <section className="tw-overflow-hidden tw-rounded-lg tw-border tw-border-edge tw-bg-card">
       <div className="tw-p-3">
         <div className="tw-text-[10px] tw-font-medium tw-uppercase tw-tracking-wide">{t("recent.title")}</div>
 
@@ -37,7 +37,7 @@ export function RecentPeriodsCard() {
       </div>
 
       {expanded && (
-        <div className="tw-overflow-x-auto tw-border-t tw-border-[#2a2a3a]">
+        <div className="tw-overflow-x-auto tw-border-t tw-border-edge">
           <table className="tw-w-full tw-table-fixed tw-border-collapse tw-tabular-nums">
             <colgroup>
               <col style={{ width: "20%" }} />
@@ -59,7 +59,7 @@ export function RecentPeriodsCard() {
             </thead>
             <tbody>
               {buckets.map((bucket) => (
-                <tr key={bucket.key} className="tw-border-t tw-border-[#25253a] tw-text-[9px] hover:tw-bg-[#18182a]">
+                <tr key={bucket.key} className="tw-border-t tw-border-edge tw-text-[9px] hover:tw-bg-hover">
                   <td className="tw-truncate tw-px-3 tw-py-1.5 tw-text-left tw-font-medium" title={bucket.label}>{bucket.label}</td>
                   <MetricCell value={bucket.input} />
                   <MetricCell value={bucket.output} />
@@ -79,7 +79,7 @@ export function RecentPeriodsCard() {
         type="button"
         aria-expanded={expanded}
         onClick={() => setExpanded((value) => !value)}
-        className="tw-flex tw-w-full tw-cursor-pointer tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-[#2a2a3a] tw-bg-[#141426] tw-px-3 tw-py-2 tw-text-left hover:tw-bg-[#18182a]"
+        className="tw-flex tw-w-full tw-cursor-pointer tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-edge tw-bg-recessed tw-px-3 tw-py-2 tw-text-left hover:tw-bg-hover"
       >
         <span className="tw-min-w-0 tw-truncate tw-text-[9px] tw-text-[var(--vscode-descriptionForeground)]">
           {periodSpanLabel(period, t)}

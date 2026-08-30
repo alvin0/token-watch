@@ -2,6 +2,47 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Semantic surfaces mapped to the active VS Code theme, so the sidebar follows
+ * dark, light, and high-contrast themes instead of a fixed palette. Each token
+ * falls back through related theme colors for themes that omit one.
+ */
+:root {
+  --tk-ground: var(--vscode-sideBar-background, var(--vscode-editor-background, #1f1f1f));
+  --tk-ink: var(--vscode-foreground, #cccccc);
+
+  --tk-card: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  --tk-edge: var(--vscode-editorWidget-border, var(--vscode-widget-border, var(--vscode-panel-border)));
+  --tk-recessed: var(--vscode-sideBarSectionHeader-background, var(--vscode-editorWidget-background));
+  --tk-track: var(--vscode-input-background, var(--vscode-editorWidget-background));
+  --tk-hover: var(--vscode-list-hoverBackground, var(--vscode-toolbar-hoverBackground));
+  --tk-control: var(--vscode-button-border, var(--vscode-contrastBorder, var(--tk-edge)));
+  --tk-danger-bg: var(--vscode-inputValidation-errorBackground, var(--tk-hover));
+  /* Modal backdrop. VS Code exposes no scrim color, and a neutral dim is
+     correct over any theme — the tint must not come from a fixed palette. */
+  --tk-scrim: rgba(0, 0, 0, 0.55);
+}
+
+/*
+ * Themes are free to give sideBar, editorWidget, and sectionHeader the same
+ * color, which flattens the card hierarchy above into one solid block. Where
+ * color-mix is available, derive each surface from the theme's own ground and
+ * foreground instead, so every step stays visible in dark, light, and
+ * high-contrast themes while still being the theme's colors.
+ */
+@supports (color: color-mix(in srgb, red 50%, blue)) {
+  :root {
+    --tk-card: color-mix(in srgb, var(--tk-ground) 93%, var(--tk-ink) 7%);
+    --tk-recessed: color-mix(in srgb, var(--tk-ground) 96%, var(--tk-ink) 4%);
+    --tk-track: color-mix(in srgb, var(--tk-ground) 89%, var(--tk-ink) 11%);
+    --tk-hover: color-mix(in srgb, var(--tk-ground) 86%, var(--tk-ink) 14%);
+    /* High-contrast themes define contrastBorder and expect it on every edge. */
+    --tk-edge: var(--vscode-contrastBorder, color-mix(in srgb, var(--tk-ground) 80%, var(--tk-ink) 20%));
+    --tk-control: var(--vscode-contrastBorder, color-mix(in srgb, var(--tk-ground) 68%, var(--tk-ink) 32%));
+    --tk-danger-bg: color-mix(in srgb, var(--tk-ground) 80%, var(--vscode-charts-red, #f14c4c) 20%);
+  }
+}
+
 /* Reset button/input defaults that conflict with VS Code webview dark theme */
 button, input, select, textarea {
   background: transparent;
@@ -23,6 +64,9 @@ html, body, #root {
 /* Keep the dense sidebar readable without changing the established hierarchy. */
 body {
   font-size: calc(var(--vscode-font-size, 13px) + 1px);
+  /* Sit on the same ground as the surrounding sidebar so cards read as raised. */
+  background-color: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  color: var(--vscode-foreground);
 }
 
 .tw-text-\[7px\] { font-size: 8px; }

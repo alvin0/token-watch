@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
-import { formatPercent } from "../../shared/codexUsage";
-import type { UsageCacheInfo, UsagePlanInfo, UsageQuotaWindow } from "../../shared/protocol";
+import { formatPercent, LIMIT_RESET_EXPIRY_WARNING_MS } from "../../shared/codexUsage";
+import type {
+  UsageCacheInfo,
+  UsageLimitReset,
+  UsageLimitResetsInfo,
+  UsagePlanInfo,
+  UsageQuotaWindow,
+} from "../../shared/protocol";
 import {
   buildProviderQuotaLayout,
   quotaWindowLabel,
@@ -18,12 +24,14 @@ export function ProviderUsageCard({
   windows,
   cacheInfo,
   plan,
+  limitResets,
 }: {
   provider: QuotaProvider;
   title: string;
   windows: UsageQuotaWindow[];
   cacheInfo?: UsageCacheInfo;
   plan?: UsagePlanInfo;
+  limitResets?: UsageLimitResetsInfo;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [, refreshRetryState] = useState(0);
@@ -67,7 +75,7 @@ export function ProviderUsageCard({
 
   if (unavailable) {
     return (
-      <section className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e] tw-px-3 tw-py-2.5">
+      <section className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-rounded-lg tw-border tw-border-edge tw-bg-card tw-px-3 tw-py-2.5">
         <div className="tw-flex tw-min-w-0 tw-items-center tw-gap-1.5">
           <span className="tw-min-w-0 tw-truncate tw-text-[10px] tw-font-medium tw-uppercase tw-tracking-wide">
             {title}
@@ -83,7 +91,7 @@ export function ProviderUsageCard({
             type="button"
             disabled={retryDisabled}
             onClick={() => vscodeApi.postMessage({ type: "refreshUsage", provider })}
-            className="tw-rounded tw-border tw-border-[#34344a] tw-px-2 tw-py-0.5 tw-text-[8px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] enabled:tw-cursor-pointer enabled:hover:tw-bg-[#25253a] disabled:tw-cursor-not-allowed disabled:tw-opacity-50"
+            className="tw-rounded tw-border tw-border-control tw-px-2 tw-py-0.5 tw-text-[8px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] enabled:tw-cursor-pointer enabled:hover:tw-bg-hover disabled:tw-cursor-not-allowed disabled:tw-opacity-50"
           >
             {retryLabel}
           </button>
@@ -93,7 +101,7 @@ export function ProviderUsageCard({
   }
 
   return (
-    <section className="tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e]">
+    <section className="tw-overflow-hidden tw-rounded-lg tw-border tw-border-edge tw-bg-card">
       <div className="tw-p-3">
         <div className="tw-flex tw-items-center tw-justify-between tw-gap-3">
           <div className="tw-flex tw-min-w-0 tw-items-center tw-gap-1.5">
@@ -102,8 +110,8 @@ export function ProviderUsageCard({
             </span>
             <PlanBadge plan={plan} />
           </div>
-          <div className="tw-flex tw-shrink-0 tw-items-center tw-gap-1.5 tw-text-[9px] tw-text-[#89d185]">
-            <span className="tw-h-1.5 tw-w-1.5 tw-rounded-full tw-bg-[#89d185]" />
+          <div className="tw-flex tw-shrink-0 tw-items-center tw-gap-1.5 tw-text-[9px] tw-text-chart-green">
+            <span className="tw-h-1.5 tw-w-1.5 tw-rounded-full tw-bg-chart-green" />
             {t("common.active")}
           </div>
         </div>
@@ -116,8 +124,10 @@ export function ProviderUsageCard({
           </div>
         )}
 
+        <LimitResets limitResets={limitResets} locale={locale} />
+
         {cacheInfo && (
-          <div className="tw-mt-2 tw-flex tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-[#2a2a3a] tw-pt-2">
+          <div className="tw-mt-2 tw-flex tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-edge tw-pt-2">
             <span className="tw-min-w-0 tw-truncate tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">
               {cachedLabel ?? (cacheInfo.refreshing ? t("quota.fetching") : t("quota.noCache"))}
             </span>
@@ -125,7 +135,7 @@ export function ProviderUsageCard({
               type="button"
               disabled={retryDisabled}
               onClick={() => vscodeApi.postMessage({ type: "refreshUsage", provider })}
-              className="tw-shrink-0 tw-rounded tw-border tw-border-[#34344a] tw-px-2 tw-py-0.5 tw-text-[8px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] enabled:tw-cursor-pointer enabled:hover:tw-bg-[#25253a] disabled:tw-cursor-not-allowed disabled:tw-opacity-50"
+              className="tw-shrink-0 tw-rounded tw-border tw-border-control tw-px-2 tw-py-0.5 tw-text-[8px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] enabled:tw-cursor-pointer enabled:hover:tw-bg-hover disabled:tw-cursor-not-allowed disabled:tw-opacity-50"
             >
               {retryLabel}
             </button>
@@ -134,7 +144,7 @@ export function ProviderUsageCard({
       </div>
 
       {expanded && layout.additionalGroups.map((group) => (
-        <div key={group.id} className="tw-border-t tw-border-[#2a2a3a] tw-p-3">
+        <div key={group.id} className="tw-border-t tw-border-edge tw-p-3">
           <div className="tw-truncate tw-text-[9px] tw-font-medium tw-uppercase tw-text-[var(--vscode-foreground)]" title={group.name}>
             {group.name}
           </div>
@@ -151,7 +161,7 @@ export function ProviderUsageCard({
           type="button"
           aria-expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
-          className="tw-flex tw-w-full tw-cursor-pointer tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-[#2a2a3a] tw-bg-[#141426] tw-px-3 tw-py-2 tw-text-left hover:tw-bg-[#18182a]"
+          className="tw-flex tw-w-full tw-cursor-pointer tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-edge tw-bg-recessed tw-px-3 tw-py-2 tw-text-left hover:tw-bg-hover"
         >
           <span className="tw-min-w-0 tw-truncate tw-text-[9px] tw-text-[var(--vscode-descriptionForeground)]">
             {expanded ? "" : collapsedSummary}
@@ -164,6 +174,67 @@ export function ProviderUsageCard({
       )}
     </section>
   );
+}
+
+/**
+ * Usage limit resets left on the account — these restore a reached 5h/weekly
+ * limit and expire, so the deadline is called out once it is close. The reset
+ * itself is used inside Codex; this card only reports it.
+ */
+function LimitResets({ limitResets, locale }: { limitResets?: UsageLimitResetsInfo; locale: string }) {
+  const { t } = useTranslation();
+  if (!limitResets || limitResets.availableCount <= 0) {
+    return null;
+  }
+  const resets = limitResets.resets ?? [];
+  return (
+    <div className="tw-mt-2 tw-min-w-0" title={t("quota.limitResetsTitle")}>
+      <div className="tw-truncate tw-text-[9px] tw-font-semibold tw-tabular-nums tw-text-[var(--vscode-foreground)]">
+        {t("quota.limitResetsHeading", { count: limitResets.availableCount })}
+      </div>
+      {resets.length > 0 && (
+        <ol className="tw-mt-0.5 tw-min-w-0 tw-list-none tw-space-y-0.5 tw-p-0">
+          {resets.map((reset, index) => (
+            <LimitResetItem key={reset.id} reset={reset} position={index + 1} locale={locale} />
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+function LimitResetItem({
+  reset,
+  position,
+  locale,
+}: {
+  reset: UsageLimitReset;
+  position: number;
+  locale: string;
+}) {
+  const { t } = useTranslation();
+  const expiringSoon = isFiniteNumber(reset.expiresAtUtc)
+    && reset.expiresAtUtc - Date.now() <= LIMIT_RESET_EXPIRY_WARNING_MS;
+  const title = reset.title ?? t("quota.limitResetFallbackTitle");
+  const expiry = isFiniteNumber(reset.expiresAtUtc) ? formatExpiry(reset.expiresAtUtc, locale) : undefined;
+  return (
+    <li
+      className={`tw-truncate tw-text-[9px] tw-tabular-nums ${
+        expiringSoon ? "tw-text-chart-yellow" : "tw-text-[var(--vscode-descriptionForeground)]"
+      }`}
+    >
+      {expiry ? t("quota.limitResetItem", { position, title, date: expiry }) : `${position}. ${title}`}
+      {expiringSoon && ` (${t("quota.limitResetUseSoon")})`}
+    </li>
+  );
+}
+
+/** Day then time, composed separately so every locale reads date-first. */
+function formatExpiry(expiresAtUtc: number, locale: string): string {
+  const expiry = new Date(expiresAtUtc);
+  const day = new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }).format(expiry);
+  const time = new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", hour12: false }).format(expiry);
+  return `${day}, ${time}`;
 }
 
 /** Subscription plan of the signed-in account for this provider, e.g. "(Pro Lite)". */

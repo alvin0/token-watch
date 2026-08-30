@@ -1,4 +1,7 @@
-import type { RateLimitInfo, UsagePlanInfo, UsageQuotaWindow } from "./protocol";
+import type { RateLimitInfo, UsageLimitReset, UsageLimitResetsInfo, UsagePlanInfo, UsageQuotaWindow } from "./protocol";
+
+/** A usage limit reset is worth warning about once it is this close to expiring. */
+export const LIMIT_RESET_EXPIRY_WARNING_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface CodexUsageResponse {
   plan_type?: string;
@@ -9,6 +12,25 @@ export interface CodexUsageResponse {
     metered_feature?: string;
     rate_limit?: CodexRateLimit;
   }>;
+  rate_limit_reset_credits?: CodexResetCredits | null;
+}
+
+/** Usage-limit-reset count carried on the usage payload, from `rate_limit_reset_credits`. */
+export interface CodexResetCredits {
+  available_count?: number;
+}
+
+/** Response of `wham/rate-limit-reset-credits`, listing each reset and when it expires. */
+export interface CodexLimitResetsResponse {
+  credits?: Array<CodexLimitReset | null> | null;
+  available_count?: number;
+}
+
+export interface CodexLimitReset {
+  id?: string;
+  title?: string;
+  status?: string;
+  expires_at?: string;
 }
 
 export interface CodexRateLimit {
@@ -40,6 +62,8 @@ export function mapCodexUsageToRateLimitInfo(usage: CodexUsageResponse, fetchedA
     return undefined;
   }
 
+  const limitResets = mapCodexLimitResetCounts(usage);
+
   return {
     tsUtc: fetchedAtUtc,
     primaryPct: normalizeNumber(primary?.used_percent),
@@ -47,7 +71,47 @@ export function mapCodexUsageToRateLimitInfo(usage: CodexUsageResponse, fetchedA
     remainingSeconds: normalizeNumber(primary?.reset_after_seconds),
     weeklyResetAtUtc: normalizeResetAtUtc(secondary?.reset_at),
     windows,
+    ...(limitResets ? { limitResets } : {}),
   };
+}
+
+/**
+ * How many usage limit resets are left, from the usage payload. Absent when the
+ * API omits the block. The individual resets come from {@link mapCodexLimitResets}.
+ */
+export function mapCodexLimitResetCounts(usage: CodexUsageResponse): UsageLimitResetsInfo | undefined {
+  const availableCount = normalizeCount(usage.rate_limit_reset_credits?.available_count);
+  return availableCount === undefined ? undefined : { availableCount };
+}
+
+/**
+ * The individual usage limit resets still available, soonest expiry first, so
+ * the user can be reminded before one is lost.
+ */
+export function mapCodexLimitResets(response: CodexLimitResetsResponse): UsageLimitReset[] {
+  const credits = Array.isArray(response.credits) ? response.credits : [];
+  return credits
+    .filter((credit): credit is CodexLimitReset => Boolean(credit) && credit?.status === "available")
+    .map((credit) => {
+      const id = cleanLabel(credit.id);
+      if (!id) {
+        return undefined;
+      }
+      const title = cleanLabel(credit.title);
+      const expiresAtUtc = parseTimestamp(credit.expires_at);
+      return {
+        id,
+        ...(title ? { title } : {}),
+        ...(expiresAtUtc === undefined ? {} : { expiresAtUtc }),
+      } satisfies UsageLimitReset;
+    })
+    .filter((reset): reset is UsageLimitReset => reset !== undefined)
+    .sort((a, b) => (a.expiresAtUtc ?? Infinity) - (b.expiresAtUtc ?? Infinity));
+}
+
+/** The reset that will be lost first, used for the expiry reminder. */
+export function nextExpiringLimitReset(limitResets?: UsageLimitResetsInfo): UsageLimitReset | undefined {
+  return limitResets?.resets?.find((reset) => isFiniteNumber(reset.expiresAtUtc));
 }
 
 /** ChatGPT plan slugs seen on `plan_type` / the `chatgpt_plan_type` id_token claim. */
@@ -204,6 +268,15 @@ export function formatUtcDateTime(utcMs?: number): string {
 
 function normalizeNumber(value?: number): number | undefined {
   return isFiniteNumber(value) ? value : undefined;
+}
+
+function normalizeCount(value?: number): number | undefined {
+  return isFiniteNumber(value) && value >= 0 ? Math.floor(value) : undefined;
+}
+
+function parseTimestamp(value?: string): number | undefined {
+  const parsed = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function normalizeResetAtUtc(value?: number): number | undefined {

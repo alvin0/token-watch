@@ -20,3 +20,4 @@ AGENTS.md
 **/*.vsix
 resources/_*.html
 resources/*-src.png
+resources/icons/**

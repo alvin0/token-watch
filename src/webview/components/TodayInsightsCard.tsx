@@ -64,14 +64,14 @@ export function TodayInsightsCard() {
   ] as const;
 
   return (
-    <div className="tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e] tw-p-3">
+    <div className="tw-rounded-lg tw-border tw-border-edge tw-bg-card tw-p-3">
       <div className="tw-flex tw-items-center tw-justify-between tw-mb-2">
         <span className="tw-text-[10px] tw-font-medium">{t("insights.title")}</span>
         <span className="tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">{cur.activeDays === 1 ? t("insights.activeToday") : t("insights.noStreak")}</span>
       </div>
       <div className="tw-grid tw-grid-cols-2 tw-gap-1.5">
         {insights.map((item) => (
-          <div key={item.label} className="tw-rounded-md tw-bg-[#141426] tw-border tw-border-[#25253a] tw-px-2.5 tw-py-2">
+          <div key={item.label} className="tw-rounded-md tw-bg-recessed tw-border tw-border-edge tw-px-2.5 tw-py-2">
             <div className="tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)] tw-mb-0.5">{item.label}</div>
             <div className={`tw-text-[13px] tw-font-bold tw-tabular-nums ${toneClass(item.tone)}`}>{item.value}</div>
             <div className="tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)] tw-leading-snug tw-mt-0.5">{item.detail}</div>
@@ -128,7 +128,7 @@ function outputShape(input: number, output: number): string {
 }
 
 function toneClass(tone: "good" | "neutral" | "warn"): string {
-  if (tone === "good") { return "tw-text-[#89d185]"; }
-  if (tone === "warn") { return "tw-text-[#f0a050]"; }
+  if (tone === "good") { return "tw-text-chart-green"; }
+  if (tone === "warn") { return "tw-text-chart-orange"; }
   return "tw-text-[var(--vscode-foreground)]";
 }

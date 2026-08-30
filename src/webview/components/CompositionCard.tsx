@@ -3,6 +3,7 @@ import { useQuery } from "../hooks/useQuery";
 import { computePeriods, fmtT } from "../lib/periodData";
 import type { Period } from "../lib/periodData";
 import { useTranslation } from "../i18n";
+import { chartColors } from "../theme";
 
 export function CompositionCard() {
   const result = useQuery("dashboard");
@@ -21,22 +22,22 @@ export function CompositionCard() {
     : t("composition.balanced");
 
   return (
-    <div className="tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e] tw-p-3">
+    <div className="tw-rounded-lg tw-border tw-border-edge tw-bg-card tw-p-3">
       <div className="tw-text-[10px] tw-font-medium tw-mb-1.5">{t("composition.title")}</div>
       <div className="tw-flex tw-h-[6px] tw-rounded-full tw-overflow-hidden tw-mb-2">
-        {input > 0 && <div style={{ flex: input, backgroundColor: "#4fc1ff" }} />}
-        {output > 0 && <div style={{ flex: output, backgroundColor: "#cca700" }} />}
-        {cache > 0 && <div style={{ flex: cache, backgroundColor: "#50c8a8" }} />}
-        {reasoning > 0 && <div style={{ flex: reasoning, backgroundColor: "#b180d7" }} />}
+        {input > 0 && <div style={{ flex: input, backgroundColor: chartColors.input }} />}
+        {output > 0 && <div style={{ flex: output, backgroundColor: chartColors.output }} />}
+        {cache > 0 && <div style={{ flex: cache, backgroundColor: chartColors.cacheRead }} />}
+        {reasoning > 0 && <div style={{ flex: reasoning, backgroundColor: chartColors.reasoning }} />}
       </div>
       <div className="tw-flex tw-justify-between tw-text-[9px]">
-        <Dot color="#4fc1ff" label={t("common.input")} value={fmtT(input)} />
-        <Dot color="#cca700" label={t("common.output")} value={fmtT(output)} />
-        <Dot color="#50c8a8" label={t("common.cache")} value={fmtT(cache)} />
-        <Dot color="#b180d7" label={t("common.reasoning")} value={fmtT(reasoning)} />
+        <Dot color={chartColors.input} label={t("common.input")} value={fmtT(input)} />
+        <Dot color={chartColors.output} label={t("common.output")} value={fmtT(output)} />
+        <Dot color={chartColors.cacheRead} label={t("common.cache")} value={fmtT(cache)} />
+        <Dot color={chartColors.reasoning} label={t("common.reasoning")} value={fmtT(reasoning)} />
       </div>
       <div className="tw-mt-1.5 tw-text-[9px] tw-text-[var(--vscode-descriptionForeground)] tw-flex tw-items-center tw-gap-1">
-        <span className="tw-text-[#89d185]">✓</span>{insight}
+        <span className="tw-text-chart-green">✓</span>{insight}
       </div>
     </div>
   );

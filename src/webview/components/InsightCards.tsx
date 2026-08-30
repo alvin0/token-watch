@@ -58,7 +58,7 @@ export function InsightCards() {
 
 function MiniCard({ icon, label, value }: { icon: string; label: string; value: string }) {
   return (
-    <div className="tw-rounded-md tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e] tw-px-2.5 tw-py-2">
+    <div className="tw-rounded-md tw-border tw-border-edge tw-bg-card tw-px-2.5 tw-py-2">
       <div className="tw-flex tw-items-center tw-gap-1 tw-mb-0.5">
         <span className="tw-text-[10px]">{icon}</span>
         <span className="tw-text-[9px] tw-text-[var(--vscode-descriptionForeground)]">{label}</span>

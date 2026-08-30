@@ -6,7 +6,7 @@ export function SourceTabs({ selected, onChange }: { selected: SourceOption; onC
   const { t } = useTranslation();
   return (
     <div className="tw-shrink-0 tw-px-3 tw-pb-1.5">
-      <div className="tw-inline-flex tw-bg-[#1e1e2e] tw-rounded-md tw-p-[3px]">
+      <div className="tw-inline-flex tw-bg-track tw-rounded-md tw-p-[3px]">
         {(["all", "codex", "claude"] as SourceOption[]).map((s) => (
           <button key={s} onClick={() => onChange(s)}
             className={`tw-px-3 tw-py-[3px] tw-text-[10px] tw-font-medium tw-rounded tw-cursor-pointer tw-transition-colors ${

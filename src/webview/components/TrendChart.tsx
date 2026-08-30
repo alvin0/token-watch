@@ -21,7 +21,7 @@ import {
   trendPeriodLabels,
   trendValue,
 } from "../lib/trendData";
-import { chartColors } from "../theme";
+import { useChartPalette } from "../hooks/useChartPalette";
 import type { Period, ChartMode, Bkt } from "../lib/periodData";
 import { useTranslation } from "../i18n";
 
@@ -42,10 +42,9 @@ interface TooltipProps {
   breakdown: boolean;
 }
 
-const currentColor = chartColors.reasoningFallback;
-const previousColor = "var(--vscode-descriptionForeground)";
 
 export function TrendChart() {
+  const palette = useChartPalette();
   const result = useQuery("dashboard");
   const period = useStore((s) => s.granularity) as Period;
   const [mode, setMode] = useState<ChartMode>("Tokens");
@@ -79,7 +78,7 @@ export function TrendChart() {
   const hasPrevious = previousBuckets.some((bucket) => trendValue(bucket, mode) > 0);
 
   return (
-    <section className="tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e] tw-p-3">
+    <section className="tw-rounded-lg tw-border tw-border-edge tw-bg-card tw-p-3">
       <div className="tw-flex tw-flex-wrap tw-items-center tw-justify-between tw-gap-2">
         <h2 className="tw-m-0 tw-text-[11px] tw-font-semibold tw-uppercase tw-tracking-wide">{t("trend.title")}</h2>
         <SegmentedControl values={["Tokens", "Cost", "Turns"]} value={mode} onChange={(value) => setMode(value as ChartMode)} labelFor={(value) => value === "Tokens" ? t("common.tokens") : value === "Cost" ? t("common.cost") : t("common.turns")} />
@@ -106,25 +105,25 @@ export function TrendChart() {
             <BarChart data={data} margin={{ top: 12, right: 16, bottom: 0, left: -12 }}>
               <ChartAxes mode={mode} />
               <Tooltip content={<TrendTooltip mode={mode} total={summary.total} breakdown />} />
-              <Bar dataKey="cache" stackId="tokens" fill={chartColors.cacheReadFallback} radius={[2, 2, 0, 0]} />
-              <Bar dataKey="input" stackId="tokens" fill={chartColors.inputFallback} />
-              <Bar dataKey="output" stackId="tokens" fill={chartColors.outputFallback} radius={[2, 2, 0, 0]} />
+              <Bar dataKey="cache" stackId="tokens" fill={palette.cacheRead} radius={[2, 2, 0, 0]} />
+              <Bar dataKey="input" stackId="tokens" fill={palette.input} />
+              <Bar dataKey="output" stackId="tokens" fill={palette.output} radius={[2, 2, 0, 0]} />
             </BarChart>
           ) : (
             <LineChart data={data} margin={{ top: 18, right: 16, bottom: 0, left: -12 }}>
               <ChartAxes mode={mode} />
               <Tooltip content={<TrendTooltip mode={mode} total={summary.total} breakdown={false} />} />
               {hasPrevious && (
-                <Line type="linear" dataKey="previous" stroke={previousColor} strokeOpacity={0.45} strokeDasharray="4 4" strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={false} />
+                <Line type="linear" dataKey="previous" stroke={palette.muted} strokeOpacity={0.45} strokeDasharray="4 4" strokeWidth={1.5} dot={false} activeDot={false} isAnimationActive={false} />
               )}
-              <Line type="linear" dataKey="current" stroke={currentColor} strokeWidth={2} dot={<ActivityDot />} activeDot={{ r: 5 }} isAnimationActive={false} />
+              <Line type="linear" dataKey="current" stroke={palette.reasoning} strokeWidth={2} dot={<ActivityDot />} activeDot={{ r: 5 }} isAnimationActive={false} />
               {peak && summary.peakValue > 0 && (
                 <ReferenceDot
                   x={peak.label}
                   y={summary.peakValue}
                   r={4}
-                  fill={currentColor}
-                  stroke={currentColor}
+                  fill={palette.reasoning}
+                  stroke={palette.reasoning}
                   label={{ value: formatTrendValue(summary.peakValue, mode), position: "top", fill: "var(--vscode-foreground)", fontSize: 8 }}
                 />
               )}
@@ -144,15 +143,15 @@ export function TrendChart() {
       <div className="tw-mt-2 tw-flex tw-flex-wrap tw-gap-x-4 tw-gap-y-1 tw-text-[7px] tw-text-[var(--vscode-descriptionForeground)]">
         {breakdown ? (
           <>
-            <LegendDot color={chartColors.cacheReadFallback} label={t("common.cacheRead")} />
-            <LegendDot color={chartColors.inputFallback} label={t("common.input")} />
-            <LegendDot color={chartColors.outputFallback} label={t("common.output")} />
+            <LegendDot color={palette.cacheRead} label={t("common.cacheRead")} />
+            <LegendDot color={palette.input} label={t("common.input")} />
+            <LegendDot color={palette.output} label={t("common.output")} />
             <span>{t("trend.tooltipHint")}</span>
           </>
         ) : (
           <>
-            <LegendLine color={currentColor} label={t("trend.currentPeriod")} />
-            {hasPrevious && <LegendLine color={previousColor} label={t("trend.previousPeriod")} dashed />}
+            <LegendLine color={palette.reasoning} label={t("trend.currentPeriod")} />
+            {hasPrevious && <LegendLine color={palette.muted} label={t("trend.previousPeriod")} dashed />}
           </>
         )}
       </div>
@@ -162,7 +161,7 @@ export function TrendChart() {
 
 function SegmentedControl({ values, value, onChange, labelFor }: { values: string[]; value: string; onChange: (value: string) => void; labelFor?: (value: string) => string }) {
   return (
-    <div className="tw-inline-flex tw-rounded tw-bg-[#0d0d1a] tw-p-[2px]">
+    <div className="tw-inline-flex tw-rounded tw-bg-track tw-p-[2px]">
       {values.map((item) => (
         <button key={item} onClick={() => onChange(item)} className={`tw-cursor-pointer tw-rounded tw-px-2 tw-py-[2px] tw-text-[8px] ${
           value === item ? "tw-bg-[var(--vscode-button-background)] tw-text-[var(--vscode-button-foreground)]" : "tw-text-[var(--vscode-descriptionForeground)]"
@@ -173,9 +172,10 @@ function SegmentedControl({ values, value, onChange, labelFor }: { values: strin
 }
 
 function ChartAxes({ mode }: { mode: ChartMode }) {
+  const palette = useChartPalette();
   return (
     <>
-      <CartesianGrid vertical={false} stroke="var(--vscode-widget-border)" strokeOpacity={0.35} />
+      <CartesianGrid vertical={false} stroke={palette.grid} strokeOpacity={0.35} />
       <XAxis dataKey="label" tick={false} tickLine={false} axisLine={false} height={4} />
       <YAxis tickFormatter={(value: number) => formatTrendValue(value, mode)} tick={{ fill: "var(--vscode-descriptionForeground)", fontSize: 7 }} tickLine={false} axisLine={false} width={44} domain={[0, "auto"]} />
     </>
@@ -189,9 +189,10 @@ function shortTimeLabel(label: string, period: Period): string {
 }
 
 function ActivityDot({ cx, cy, value }: { cx?: number; cy?: number; value?: number }) {
+  const palette = useChartPalette();
   if (cx === undefined || cy === undefined) { return null; }
   const active = (value ?? 0) > 0;
-  return <circle cx={cx} cy={cy} r={active ? 3.5 : 3} fill={active ? currentColor : "#1a1a2e"} stroke={currentColor} strokeWidth={1.5} />;
+  return <circle cx={cx} cy={cy} r={active ? 3.5 : 3} fill={active ? palette.reasoning : palette.surface} stroke={palette.reasoning} strokeWidth={1.5} />;
 }
 
 function TrendTooltip({ active, payload, mode, total, breakdown }: TooltipProps) {
@@ -202,13 +203,13 @@ function TrendTooltip({ active, payload, mode, total, breakdown }: TooltipProps)
   const previous = point.priorBucket ? trendValue(point.priorBucket, mode) : undefined;
   const change = previous === undefined ? undefined : readableChange(current, previous, point.priorBucket?.label ?? t("trend.previousPeriod"), language);
   return (
-    <div className="tw-min-w-40 tw-rounded tw-border tw-border-[var(--vscode-widget-border)] tw-bg-[var(--vscode-editorHoverWidget-background)] tw-p-2 tw-text-[8px] tw-shadow-lg">
+    <div className="tw-min-w-40 tw-rounded tw-border tw-border-edge tw-bg-[var(--vscode-editorHoverWidget-background)] tw-p-2 tw-text-[8px] tw-shadow-widget">
       <div className="tw-mb-1 tw-font-semibold">{point.label}</div>
       <TooltipRow label={t("common.cost")} value={formatTrendValue(point.cost, "Cost")} />
       <TooltipRow label={t("common.tokens")} value={formatTrendValue(point.tokens, "Tokens")} />
       <TooltipRow label={t("common.turns")} value={formatTrendValue(point.turns, "Turns")} />
       {breakdown && (
-        <div className="tw-mt-1 tw-border-t tw-border-[var(--vscode-widget-border)] tw-pt-1">
+        <div className="tw-mt-1 tw-border-t tw-border-edge tw-pt-1">
           <TooltipRow label={t("common.cacheRead")} value={formatTrendValue(point.cache, "Tokens")} />
           <TooltipRow label={t("common.input")} value={formatTrendValue(point.input, "Tokens")} />
           <TooltipRow label={t("common.output")} value={formatTrendValue(point.output, "Tokens")} />

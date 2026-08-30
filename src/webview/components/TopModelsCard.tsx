@@ -98,7 +98,7 @@ export function TopModelsCard() {
 
   return (
     <>
-      <section className="tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e]">
+      <section className="tw-overflow-hidden tw-rounded-lg tw-border tw-border-edge tw-bg-card">
         <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-px-3 tw-py-2.5">
           <span className="tw-text-[10px] tw-font-medium tw-uppercase tw-tracking-wide">{t("models.top")}</span>
           <span className="tw-text-[9px] tw-tabular-nums tw-text-[var(--vscode-descriptionForeground)]">
@@ -114,7 +114,7 @@ export function TopModelsCard() {
         />
 
         {showFooter && (
-          <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-[#2a2a3a] tw-bg-[#141426] tw-px-3 tw-py-2">
+          <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-edge tw-bg-recessed tw-px-3 tw-py-2">
             {hiddenModels > 0 ? (
               <button
                 type="button"
@@ -141,8 +141,8 @@ export function TopModelsCard() {
 
       {modalOpen && (
         <div
-          className="tw-fixed tw-inset-0 tw-z-50 tw-flex tw-items-center tw-justify-center tw-p-3"
-          style={{ backgroundColor: "rgba(8, 8, 18, 0.86)" }}
+          className="tw-fixed tw-inset-0 tw-z-50 tw-flex tw-items-center tw-justify-center tw-p-3 tw-bg-scrim"
+         
           onMouseDown={(event) => {
             if (event.currentTarget === event.target) { setModalOpen(false); }
           }}
@@ -151,9 +151,9 @@ export function TopModelsCard() {
             role="dialog"
             aria-modal="true"
             aria-label={t("models.all")}
-            className="tw-flex tw-max-h-full tw-w-full tw-max-w-[720px] tw-flex-col tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#34344a] tw-bg-[#1a1a2e] tw-shadow-2xl"
+            className="tw-flex tw-max-h-full tw-w-full tw-max-w-[720px] tw-flex-col tw-overflow-hidden tw-rounded-lg tw-border tw-border-control tw-bg-card tw-shadow-widget"
           >
-            <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-border-b tw-border-[#2a2a3a] tw-px-3 tw-py-2.5">
+            <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-border-b tw-border-edge tw-px-3 tw-py-2.5">
               <div>
                 <div className="tw-text-[11px] tw-font-semibold">{t("models.all")}</div>
                 <div className="tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">
@@ -164,7 +164,7 @@ export function TopModelsCard() {
                 type="button"
                 aria-label={t("models.close")}
                 onClick={() => setModalOpen(false)}
-                className="tw-cursor-pointer tw-rounded tw-px-2 tw-py-1 tw-text-[12px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-[#25253a] hover:tw-text-[var(--vscode-foreground)]"
+                className="tw-cursor-pointer tw-rounded tw-px-2 tw-py-1 tw-text-[12px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-hover hover:tw-text-[var(--vscode-foreground)]"
               >
                 ×
               </button>
@@ -219,7 +219,7 @@ function ModelsTable({
         <col style={{ width: "14%" }} />
       </colgroup>
       <thead>
-        <tr className="tw-border-t tw-border-[#2a2a3a] tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">
+        <tr className="tw-border-t tw-border-edge tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">
           <th className="tw-px-3 tw-py-1.5 tw-text-left tw-font-medium">{t("common.model")}</th>
           <th className="tw-px-1 tw-py-1.5 tw-text-left tw-font-medium">{t("common.effort")}</th>
           <SortableHeader label={t("common.tokens")} sort="tokens" sortable={sortable} active={sortKey} direction={sortDirection} onSort={onSort} />
@@ -244,7 +244,7 @@ function ModelsTable({
                     onSelect(selected ? undefined : model.id);
                   }
                 }}
-                className={`tw-cursor-pointer tw-border-t tw-border-[#25253a] tw-text-[9px] hover:tw-bg-[#18182a] ${selected ? "tw-bg-[#18182a]" : ""}`}
+                className={`tw-cursor-pointer tw-border-t tw-border-edge tw-text-[9px] hover:tw-bg-hover ${selected ? "tw-bg-hover" : ""}`}
               >
                 <td className="tw-truncate tw-px-3 tw-py-1.5 tw-font-medium tw-text-[var(--vscode-foreground)]" title={model.model}>
                   {model.model}
@@ -262,17 +262,17 @@ function ModelsTable({
                   {model.turns.toLocaleString(locale)}
                 </td>
                 <td
-                  className="tw-truncate tw-px-1 tw-py-1.5 tw-text-right tw-font-medium tw-tabular-nums tw-text-[#cca700]"
+                  className="tw-truncate tw-px-1 tw-py-1.5 tw-text-right tw-font-medium tw-tabular-nums tw-text-chart-yellow"
                   title={modelCostTitle(model.cost, model.unknownCostTurns, model.turns, currency, language)}
                 >
                   {formatModelCost(model.cost, model.unknownCostTurns, model.turns)}
                 </td>
-                <td className="tw-truncate tw-px-3 tw-py-1.5 tw-text-right tw-font-medium tw-tabular-nums tw-text-[#50c8a8]">
+                <td className="tw-truncate tw-px-3 tw-py-1.5 tw-text-right tw-font-medium tw-tabular-nums tw-text-chart-green">
                   {model.share.toFixed(1)}%
                 </td>
               </tr>
               {selected && (
-                <tr className="tw-border-t tw-border-[#25253a] tw-bg-[#141426]">
+                <tr className="tw-border-t tw-border-edge tw-bg-recessed">
                   <td colSpan={6} className="tw-px-3 tw-py-2">
                     <div className="tw-grid tw-gap-1.5" style={DETAIL_GRID}>
                       <DetailMetric label={t("common.input")} value={fmtT(model.input)} />

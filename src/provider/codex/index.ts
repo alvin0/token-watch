@@ -7,6 +7,7 @@ import { randomUsageRetryMs } from "../../shared/usageRetry";
 export const DEFAULT_CODEX_AUTH_FILE = "~/.codex/auth.json";
 export const WHAM_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
 export const WHAM_ENVIRONMENTS_ENDPOINT = "https://chatgpt.com/backend-api/wham/environments";
+export const WHAM_LIMIT_RESETS_ENDPOINT = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 export const DEFAULT_CODEX_ISSUER = "https://auth.openai.com";
 export const DEFAULT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
@@ -86,7 +87,16 @@ export class CodexConnection {
   }
 
   usageInfo<T = unknown>(options: CodexRequestOptions = {}): Promise<T> {
-    const key = usageRequestKey(this.options);
+    return this.cachedGet<T>(this.options.endpoint ?? WHAM_USAGE_ENDPOINT, options);
+  }
+
+  /** Usage limit resets granted to the account, each with its own expiry. */
+  limitResetsInfo<T = unknown>(options: CodexRequestOptions = {}): Promise<T> {
+    return this.cachedGet<T>(WHAM_LIMIT_RESETS_ENDPOINT, options);
+  }
+
+  private cachedGet<T>(url: string, options: CodexRequestOptions): Promise<T> {
+    const key = requestKey(this.options, url);
     const now = (this.options.now ?? Date.now)();
     const cached = usageInfoCache.get(key);
     if (!options.force && cached && cached.expiresAt > now) {
@@ -106,7 +116,7 @@ export class CodexConnection {
       return inFlight as Promise<T>;
     }
 
-    const promise = this.fetchUsageInfo<T>(key, options)
+    const promise = this.fetchJson<T>(url, key, options)
       .catch((error: unknown) => {
         if (!isCodexUsageRateLimitError(error)) {
           setFailureCooldown(usageCooldowns, key, (this.options.now ?? Date.now)());
@@ -121,7 +131,7 @@ export class CodexConnection {
   }
 
   usageCacheInfo(): UsageCacheInfo {
-    const key = usageRequestKey(this.options);
+    const key = requestKey(this.options, this.options.endpoint ?? WHAM_USAGE_ENDPOINT);
     const now = (this.options.now ?? Date.now)();
     const cached = usageInfoCache.get(key);
     const cooldown = usageCooldowns.get(key) ?? 0;
@@ -135,8 +145,8 @@ export class CodexConnection {
     };
   }
 
-  private async fetchUsageInfo<T>(key: string, options: CodexRequestOptions): Promise<T> {
-    const response = await this.usage(options);
+  private async fetchJson<T>(url: string, key: string, options: CodexRequestOptions): Promise<T> {
+    const response = await this.requestWithRefresh(url, options);
     if (response.status === 429) {
       const now = (this.options.now ?? Date.now)();
       const retryAt = retryAtFromHeader(response.headers.get("retry-after"), now);
@@ -148,7 +158,7 @@ export class CodexConnection {
       throw new CodexUsageRateLimitError(retryAt, false);
     }
     if (!response.ok) {
-      throw new Error(`Codex usage request failed: ${response.status} ${await response.text()}`);
+      throw new Error(`Codex request to ${url} failed: ${response.status} ${await response.text()}`);
     }
     usageCooldowns.delete(key);
     const value = (await response.json()) as T;
@@ -247,8 +257,8 @@ export function resolveCodexAuthPath(authFile = DEFAULT_CODEX_AUTH_FILE) {
   return path.isAbsolute(authFile) ? authFile : path.resolve(authFile);
 }
 
-function usageRequestKey(options: CodexConnectionOptions): string {
-  return `codex:${resolveCodexAuthPath(options.authFile)}:${options.endpoint ?? WHAM_USAGE_ENDPOINT}`;
+function requestKey(options: CodexConnectionOptions, url: string): string {
+  return `codex:${resolveCodexAuthPath(options.authFile)}:${url}`;
 }
 
 function retryAtFromHeader(value: string | null, now: number): number {

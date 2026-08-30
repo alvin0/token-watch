@@ -70,21 +70,21 @@ export function PricingSettingsDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="tw-fixed tw-inset-0 tw-z-50 tw-flex tw-items-center tw-justify-center tw-p-3" style={{ backgroundColor: "rgba(8, 8, 18, 0.86)" }} onMouseDown={(event) => {
+    <div className="tw-fixed tw-inset-0 tw-z-50 tw-flex tw-items-center tw-justify-center tw-p-3 tw-bg-scrim" onMouseDown={(event) => {
       if (!saving && event.currentTarget === event.target) { onClose(); }
     }}>
-      <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="custom-pricing-title" tabIndex={-1} className="tw-flex tw-max-h-full tw-w-full tw-max-w-[560px] tw-flex-col tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#34344a] tw-bg-[#1a1a2e] tw-shadow-2xl tw-outline-none">
-        <div className="tw-flex tw-items-start tw-justify-between tw-gap-3 tw-border-b tw-border-[#2a2a3a] tw-px-3 tw-py-2.5">
+      <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="custom-pricing-title" tabIndex={-1} className="tw-flex tw-max-h-full tw-w-full tw-max-w-[560px] tw-flex-col tw-overflow-hidden tw-rounded-lg tw-border tw-border-control tw-bg-card tw-shadow-widget tw-outline-none">
+        <div className="tw-flex tw-items-start tw-justify-between tw-gap-3 tw-border-b tw-border-edge tw-px-3 tw-py-2.5">
           <div>
             <div id="custom-pricing-title" className="tw-text-[13px] tw-font-semibold">{t("pricing.title")}</div>
             <div className="tw-mt-0.5 tw-text-[10px] tw-text-[var(--vscode-descriptionForeground)]">{t("pricing.description")}</div>
           </div>
-          <button type="button" aria-label={t("pricing.close")} disabled={saving} onClick={onClose} className="tw-cursor-pointer tw-rounded tw-px-2 tw-py-1 tw-text-[14px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-[#25253a] disabled:tw-opacity-50">×</button>
+          <button type="button" aria-label={t("pricing.close")} disabled={saving} onClick={onClose} className="tw-cursor-pointer tw-rounded tw-px-2 tw-py-1 tw-text-[14px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-hover disabled:tw-opacity-50">×</button>
         </div>
 
         <form onSubmit={save} className="tw-flex tw-min-h-0 tw-flex-1 tw-flex-col">
           <div className="tw-min-h-0 tw-flex-1 tw-overflow-y-auto tw-p-3">
-            <div className="tw-rounded-md tw-border tw-border-[#34344a] tw-bg-[#141426] tw-px-2.5 tw-py-2 tw-text-[10px] tw-leading-relaxed tw-text-[var(--vscode-descriptionForeground)]">{t("pricing.explanation")}</div>
+            <div className="tw-rounded-md tw-border tw-border-control tw-bg-recessed tw-px-2.5 tw-py-2 tw-text-[10px] tw-leading-relaxed tw-text-[var(--vscode-descriptionForeground)]">{t("pricing.explanation")}</div>
             {!loaded ? (
               <div className="tw-py-6 tw-text-center tw-text-[11px] tw-text-[var(--vscode-descriptionForeground)]">{t("pricing.loading")}</div>
             ) : drafts.length === 0 ? (
@@ -92,10 +92,10 @@ export function PricingSettingsDialog({ onClose }: { onClose: () => void }) {
             ) : (
               <div className="tw-mt-2.5 tw-space-y-2">
                 {drafts.map((draft, index) => (
-                  <div key={draft.id} className="tw-rounded-md tw-border tw-border-[#2a2a3a] tw-bg-[#18182a] tw-p-2.5">
+                  <div key={draft.id} className="tw-rounded-md tw-border tw-border-edge tw-bg-recessed tw-p-2.5">
                     <div className="tw-flex tw-items-center tw-gap-2">
                       <input value={draft.model} disabled={saving} aria-label={t("pricing.modelId")} aria-invalid={Boolean(errors[draft.id])} onChange={(event) => updateDraft(draft.id, { model: event.target.value })} className="tw-h-7 tw-min-w-0 tw-flex-1 tw-rounded tw-border tw-border-[var(--vscode-input-border,#3c3c4f)] tw-bg-[var(--vscode-input-background,#222236)] tw-px-2 tw-text-[11px] tw-outline-none focus:tw-border-[var(--vscode-focusBorder)]" placeholder={t("pricing.modelPlaceholder")} />
-                      <button type="button" aria-label={t("pricing.delete", { number: index + 1 })} disabled={saving} onClick={() => setDrafts((current) => current.filter((item) => item.id !== draft.id))} className="tw-cursor-pointer tw-rounded tw-px-1.5 tw-py-0.5 tw-text-[12px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-[#2a2030] hover:tw-text-[#f06a6a] disabled:tw-opacity-50">×</button>
+                      <button type="button" aria-label={t("pricing.delete", { number: index + 1 })} disabled={saving} onClick={() => setDrafts((current) => current.filter((item) => item.id !== draft.id))} className="tw-cursor-pointer tw-rounded tw-px-1.5 tw-py-0.5 tw-text-[12px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-danger-bg hover:tw-text-chart-red disabled:tw-opacity-50">×</button>
                     </div>
                     <div className="tw-mt-2 tw-grid tw-grid-cols-2 tw-gap-2">
                       {RATE_FIELDS.map((field) => (
@@ -110,11 +110,11 @@ export function PricingSettingsDialog({ onClose }: { onClose: () => void }) {
                 ))}
               </div>
             )}
-            {loaded && <button type="button" disabled={saving} onClick={() => setDrafts((current) => [...current, newDraft()])} className="tw-mt-2.5 tw-w-full tw-cursor-pointer tw-rounded tw-border tw-border-dashed tw-border-[#3a3a50] tw-px-2 tw-py-1.5 tw-text-[11px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-bg-[#202035] disabled:tw-opacity-50">{t("pricing.add")}</button>}
+            {loaded && <button type="button" disabled={saving} onClick={() => setDrafts((current) => [...current, newDraft()])} className="tw-mt-2.5 tw-w-full tw-cursor-pointer tw-rounded tw-border tw-border-dashed tw-border-control tw-px-2 tw-py-1.5 tw-text-[11px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-bg-hover disabled:tw-opacity-50">{t("pricing.add")}</button>}
             {saveError && <div role="alert" className="tw-mt-2 tw-text-[10px] tw-text-[var(--vscode-errorForeground,#f06a6a)]">{saveError}</div>}
           </div>
-          <div className="tw-flex tw-justify-end tw-gap-2 tw-border-t tw-border-[#2a2a3a] tw-px-3 tw-py-2.5">
-            <button type="button" disabled={saving} onClick={onClose} className="tw-cursor-pointer tw-rounded tw-border tw-border-[#3a3a50] tw-px-3 tw-py-1.5 tw-text-[11px] hover:tw-bg-[#25253a] disabled:tw-opacity-50">{t("common.cancel")}</button>
+          <div className="tw-flex tw-justify-end tw-gap-2 tw-border-t tw-border-edge tw-px-3 tw-py-2.5">
+            <button type="button" disabled={saving} onClick={onClose} className="tw-cursor-pointer tw-rounded tw-border tw-border-control tw-px-3 tw-py-1.5 tw-text-[11px] hover:tw-bg-hover disabled:tw-opacity-50">{t("common.cancel")}</button>
             <button type="submit" disabled={!loaded || saving} className="tw-cursor-pointer tw-rounded tw-bg-[var(--vscode-button-background)] tw-px-3 tw-py-1.5 tw-text-[11px] tw-font-medium tw-text-[var(--vscode-button-foreground)] hover:tw-bg-[var(--vscode-button-hoverBackground)] disabled:tw-opacity-50">{saving ? t("common.saving") : t("common.save")}</button>
           </div>
         </form>

@@ -6,6 +6,7 @@ import { IngestionCoordinator } from "./host/IngestionCoordinator";
 import { FileWatcher } from "./host/FileWatcher";
 import { StatusBarController } from "./host/StatusBarController";
 import { CostAlertController } from "./host/CostAlertController";
+import { LimitResetReminder } from "./host/LimitResetReminder";
 import { LanguageController } from "./host/LanguageController";
 import { effectivePricingOverrides, getConfig, toIngestConfig } from "./host/config";
 import type { DiagnosticsReport } from "./shared/protocol";
@@ -47,8 +48,15 @@ export async function activate(context: vscode.ExtensionContext) {
   costAlerts.start();
   context.subscriptions.push(costAlerts);
 
+  // Reminds the user before a Codex usage limit reset expires unused.
+  const limitResetReminder = new LimitResetReminder(
+    context.globalState,
+    undefined,
+    () => language.getLanguage(),
+  );
+
   // Register the sidebar WebView provider
-  const provider = new SidebarProvider(context.extensionUri, coordinator, costAlerts, language, config.currency);
+  const provider = new SidebarProvider(context.extensionUri, coordinator, costAlerts, language, config.currency, limitResetReminder);
   context.subscriptions.push(
     provider,
     vscode.window.registerWebviewViewProvider(SidebarProvider.viewId, provider),
@@ -96,7 +104,7 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   // Status bar
-  const statusBar = new StatusBarController(coordinator, config.statusBar.enabled, language);
+  const statusBar = new StatusBarController(coordinator, config.statusBar.enabled, language, limitResetReminder);
   context.subscriptions.push(statusBar);
 
   // File watcher

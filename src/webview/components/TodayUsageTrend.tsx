@@ -58,7 +58,7 @@ export function HourlyUsageTrendCard({ rows, day, title, subtitle, navigation, h
   const activeHours = buckets.filter((bucket) => bucket.turns > 0).length;
 
   return (
-    <div className="tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e] tw-p-3">
+    <div className="tw-rounded-lg tw-border tw-border-edge tw-bg-card tw-p-3">
       <div className="tw-mb-2 tw-flex tw-items-center tw-justify-between tw-gap-2">
         <div className="tw-min-w-0">
           <div className="tw-text-[10px] tw-font-medium">{title}</div>
@@ -68,7 +68,7 @@ export function HourlyUsageTrendCard({ rows, day, title, subtitle, navigation, h
         </div>
         <div className="tw-flex tw-shrink-0 tw-items-center tw-gap-1.5">
           {navigation}
-          <div className="tw-flex tw-rounded tw-bg-[#0d0d1a] tw-p-[2px]">
+          <div className="tw-flex tw-rounded tw-bg-track tw-p-[2px]">
           {(["Tokens", "Cost", "Turns"] as ChartMode[]).map((item) => (
             <button key={item} onClick={() => setMode(item)}
               className={`tw-cursor-pointer tw-rounded tw-px-1.5 tw-py-[2px] tw-text-[8px] ${
@@ -99,7 +99,7 @@ export function HourlyUsageTrendCard({ rows, day, title, subtitle, navigation, h
               const height = value > 0 ? Math.max((value / maxV) * 100, 2) : 0;
               return (
                 <div key={bucket.hour} className="tw-flex tw-h-full tw-flex-1 tw-items-end" title={hourTitle(bucket, locale, t)}>
-                  <div className="tw-w-full tw-rounded-t-sm tw-bg-[#4fc1ff]" style={{ height: `${height}%` }} />
+                  <div className="tw-w-full tw-rounded-t-sm tw-bg-chart-blue" style={{ height: `${height}%` }} />
                 </div>
               );
             })}

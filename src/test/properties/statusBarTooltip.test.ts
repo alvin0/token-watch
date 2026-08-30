@@ -1,5 +1,6 @@
 import * as assert from 'node:assert';
 import {
+  buildStatusBarText,
   buildStatusBarTooltip,
   localDayRange,
   millisecondsUntilNextLocalDay,
@@ -65,6 +66,45 @@ suite('Status bar tooltip', () => {
         process.env.TZ = originalTimezone;
       }
     }
+  });
+
+  test('labels the status bar with tokens, cost, and each provider quota left', () => {
+    const text = buildStatusBarText(
+      summary,
+      { windows: [{ id: 'codex:primary', label: 'Weekly', usedPct: 0 }] },
+      {
+        windows: [
+          { id: 'session', label: '5h limit', usedPct: 42 },
+          { id: 'weekly', label: 'Weekly', usedPct: 26 },
+        ],
+      },
+    );
+
+    // 58% is the 5h window: the tightest quota is the one that runs out first.
+    assert.strictEqual(text, '$(token-watch) 12.3K | $1.23 | $(token-watch-codex) 100% | $(token-watch-claude) 58%');
+  });
+
+  test('leaves out a provider whose quota has not loaded', () => {
+    assert.strictEqual(buildStatusBarText(summary), '$(token-watch) 12.3K | $1.23');
+    assert.strictEqual(
+      buildStatusBarText(summary, { windows: [{ id: 'codex:primary', label: 'Weekly' }] }, { windows: [] }),
+      '$(token-watch) 12.3K | $1.23',
+    );
+    assert.strictEqual(
+      buildStatusBarText(summary, undefined, { windows: [{ id: 'session', label: '5h limit', usedPct: 10 }] }),
+      '$(token-watch) 12.3K | $1.23 | $(token-watch-claude) 90%',
+    );
+  });
+
+  test('ignores non-primary quota windows in the status bar label', () => {
+    const text = buildStatusBarText(summary, {
+      windows: [
+        { id: 'codex:primary', label: 'Weekly', usedPct: 5 },
+        { id: 'additional:spark:primary', label: 'Spark · 5h limit', usedPct: 99 },
+      ],
+    });
+
+    assert.strictEqual(text, '$(token-watch) 12.3K | $1.23 | $(token-watch-codex) 95%');
   });
 
   test('uses the compact current-usage summary layout', () => {
@@ -199,6 +239,74 @@ suite('Status bar tooltip', () => {
     assert.ok(tooltip.includes('CODEX (Pro Lite)\nKhông có dữ liệu sử dụng'));
     assert.ok(tooltip.includes('CLAUDE CODE (Team)\nKhông có dữ liệu sử dụng'));
     assert.ok(!/gói/i.test(tooltip));
+  });
+
+  test('shows usage limit resets under the Codex quota rows, never as credits', () => {
+    const tooltip = buildStatusBarTooltip(summary, {
+      windows: [{ id: 'codex:primary', label: '5h limit', usedPct: 17 }],
+      limitResets: {
+        availableCount: 1,
+        resets: [{ id: 'reset-1', title: 'Full reset', expiresAtUtc: Date.UTC(2026, 8, 20, 23, 58) }],
+      },
+    });
+
+    assert.ok(tooltip.includes('Limit resets (1) · expires '));
+    assert.ok(!/credit/i.test(tooltip));
+  });
+
+  test('omits the expiry when the reset list has not been loaded', () => {
+    const tooltip = buildStatusBarTooltip(summary, {
+      windows: [{ id: 'codex:primary', label: '5h limit', usedPct: 17 }],
+      limitResets: { availableCount: 1 },
+    });
+
+    assert.ok(tooltip.includes('Limit resets (1)'));
+    assert.ok(!tooltip.includes('expires'));
+  });
+
+  test('omits usage limit resets when the account has none left', () => {
+    const tooltip = buildStatusBarTooltip(summary, {
+      windows: [{ id: 'codex:primary', label: '5h limit', usedPct: 17 }],
+      limitResets: { availableCount: 0 },
+    });
+
+    assert.ok(!tooltip.includes('Limit resets'));
+  });
+
+  test('closes with one cache line for both providers, aged to the oldest', () => {
+    const tooltip = buildStatusBarTooltip(
+      summary,
+      { windows: [{ id: 'codex:primary', label: '5h limit', usedPct: 17 }] },
+      undefined,
+      { windows: [{ id: 'session', label: '5h limit', usedPct: 12 }] },
+      undefined,
+      'en',
+      undefined,
+      undefined,
+      { cachedAtUtc: new Date(2026, 0, 1, 11, 15).getTime(), retryAtUtc: new Date(2026, 0, 1, 11, 17).getTime() },
+      { cachedAtUtc: new Date(2026, 0, 1, 9, 5).getTime() },
+    );
+
+    assert.ok(tooltip.endsWith('\n\nQuotas as of 09:05 · refresh 11:17'));
+    assert.strictEqual(tooltip.match(/Quotas as of/g)?.length, 1);
+    assert.ok(!tooltip.includes('11:15'));
+  });
+
+  test('omits the cache line when no usage has been fetched yet', () => {
+    const tooltip = buildStatusBarTooltip(
+      summary,
+      { windows: [{ id: 'codex:primary', label: '5h limit', usedPct: 17 }] },
+      undefined,
+      undefined,
+      undefined,
+      'en',
+      undefined,
+      undefined,
+      {},
+    );
+
+    assert.ok(!tooltip.includes('Quotas as of'));
+    assert.ok(!tooltip.includes('refresh'));
   });
 
   test('shows unavailable message when Claude Code usage cannot be fetched', () => {

@@ -5,10 +5,21 @@ import type { IngestionCoordinator } from './IngestionCoordinator';
 import {
   formatPercent,
   mapCodexUsageToRateLimitInfo,
+  nextExpiringLimitReset,
   type CodexUsageResponse,
 } from '../shared/codexUsage';
 import { mapClaudeUsageToRateLimitInfo, type ClaudeUsageResponse } from '../shared/claudeUsage';
-import type { AnalyticsResult, ClaudeRateLimitInfo, RateLimitInfo, UsagePlanInfo, UsageQuotaWindow } from '../shared/protocol';
+import type {
+  AnalyticsResult,
+  ClaudeRateLimitInfo,
+  RateLimitInfo,
+  UsageCacheInfo,
+  UsageLimitResetsInfo,
+  UsagePlanInfo,
+  UsageQuotaWindow,
+} from '../shared/protocol';
+import type { LimitResetReminder } from './LimitResetReminder';
+import { codexLimitResetsFetcher, withLimitResetDetails } from './limitResets';
 import { resolveClaudePlan, resolveCodexPlan } from './usagePlan';
 import type { DailyAggregate } from '../shared/storeTypes';
 import { localeTag, translate, type AppLanguage } from '../shared/i18n';
@@ -74,6 +85,7 @@ export class StatusBarController implements vscode.Disposable {
     private readonly coordinator: IngestionCoordinator,
     enabled: boolean,
     private readonly language?: LanguageController,
+    private readonly limitResetReminder?: LimitResetReminder,
   ) {
     this.enabled = enabled;
     this.item = vscode.window.createStatusBarItem(
@@ -166,9 +178,7 @@ export class StatusBarController implements vscode.Disposable {
       return;
     }
 
-    const tokensStr = formatTokens(this.latestUsage.tokens);
-    const costStr = formatCost(this.latestUsage.cost);
-    this.item.text = '$' + '(zap) ' + tokensStr + ' | $' + costStr;
+    this.item.text = buildStatusBarText(this.latestUsage, this.latestRateLimit, this.latestClaudeRateLimit);
     this.item.tooltip = buildStatusBarTooltip(
       this.latestUsage,
       this.latestRateLimit,
@@ -178,6 +188,8 @@ export class StatusBarController implements vscode.Disposable {
       this.language?.getLanguage(),
       this.latestCodexPlan,
       this.latestClaudePlan,
+      this.codexConnection.usageCacheInfo(),
+      this.claudeConnection.usageCacheInfo(),
     );
 
     if (this.enabled) {
@@ -216,11 +228,18 @@ export class StatusBarController implements vscode.Disposable {
           return;
         }
         const rateLimit = mapCodexUsageToRateLimitInfo(usage);
+        if (rateLimit) {
+          rateLimit.limitResets = await withLimitResetDetails(codexLimitResetsFetcher(this.codexConnection), rateLimit.limitResets);
+        }
         this.latestCodexPlan = await resolveCodexPlan(usage.plan_type, this.latestCodexPlan);
+        if (this.disposed) {
+          return;
+        }
         this.lastCodexUsageRefreshAt = Date.now();
         this.latestCodexUsageMessage = undefined;
         if (rateLimit) {
           this.latestRateLimit = rateLimit;
+          void this.limitResetReminder?.evaluate(rateLimit.limitResets);
         }
         this.updateItem();
       } catch (err) {
@@ -337,6 +356,43 @@ export function summarizeDailySeries(series: DailyAggregate[]): StatusBarUsageSu
   });
 }
 
+const CODEX_PRIMARY_WINDOW_IDS = ['codex:primary', 'codex:secondary'];
+const CLAUDE_PRIMARY_WINDOW_IDS = ['session', 'weekly'];
+
+/**
+ * The status bar label: today's tokens and cost, plus how much subscription
+ * quota each provider has left. A provider is left out until its usage loads.
+ */
+export function buildStatusBarText(
+  usage: StatusBarUsageSummary,
+  rateLimit?: RateLimitInfo,
+  claudeRateLimit?: ClaudeRateLimitInfo,
+): string {
+  const parts = [`$(token-watch) ${formatTokens(usage.tokens)}`, `$${formatCost(usage.cost)}`];
+
+  const codexLeft = tightestRemainingPercent(rateLimit?.windows, CODEX_PRIMARY_WINDOW_IDS);
+  if (codexLeft !== undefined) {
+    parts.push(`$(token-watch-codex) ${formatPercent(codexLeft)}`);
+  }
+  const claudeLeft = tightestRemainingPercent(claudeRateLimit?.windows, CLAUDE_PRIMARY_WINDOW_IDS);
+  if (claudeLeft !== undefined) {
+    parts.push(`$(token-watch-claude) ${formatPercent(claudeLeft)}`);
+  }
+
+  return parts.join(' | ');
+}
+
+/** Least headroom across a provider's primary quotas — the one that runs out first. */
+function tightestRemainingPercent(windows: UsageQuotaWindow[] | undefined, primaryIds: string[]): number | undefined {
+  const remaining = (windows ?? [])
+    .filter((window) => primaryIds.includes(window.id))
+    .map((window) => window.usedPct)
+    .filter((usedPct): usedPct is number => typeof usedPct === 'number' && Number.isFinite(usedPct))
+    .map((usedPct) => Math.max(0, 100 - usedPct));
+
+  return remaining.length > 0 ? Math.min(...remaining) : undefined;
+}
+
 export function buildStatusBarTooltip(
   usage: StatusBarUsageSummary,
   rateLimit?: RateLimitInfo,
@@ -346,6 +402,8 @@ export function buildStatusBarTooltip(
   language: AppLanguage = "en",
   codexPlan?: UsagePlanInfo,
   claudePlan?: UsagePlanInfo,
+  codexUsageCache?: UsageCacheInfo,
+  claudeUsageCache?: UsageCacheInfo,
 ): string {
   const lines = [
     translate(language, "statusBar.currentUsage"),
@@ -373,7 +431,60 @@ export function buildStatusBarTooltip(
     }
   }
 
+  const cacheLine = buildCacheLine([codexUsageCache, claudeUsageCache], language);
+  if (cacheLine) {
+    lines.push('', cacheLine);
+  }
+
   return lines.join('\n');
+}
+
+/**
+ * A single trailing line for both providers, instead of repeating the same
+ * timestamps under each: how old the oldest shown numbers are, and when the
+ * next refresh may run.
+ */
+function buildCacheLine(caches: Array<UsageCacheInfo | undefined>, language: AppLanguage): string | undefined {
+  const parts: string[] = [];
+  const cachedAt = formatClockTime(earliest(caches.map((cache) => cache?.cachedAtUtc)), language);
+  if (cachedAt) {
+    parts.push(translate(language, "statusBar.usageCached", { time: cachedAt }));
+  }
+  const retryAt = formatClockTime(earliest(caches.map((cache) => cache?.retryAtUtc)), language);
+  if (retryAt) {
+    parts.push(translate(language, "statusBar.usageRefresh", { time: retryAt }));
+  }
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+function earliest(values: Array<number | undefined>): number | undefined {
+  const known = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  return known.length > 0 ? Math.min(...known) : undefined;
+}
+
+function formatClockTime(utcMs: number | undefined, language: AppLanguage): string | undefined {
+  if (typeof utcMs !== 'number' || !Number.isFinite(utcMs)) {
+    return undefined;
+  }
+  return new Intl.DateTimeFormat(localeTag(language), { hour: '2-digit', minute: '2-digit', hour12: false })
+    .format(new Date(utcMs));
+}
+
+/** Usage limit resets left on the account, with the deadline of the first to expire. */
+function formatLimitResets(limitResets: UsageLimitResetsInfo | undefined, language: AppLanguage): string | undefined {
+  if (!limitResets || limitResets.availableCount <= 0) {
+    return undefined;
+  }
+  const counts = translate(language, "statusBar.limitResets", { count: limitResets.availableCount });
+  const expiresAtUtc = nextExpiringLimitReset(limitResets)?.expiresAtUtc;
+  const expires = typeof expiresAtUtc === 'number'
+    ? translate(language, "statusBar.limitResetExpires", { date: formatCompactDate(expiresAtUtc, language) })
+    : undefined;
+  return expires ? `${counts} · ${expires}` : counts;
+}
+
+function formatCompactDate(utcMs: number, language: AppLanguage): string {
+  return new Intl.DateTimeFormat(localeTag(language), { month: 'short', day: 'numeric' }).format(new Date(utcMs));
 }
 
 /** Provider heading, carrying the account plan when it is known, e.g. `CODEX (Pro Lite)`. */
@@ -385,14 +496,16 @@ function buildCodexUsageLines(rateLimit: RateLimitInfo | undefined, language: Ap
   if (!rateLimit) {
     return [];
   }
-  return buildCompactUsageLines(providerTitle('CODEX', plan), rateLimit.windows, ['codex:primary', 'codex:secondary'], language);
+  const lines = buildCompactUsageLines(providerTitle('CODEX', plan), rateLimit.windows, CODEX_PRIMARY_WINDOW_IDS, language);
+  const limitResets = formatLimitResets(rateLimit.limitResets, language);
+  return lines.length > 0 && limitResets ? [...lines, limitResets] : lines;
 }
 
 function buildClaudeUsageLines(rateLimit: ClaudeRateLimitInfo | undefined, language: AppLanguage, plan?: UsagePlanInfo): string[] {
   if (!rateLimit) {
     return [];
   }
-  return buildCompactUsageLines(providerTitle('CLAUDE CODE', plan), rateLimit.windows, ['session', 'weekly'], language);
+  return buildCompactUsageLines(providerTitle('CLAUDE CODE', plan), rateLimit.windows, CLAUDE_PRIMARY_WINDOW_IDS, language);
 }
 
 function buildCompactUsageLines(

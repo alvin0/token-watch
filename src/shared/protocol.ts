@@ -82,12 +82,30 @@ export interface UsageQuotaWindow {
   isActive?: boolean;
 }
 
+/** One "usage limit reset" granted to the account — restores a 5h/weekly limit, and expires. */
+export interface UsageLimitReset {
+  id: string;
+  title?: string;
+  expiresAtUtc?: number;
+}
+
+/**
+ * Usage limit resets the account can still use. These restore a reached rate
+ * limit; they are NOT billing credits. `resets` is absent until the detail
+ * request has been made, so the count can stand on its own.
+ */
+export interface UsageLimitResetsInfo {
+  availableCount: number;
+  resets?: UsageLimitReset[];
+}
+
 export interface RateLimitInfo {
   primaryPct?: number;
   secondaryPct?: number;
   remainingSeconds?: number;
   weeklyResetAtUtc?: number;
   windows: UsageQuotaWindow[];
+  limitResets?: UsageLimitResetsInfo;
   tsUtc?: number;
 }
 

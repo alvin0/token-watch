@@ -40,7 +40,7 @@ export function ToolCallsCard() {
 
   return (
     <>
-      <section className="tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e]">
+      <section className="tw-overflow-hidden tw-rounded-lg tw-border tw-border-edge tw-bg-card">
         <div className="tw-px-3 tw-py-2.5">
           <div className="tw-flex tw-items-center tw-justify-between tw-gap-3">
             <span className="tw-text-[10px] tw-font-medium tw-uppercase tw-tracking-wide">{t("tools.title")}</span>
@@ -77,7 +77,7 @@ export function ToolCallsCard() {
         {expanded && summary.totalCalls > 0 && (
           <>
             <ToolsTable tools={visibleTools} />
-            <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-[#2a2a3a] tw-bg-[#141426] tw-px-3 tw-py-2">
+            <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-edge tw-bg-recessed tw-px-3 tw-py-2">
               <button
                 type="button"
                 onClick={() => setModalOpen(true)}
@@ -100,8 +100,8 @@ export function ToolCallsCard() {
 
       {modalOpen && (
         <div
-          className="tw-fixed tw-inset-0 tw-z-50 tw-flex tw-items-center tw-justify-center tw-p-3"
-          style={{ backgroundColor: "rgba(8, 8, 18, 0.86)" }}
+          className="tw-fixed tw-inset-0 tw-z-50 tw-flex tw-items-center tw-justify-center tw-p-3 tw-bg-scrim"
+         
           onMouseDown={(event) => {
             if (event.currentTarget === event.target) { setModalOpen(false); }
           }}
@@ -110,9 +110,9 @@ export function ToolCallsCard() {
             role="dialog"
             aria-modal="true"
             aria-label={t("tools.all")}
-            className="tw-flex tw-max-h-full tw-w-full tw-max-w-[720px] tw-flex-col tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#34344a] tw-bg-[#1a1a2e] tw-shadow-2xl"
+            className="tw-flex tw-max-h-full tw-w-full tw-max-w-[720px] tw-flex-col tw-overflow-hidden tw-rounded-lg tw-border tw-border-control tw-bg-card tw-shadow-widget"
           >
-            <div className="tw-flex tw-items-start tw-justify-between tw-gap-3 tw-border-b tw-border-[#2a2a3a] tw-px-3 tw-py-2.5">
+            <div className="tw-flex tw-items-start tw-justify-between tw-gap-3 tw-border-b tw-border-edge tw-px-3 tw-py-2.5">
               <div>
                 <div className="tw-text-[11px] tw-font-semibold">{t("tools.all")}</div>
                 <div className="tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">
@@ -123,13 +123,13 @@ export function ToolCallsCard() {
                 type="button"
                 aria-label={t("tools.close")}
                 onClick={() => setModalOpen(false)}
-                className="tw-cursor-pointer tw-rounded tw-px-2 tw-py-1 tw-text-[12px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-[#25253a] hover:tw-text-[var(--vscode-foreground)]"
+                className="tw-cursor-pointer tw-rounded tw-px-2 tw-py-1 tw-text-[12px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-hover hover:tw-text-[var(--vscode-foreground)]"
               >
                 ×
               </button>
             </div>
 
-            <div className="tw-flex tw-gap-1.5 tw-border-b tw-border-[#2a2a3a] tw-px-3 tw-py-2">
+            <div className="tw-flex tw-gap-1.5 tw-border-b tw-border-edge tw-px-3 tw-py-2">
               <SourceFilter label={t("common.all")} value="all" current={sourceFilter} onChange={setSourceFilter} />
               <SourceFilter label="Codex" value="codex" current={sourceFilter} onChange={setSourceFilter} />
               <SourceFilter label="Claude Code" value="claude" current={sourceFilter} onChange={setSourceFilter} />
@@ -162,7 +162,7 @@ function ToolsTable({ tools }: { tools: ToolUsageRow[] }) {
         <col style={{ width: "16%" }} />
       </colgroup>
       <thead>
-        <tr className="tw-border-t tw-border-[#2a2a3a] tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">
+        <tr className="tw-border-t tw-border-edge tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">
           <th className="tw-px-3 tw-py-1.5 tw-text-left tw-font-medium">{t("common.tool")}</th>
           <th className="tw-px-1 tw-py-1.5 tw-text-left tw-font-medium">{t("common.source")}</th>
           <th className="tw-px-1 tw-py-1.5 tw-text-right tw-font-medium">{t("common.calls")}</th>
@@ -173,7 +173,7 @@ function ToolsTable({ tools }: { tools: ToolUsageRow[] }) {
         {tools.map((tool, index) => (
           <tr
             key={`${tool.source}:${tool.toolName}:${tool.isSidechain ? "sidechain" : "main"}:${index}`}
-            className="tw-border-t tw-border-[#25253a] tw-text-[9px] hover:tw-bg-[#18182a]"
+            className="tw-border-t tw-border-edge tw-text-[9px] hover:tw-bg-hover"
           >
             <td className="tw-truncate tw-px-3 tw-py-1.5 tw-font-medium" title={tool.toolName}>
               {tool.toolName}
@@ -184,7 +184,7 @@ function ToolsTable({ tools }: { tools: ToolUsageRow[] }) {
             <td className="tw-truncate tw-px-1 tw-py-1.5 tw-text-right tw-tabular-nums tw-text-[var(--vscode-descriptionForeground)]">
               {tool.count.toLocaleString(locale)}
             </td>
-            <td className="tw-truncate tw-px-3 tw-py-1.5 tw-text-right tw-font-medium tw-tabular-nums tw-text-[#50c8a8]">
+            <td className="tw-truncate tw-px-3 tw-py-1.5 tw-text-right tw-font-medium tw-tabular-nums tw-text-chart-green">
               {tool.sharePct.toFixed(1)}%
             </td>
           </tr>
@@ -213,8 +213,8 @@ function SourceFilter({
       onClick={() => onChange(value)}
       className={`tw-cursor-pointer tw-rounded tw-border tw-px-2 tw-py-1 tw-text-[8px] tw-font-medium ${
         active
-          ? "tw-border-[var(--vscode-focusBorder)] tw-bg-[#25253a] tw-text-[var(--vscode-foreground)]"
-          : "tw-border-[#2a2a3a] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-[#202035]"
+          ? "tw-border-[var(--vscode-focusBorder)] tw-bg-hover tw-text-[var(--vscode-foreground)]"
+          : "tw-border-edge tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-hover"
       }`}
     >
       {label}

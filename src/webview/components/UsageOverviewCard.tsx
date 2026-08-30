@@ -35,11 +35,11 @@ export function UsageOverviewCard({
   costPerTurn,
 }: UsageOverviewCardProps) {
   const { t } = useTranslation();
-  const deltaTone = delta === 0 ? "tw-text-[#f0d36a]" : delta < 0 ? "tw-text-[#f87171]" : "tw-text-[#89d185]";
+  const deltaTone = delta === 0 ? "tw-text-chart-yellow" : delta < 0 ? "tw-text-chart-red" : "tw-text-chart-green";
   const deltaArrow = delta > 0 ? "↑" : delta < 0 ? "↓" : "→";
 
   return (
-    <section className="tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#2a2a3a] tw-bg-[#1a1a2e]">
+    <section className="tw-overflow-hidden tw-rounded-lg tw-border tw-border-edge tw-bg-card">
       <div className="tw-flex tw-items-start tw-justify-between tw-gap-3 tw-p-3">
         <div className="tw-min-w-0">
           <div className="tw-truncate tw-text-[10px] tw-font-medium tw-text-[var(--vscode-descriptionForeground)]">
@@ -60,7 +60,7 @@ export function UsageOverviewCard({
         </div>
       </div>
 
-      <div className="tw-border-t tw-border-[#2a2a3a] tw-p-3">
+      <div className="tw-border-t tw-border-edge tw-p-3">
         <div className="tw-flex tw-items-center tw-justify-between tw-gap-3">
           <div className="tw-text-[10px] tw-font-medium tw-text-[var(--vscode-foreground)]">{t("overview.tokenUsage")}</div>
           <div className="tw-text-[11px] tw-font-semibold tw-tabular-nums tw-text-[var(--vscode-foreground)]">
@@ -69,9 +69,9 @@ export function UsageOverviewCard({
         </div>
 
         <div className="tw-mt-1.5 tw-flex tw-flex-wrap tw-items-center tw-gap-1.5">
-          <LegendChip label={t("overview.cached", { value: cacheHitPct.toFixed(1) })} color="#50c8a8" />
-          <LegendChip label={t("common.input")} color="#6aa7ff" />
-          <LegendChip label={t("common.output")} color="#4fc1ff" />
+          <LegendChip label={t("overview.cached", { value: cacheHitPct.toFixed(1) })} color={chartColors.cacheRead} />
+          <LegendChip label={t("common.input")} color={chartColors.input} />
+          <LegendChip label={t("common.output")} color={chartColors.output} />
         </div>
 
         <div className="tw-mt-2.5 tw-grid tw-gap-1.5" style={THREE_COLUMN_GRID}>
@@ -82,7 +82,7 @@ export function UsageOverviewCard({
       </div>
 
       <div
-        className="tw-grid tw-divide-x tw-divide-[#2a2a3a] tw-border-t tw-border-[#2a2a3a] tw-bg-[#141426]"
+        className="tw-grid tw-divide-x tw-divide-edge tw-border-t tw-border-edge tw-bg-recessed"
         style={FOUR_COLUMN_GRID}
       >
         <FooterMetric label={t("common.turns")} value={turns} />
@@ -96,7 +96,7 @@ export function UsageOverviewCard({
 
 function LegendChip({ label, color }: { label: string; color: string }) {
   return (
-    <div className="tw-inline-flex tw-items-center tw-gap-1 tw-rounded-full tw-border tw-border-[#2a2a3a] tw-bg-[#141426] tw-px-1.5 tw-py-0.5">
+    <div className="tw-inline-flex tw-items-center tw-gap-1 tw-rounded-full tw-border tw-border-edge tw-bg-recessed tw-px-1.5 tw-py-0.5">
       <span className="tw-h-1.5 tw-w-1.5 tw-rounded-full" style={{ backgroundColor: color }} />
       <span className="tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">{label}</span>
     </div>
@@ -112,14 +112,15 @@ function TokenMetric({
   value: string;
   tone: "cache" | "input" | "output";
 }) {
+  // Same hue per token type as the trend chart, so the numbers and the bars agree.
   const toneClass = tone === "cache"
-    ? "tw-text-[#50c8a8]"
+    ? "tw-text-chart-yellow"
     : tone === "input"
-      ? "tw-text-[#6aa7ff]"
-      : "tw-text-[#4fc1ff]";
+      ? "tw-text-chart-blue"
+      : "tw-text-chart-green";
 
   return (
-    <div className="tw-min-w-0 tw-rounded-md tw-border tw-border-[#25253a] tw-bg-[#141426] tw-px-2 tw-py-2">
+    <div className="tw-min-w-0 tw-rounded-md tw-border tw-border-edge tw-bg-recessed tw-px-2 tw-py-2">
       <div className="tw-truncate tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">{label}</div>
       <div className={`tw-mt-0.5 tw-truncate tw-text-[12px] tw-font-semibold tw-tabular-nums ${toneClass}`} title={value}>
         {value}
@@ -139,3 +140,4 @@ function FooterMetric({ label, value }: { label: string; value: string }) {
   );
 }
 import { useTranslation } from "../i18n";
+import { chartColors } from "../theme";

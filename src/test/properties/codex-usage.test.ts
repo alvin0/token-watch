@@ -4,7 +4,10 @@ import {
   codexPlanInfo,
   formatDurationShort,
   formatPercent,
+  mapCodexLimitResetCounts,
+  mapCodexLimitResets,
   mapCodexUsageToRateLimitInfo,
+  nextExpiringLimitReset,
 } from "../../shared/codexUsage.js";
 
 suite("Codex usage mapping", () => {
@@ -97,6 +100,55 @@ suite("Codex usage mapping", () => {
     });
 
     assert.ok(!info?.windows.some((window) => /spark/i.test(window.label)));
+  });
+
+  test("carries usage limit reset counts alongside the quota windows", () => {
+    const info = mapCodexUsageToRateLimitInfo({
+      rate_limit: { primary_window: { used_percent: 10 } },
+      rate_limit_reset_credits: { available_count: 2 },
+    });
+
+    assert.deepStrictEqual(info?.limitResets, { availableCount: 2 });
+  });
+
+  test("omits usage limit reset counts the payload does not report", () => {
+    assert.strictEqual(mapCodexLimitResetCounts({}), undefined);
+    assert.strictEqual(mapCodexLimitResetCounts({ rate_limit_reset_credits: null }), undefined);
+    assert.strictEqual(mapCodexLimitResetCounts({ rate_limit_reset_credits: { available_count: -1 } }), undefined);
+    assert.deepStrictEqual(mapCodexLimitResetCounts({ rate_limit_reset_credits: { available_count: 0 } }), { availableCount: 0 });
+    assert.deepStrictEqual(mapCodexLimitResetCounts({ rate_limit_reset_credits: { available_count: 3 } }), { availableCount: 3 });
+  });
+
+  test("lists available usage limit resets with their expiry, soonest first", () => {
+    const resets = mapCodexLimitResets({
+      credits: [
+        { id: "reset-late", status: "available", title: "Full reset", expires_at: "2026-09-20T23:58:18.459116Z" },
+        { id: "reset-soon", status: "available", title: " Full reset ", expires_at: "2026-09-02T10:00:00Z" },
+        { id: "reset-used", status: "redeemed", expires_at: "2026-09-01T10:00:00Z" },
+        { id: "reset-no-expiry", status: "available" },
+        null,
+      ],
+      available_count: 3,
+    });
+
+    assert.deepStrictEqual(resets, [
+      { id: "reset-soon", title: "Full reset", expiresAtUtc: Date.parse("2026-09-02T10:00:00Z") },
+      { id: "reset-late", title: "Full reset", expiresAtUtc: Date.parse("2026-09-20T23:58:18.459116Z") },
+      { id: "reset-no-expiry" },
+    ]);
+    assert.strictEqual(nextExpiringLimitReset({ availableCount: 3, resets })?.id, "reset-soon");
+  });
+
+  test("survives a reset list that is missing, empty, or unidentified", () => {
+    assert.deepStrictEqual(mapCodexLimitResets({}), []);
+    assert.deepStrictEqual(mapCodexLimitResets({ credits: null }), []);
+    assert.deepStrictEqual(mapCodexLimitResets({ credits: [{ status: "available" }] }), []);
+    assert.deepStrictEqual(
+      mapCodexLimitResets({ credits: [{ id: "x", status: "available", expires_at: "not-a-date" }] }),
+      [{ id: "x" }],
+    );
+    assert.strictEqual(nextExpiringLimitReset(undefined), undefined);
+    assert.strictEqual(nextExpiringLimitReset({ availableCount: 1 }), undefined);
   });
 
   test("labels the ChatGPT plan of the signed-in account", () => {

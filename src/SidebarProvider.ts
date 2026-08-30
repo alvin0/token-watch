@@ -8,6 +8,8 @@ import { mapClaudeUsageToRateLimitInfo, type ClaudeUsageResponse } from "./share
 import { resolveClaudePlan, resolveCodexPlan } from "./host/usagePlan";
 import type { CostAlertController } from "./host/CostAlertController";
 import type { LanguageController } from "./host/LanguageController";
+import type { LimitResetReminder } from "./host/LimitResetReminder";
+import { codexLimitResetsFetcher, withLimitResetDetails } from "./host/limitResets";
 import { effectivePricingOverrides, getConfig } from "./host/config";
 import type { ModelRate, PricingTable } from "./shared/types";
 import type {
@@ -59,6 +61,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     private readonly costAlerts: CostAlertController,
     private readonly language: LanguageController,
     currency: DisplayCurrencyConfig,
+    private readonly limitResetReminder?: LimitResetReminder,
   ) {
     this.currency = currency;
 
@@ -243,11 +246,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
 
     let codexPlanType: string | undefined;
     const refreshPromise = this.codexConnection.usageInfo<CodexUsageResponse>({ force: bypassCache })
-      .then((usage) => {
+      .then(async (usage) => {
         codexPlanType = usage.plan_type;
         const rateLimit = mapCodexUsageToRateLimitInfo(usage);
         if (rateLimit) {
+          rateLimit.limitResets = await withLimitResetDetails(codexLimitResetsFetcher(this.codexConnection), rateLimit.limitResets, bypassCache);
           this.latestRateLimit = rateLimit;
+          void this.limitResetReminder?.evaluate(rateLimit.limitResets);
         }
         this.latestCodexUsageCache = {
           ...this.codexConnection.usageCacheInfo(),

@@ -143,6 +143,29 @@
           "description": "Show/hide the status bar item."
         }
       }
+    },
+    "icons": {
+      "token-watch": {
+        "description": "Token Watch",
+        "default": {
+          "fontPath": "resources/token-watch-icons.woff",
+          "fontCharacter": "\\E900"
+        }
+      },
+      "token-watch-codex": {
+        "description": "Codex",
+        "default": {
+          "fontPath": "resources/token-watch-icons.woff",
+          "fontCharacter": "\\E901"
+        }
+      },
+      "token-watch-claude": {
+        "description": "Claude Code",
+        "default": {
+          "fontPath": "resources/token-watch-icons.woff",
+          "fontCharacter": "\\E902"
+        }
+      }
     }
   },
   "scripts": {
@@ -160,7 +183,10 @@
     "lint": "eslint src",
     "benchmark:ingestion": "npm run compile-tests && node scripts/benchmark-ingestion.mjs",
     "pretest": "npm run compile-tests && npm run compile",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "build:icons": "node scripts/build-icons.mjs",
+    "trace:logo": "node scripts/trace-logo.mjs",
+    "build:icon-pngs": "node scripts/build-icon-pngs.mjs"
   },
   "dependencies": {
     "react": "18.3.1",
@@ -185,10 +211,17 @@
     "esbuild": "^0.21.5",
     "eslint": "^8.57.0",
     "fast-check": "4.8.0",
+    "jimp": "^0.14.0",
     "npm-run-all": "^4.1.5",
     "postcss": "8.4.39",
     "postcss-cli": "11.0.0",
+    "potrace": "^2.1.8",
+    "sharp": "^0.35.4",
+    "simple-icons": "^16.29.0",
+    "svg2ttf": "^6.1.0",
+    "svgicons2svgfont": "^16.0.0",
     "tailwindcss": "3.4.4",
+    "ttf2woff": "^3.0.0",
     "typescript": "^5.5.0"
   }
 }

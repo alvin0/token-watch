@@ -74,8 +74,8 @@ export function CostAlertSettingsDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="tw-fixed tw-inset-0 tw-z-50 tw-flex tw-items-center tw-justify-center tw-p-3"
-      style={{ backgroundColor: "rgba(8, 8, 18, 0.86)" }}
+      className="tw-fixed tw-inset-0 tw-z-50 tw-flex tw-items-center tw-justify-center tw-p-3 tw-bg-scrim"
+     
       onMouseDown={(event) => {
         if (!saving && event.currentTarget === event.target) { onClose(); }
       }}
@@ -86,9 +86,9 @@ export function CostAlertSettingsDialog({ onClose }: { onClose: () => void }) {
         aria-modal="true"
         aria-labelledby="cost-threshold-alerts-title"
         tabIndex={-1}
-        className="tw-flex tw-max-h-full tw-w-full tw-max-w-[520px] tw-flex-col tw-overflow-hidden tw-rounded-lg tw-border tw-border-[#34344a] tw-bg-[#1a1a2e] tw-shadow-2xl tw-outline-none"
+        className="tw-flex tw-max-h-full tw-w-full tw-max-w-[520px] tw-flex-col tw-overflow-hidden tw-rounded-lg tw-border tw-border-control tw-bg-card tw-shadow-widget tw-outline-none"
       >
-        <div className="tw-flex tw-items-start tw-justify-between tw-gap-3 tw-border-b tw-border-[#2a2a3a] tw-px-3 tw-py-2.5">
+        <div className="tw-flex tw-items-start tw-justify-between tw-gap-3 tw-border-b tw-border-edge tw-px-3 tw-py-2.5">
           <div>
             <div id="cost-threshold-alerts-title" className="tw-text-[13px] tw-font-semibold">{t("header.alerts")}</div>
             <div className="tw-mt-0.5 tw-text-[10px] tw-text-[var(--vscode-descriptionForeground)]">
@@ -100,7 +100,7 @@ export function CostAlertSettingsDialog({ onClose }: { onClose: () => void }) {
             aria-label={t("alerts.close")}
             disabled={saving}
             onClick={onClose}
-            className="tw-cursor-pointer tw-rounded tw-px-2 tw-py-1 tw-text-[14px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-[#25253a] hover:tw-text-[var(--vscode-foreground)] disabled:tw-cursor-default disabled:tw-opacity-50"
+            className="tw-cursor-pointer tw-rounded tw-px-2 tw-py-1 tw-text-[14px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-hover hover:tw-text-[var(--vscode-foreground)] disabled:tw-cursor-default disabled:tw-opacity-50"
           >
             ×
           </button>
@@ -108,7 +108,7 @@ export function CostAlertSettingsDialog({ onClose }: { onClose: () => void }) {
 
         <form onSubmit={save} className="tw-flex tw-min-h-0 tw-flex-1 tw-flex-col">
           <div className="tw-min-h-0 tw-flex-1 tw-overflow-y-auto tw-p-3">
-            <div className="tw-rounded-md tw-border tw-border-[#34344a] tw-bg-[#141426] tw-px-2.5 tw-py-2 tw-text-[10px] tw-leading-relaxed tw-text-[var(--vscode-descriptionForeground)]">
+            <div className="tw-rounded-md tw-border tw-border-control tw-bg-recessed tw-px-2.5 tw-py-2 tw-text-[10px] tw-leading-relaxed tw-text-[var(--vscode-descriptionForeground)]">
               {t("alerts.explanation")}
             </div>
 
@@ -119,7 +119,7 @@ export function CostAlertSettingsDialog({ onClose }: { onClose: () => void }) {
             ) : (
               <div className="tw-mt-2.5 tw-space-y-2">
                 {drafts.map((draft, index) => (
-                  <div key={draft.id} className="tw-rounded-md tw-border tw-border-[#2a2a3a] tw-bg-[#18182a] tw-p-2.5">
+                  <div key={draft.id} className="tw-rounded-md tw-border tw-border-edge tw-bg-recessed tw-p-2.5">
                     <div className="tw-flex tw-items-center tw-justify-between tw-gap-2">
                       <span className="tw-text-[11px] tw-font-medium">{t("alerts.item", { number: index + 1 })}</span>
                       <button
@@ -127,7 +127,7 @@ export function CostAlertSettingsDialog({ onClose }: { onClose: () => void }) {
                         aria-label={t("alerts.delete", { number: index + 1 })}
                         disabled={saving}
                         onClick={() => removeDraft(draft.id)}
-                        className="tw-cursor-pointer tw-rounded tw-px-1.5 tw-py-0.5 tw-text-[12px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-[#2a2030] hover:tw-text-[#f06a6a] disabled:tw-cursor-default disabled:tw-opacity-50"
+                        className="tw-cursor-pointer tw-rounded tw-px-1.5 tw-py-0.5 tw-text-[12px] tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-danger-bg hover:tw-text-chart-red disabled:tw-cursor-default disabled:tw-opacity-50"
                       >
                         ×
                       </button>
@@ -189,7 +189,7 @@ export function CostAlertSettingsDialog({ onClose }: { onClose: () => void }) {
                 type="button"
                 disabled={saving}
                 onClick={() => setDrafts((current) => [...current, newDraft()])}
-                className="tw-mt-2.5 tw-w-full tw-cursor-pointer tw-rounded tw-border tw-border-dashed tw-border-[#3a3a50] tw-px-2 tw-py-1.5 tw-text-[11px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-bg-[#202035] disabled:tw-cursor-default disabled:tw-opacity-50"
+                className="tw-mt-2.5 tw-w-full tw-cursor-pointer tw-rounded tw-border tw-border-dashed tw-border-control tw-px-2 tw-py-1.5 tw-text-[11px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-bg-hover disabled:tw-cursor-default disabled:tw-opacity-50"
               >
                 {t("alerts.add")}
               </button>
@@ -198,12 +198,12 @@ export function CostAlertSettingsDialog({ onClose }: { onClose: () => void }) {
             {saveError && <div role="alert" className="tw-mt-2 tw-text-[10px] tw-text-[var(--vscode-errorForeground,#f06a6a)]">{saveError}</div>}
           </div>
 
-          <div className="tw-flex tw-justify-end tw-gap-2 tw-border-t tw-border-[#2a2a3a] tw-px-3 tw-py-2.5">
+          <div className="tw-flex tw-justify-end tw-gap-2 tw-border-t tw-border-edge tw-px-3 tw-py-2.5">
             <button
               type="button"
               disabled={saving}
               onClick={onClose}
-              className="tw-cursor-pointer tw-rounded tw-border tw-border-[#3a3a50] tw-px-3 tw-py-1.5 tw-text-[11px] hover:tw-bg-[#25253a] disabled:tw-cursor-default disabled:tw-opacity-50"
+              className="tw-cursor-pointer tw-rounded tw-border tw-border-control tw-px-3 tw-py-1.5 tw-text-[11px] hover:tw-bg-hover disabled:tw-cursor-default disabled:tw-opacity-50"
             >
               {t("common.cancel")}
             </button>
