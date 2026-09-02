@@ -82,6 +82,7 @@ suite("PricingEngine property tests", () => {
       ["o3-mini", { inputPer1K: 0.0011, cachedInputPer1K: 0.00055, outputPer1K: 0.0044 }],
       ["o4-mini", { inputPer1K: 0.0011, cachedInputPer1K: 0.000275, outputPer1K: 0.0044 }],
       ["codex-mini-latest", { inputPer1K: 0.0015, cachedInputPer1K: 0.000375, outputPer1K: 0.006 }],
+      ["codex-auto-review", { inputPer1K: 0.0025, cachedInputPer1K: 0.00025, outputPer1K: 0.015 }],
     ]);
   });
 
@@ -122,6 +123,35 @@ suite("PricingEngine property tests", () => {
       cacheCreationPer1K: 0.01875,
       outputPer1K: 0.075,
     });
+    assert.deepStrictEqual(DEFAULT_PRICING["claude-fable-5.1"], {
+      inputPer1K: 0.01,
+      cachedInputPer1K: 0.00025,
+      cacheCreationPer1K: 0.0125,
+      outputPer1K: 0.05,
+    });
+    assert.deepStrictEqual(
+      DEFAULT_PRICING["claude-fable-5-1"],
+      DEFAULT_PRICING["claude-fable-5.1"],
+    );
+    assert.deepStrictEqual(DEFAULT_PRICING["claude-fable-5"], {
+      inputPer1K: 0.01,
+      cachedInputPer1K: 0.001,
+      cacheCreationPer1K: 0.0125,
+      outputPer1K: 0.05,
+    });
+    // Mythos 5.1 matches Fable 5.1 except on cache reads, which were not
+    // published as discounted; pricing them at the usual 0.1x keeps a real bill
+    // from being under-reported.
+    assert.deepStrictEqual(DEFAULT_PRICING["claude-mythos-5.1"], {
+      inputPer1K: 0.01,
+      cachedInputPer1K: 0.001,
+      cacheCreationPer1K: 0.0125,
+      outputPer1K: 0.05,
+    });
+    assert.deepStrictEqual(
+      DEFAULT_PRICING["claude-mythos-5-1"],
+      DEFAULT_PRICING["claude-mythos-5.1"],
+    );
     assert.deepStrictEqual(DEFAULT_PRICING["claude-sonnet-4.6"], {
       inputPer1K: 0.003,
       cachedInputPer1K: 0.0003,

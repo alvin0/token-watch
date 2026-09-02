@@ -66,6 +66,7 @@ export const DEFAULT_PRICING: PricingTable = {
   "o3-mini": { inputPer1K: 0.0011, cachedInputPer1K: 0.00055, outputPer1K: 0.0044 },
   "o4-mini": { inputPer1K: 0.0011, cachedInputPer1K: 0.000275, outputPer1K: 0.0044 },
   "codex-mini-latest": { inputPer1K: 0.0015, cachedInputPer1K: 0.000375, outputPer1K: 0.006 },
+  "codex-auto-review": { inputPer1K: 0.0025, cachedInputPer1K: 0.00025, outputPer1K: 0.015 },
   // Claude (cacheCreationPer1K uses Anthropic's 5m cache write price)
   "claude-opus-5": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, cacheCreationPer1K: 0.00625, outputPer1K: 0.025 },
   "claude-opus-4.8": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, cacheCreationPer1K: 0.00625, outputPer1K: 0.025 },
@@ -80,7 +81,17 @@ export const DEFAULT_PRICING: PricingTable = {
   "claude-opus-4-1": { inputPer1K: 0.015, cachedInputPer1K: 0.0015, cacheCreationPer1K: 0.01875, outputPer1K: 0.075 },
   "claude-opus-4": { inputPer1K: 0.015, cachedInputPer1K: 0.0015, cacheCreationPer1K: 0.01875, outputPer1K: 0.075 },
   "claude-opus-4-20250514": { inputPer1K: 0.015, cachedInputPer1K: 0.0015, cacheCreationPer1K: 0.01875, outputPer1K: 0.075 },
+  // Fable 5.1 keeps Fable 5's input/output/cache-write rates but reads cache at
+  // $0.25/MTok (0.025x input) instead of the usual 0.1x.
+  "claude-fable-5.1": { inputPer1K: 0.01, cachedInputPer1K: 0.00025, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
+  "claude-fable-5-1": { inputPer1K: 0.01, cachedInputPer1K: 0.00025, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
   "claude-fable-5": { inputPer1K: 0.01, cachedInputPer1K: 0.001, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
+  // Mythos 5.1 (Project Glasswing) matches Fable 5.1 on every published rate.
+  // Whether it shares Fable 5.1's cheaper cache reads was not settled at launch,
+  // so cache hits are priced at the usual 0.1x: guessing the discount would
+  // under-report a real bill, which is the wrong way round for a cost tracker.
+  "claude-mythos-5.1": { inputPer1K: 0.01, cachedInputPer1K: 0.001, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
+  "claude-mythos-5-1": { inputPer1K: 0.01, cachedInputPer1K: 0.001, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
   "claude-sonnet-5": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
   "claude-sonnet-4.6": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
   "claude-sonnet-4-6": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },

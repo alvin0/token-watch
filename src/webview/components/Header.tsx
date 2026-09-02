@@ -4,24 +4,14 @@ import { CostAlertSettingsDialog } from "./CostAlertSettingsDialog";
 import { PricingSettingsDialog } from "./PricingSettingsDialog";
 import { useTranslation } from "../i18n";
 import type { AppLanguage } from "../../shared/i18n";
-import { chartColors } from "../theme";
 
-export function Header({ status }: { status: string }) {
+export function Header() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pricingOpen, setPricingOpen] = useState(false);
   const alertButtonRef = useRef<HTMLButtonElement>(null);
   const pricingButtonRef = useRef<HTMLButtonElement>(null);
   const setLanguage = useStore((state) => state.setLanguage);
   const { language, t } = useTranslation();
-  const c = status === "Live"
-    ? chartColors.output
-    : status === "Scanning" || status === "Stale"
-      ? chartColors.cacheRead
-      : chartColors.muted;
-  const statusLabel = status === "Live" ? t("status.live")
-    : status === "Scanning" ? t("status.scanning")
-      : status === "Stale" ? t("status.stale")
-        : t("status.paused");
   const closeSettings = () => {
     setSettingsOpen(false);
     requestAnimationFrame(() => alertButtonRef.current?.focus());
@@ -30,9 +20,6 @@ export function Header({ status }: { status: string }) {
     <>
       <div className="tw-shrink-0 tw-px-3 tw-pt-2 tw-pb-1 tw-flex tw-items-center tw-gap-2">
         <span className="tw-text-[13px] tw-font-bold tw-text-[var(--vscode-foreground)]">Token Watch</span>
-        <span className="tw-flex tw-items-center tw-gap-1 tw-text-[9px]" style={{ color: c }}>
-          <span className="tw-w-[5px] tw-h-[5px] tw-rounded-full" style={{ backgroundColor: c }} />{statusLabel}
-        </span>
         <div className="tw-ml-auto tw-flex tw-items-center tw-gap-0.5">
           <button
             type="button"

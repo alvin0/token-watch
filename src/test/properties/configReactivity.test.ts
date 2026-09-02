@@ -3,8 +3,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { watchRootsFor, watchTargetsChanged } from "../../extension.js";
-import { UsageStatusService } from "../../host/UsageStatusService.js";
+import { UsageStatusService, type UsageAccountLookups } from "../../host/UsageStatusService.js";
 import type { TokenWatchConfig } from "../../host/config.js";
+import type { CodexConnection } from "../../provider/codex/index.js";
+import type { ClaudeConnection } from "../../provider/claude/index.js";
 
 function config(overrides: Partial<TokenWatchConfig> = {}): TokenWatchConfig {
   return {
@@ -75,8 +77,38 @@ suite("Watcher reacts to settings without a reload", () => {
 });
 
 suite("Usage status service gating", () => {
+  /**
+   * A service that answers from nothing.
+   *
+   * These tests only ask whether the gate is open, but activating a consumer
+   * starts a refresh, and a real service would answer it by reading this
+   * machine's Codex auth file, shelling out to the macOS Keychain for Claude's
+   * credentials, and calling both quota APIs with them — from a unit run, with
+   * no sandbox around it. A failing token refresh can rewrite the credentials
+   * file the real CLI uses, so the suite supplies its own.
+   */
+  function gated(): UsageStatusService {
+    const accounts: UsageAccountLookups = {
+      codexAuthMode: async () => undefined,
+      codexPlan: async () => undefined,
+      claudePlan: async () => undefined,
+    };
+    return new UsageStatusService(undefined, {
+      codex: {
+        usageInfo: async () => ({}),
+        limitResets: async () => ({}),
+        usageCacheInfo: () => ({}),
+      } as unknown as CodexConnection,
+      claude: {
+        usageInfo: async () => ({}),
+        usageCacheInfo: () => ({}),
+      } as unknown as ClaudeConnection,
+      accounts,
+    });
+  }
+
   test("no consumer means no refreshing", async () => {
-    const service = new UsageStatusService();
+    const service = gated();
     assert.strictEqual(service.isActive(), false);
     // Resolves immediately without touching the network.
     await service.refresh("codex");
@@ -86,7 +118,7 @@ suite("Usage status service gating", () => {
   });
 
   test("a consumer activates the service and deactivating it stops again", () => {
-    const service = new UsageStatusService();
+    const service = gated();
     service.setConsumerActive("sidebar", true);
     assert.strictEqual(service.isActive(), true);
     service.setConsumerActive("sidebar", false);
@@ -95,7 +127,7 @@ suite("Usage status service gating", () => {
   });
 
   test("the service stays active while any consumer still shows usage", () => {
-    const service = new UsageStatusService();
+    const service = gated();
     service.setConsumerActive("sidebar", true);
     service.setConsumerActive("statusBar", true);
     service.setConsumerActive("sidebar", false);
@@ -106,7 +138,7 @@ suite("Usage status service gating", () => {
   });
 
   test("a disposed service is never active again", () => {
-    const service = new UsageStatusService();
+    const service = gated();
     service.setConsumerActive("sidebar", true);
     service.dispose();
     assert.strictEqual(service.isActive(), false);

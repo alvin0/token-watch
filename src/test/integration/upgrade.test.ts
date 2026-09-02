@@ -14,9 +14,24 @@ import * as os from "node:os";
 import { join } from "node:path";
 import * as vscode from "vscode";
 import initSqlJs from "sql.js";
+import { WORKER_REQUEST_TIMEOUT_MS, WORKER_START_TIMEOUT_MS } from "../../host/IngestionCoordinator";
 import { SCHEMA_VERSION } from "../../worker/store/schema";
 
 const EXTENSION_ID = "alvin0-dinhai.token-watch";
+
+/**
+ * How long a test that waits on a worker round-trip may take.
+ *
+ * Derived from the coordinator's own budgets rather than written as a figure. A
+ * request made before the worker has finished starting waits for the handshake
+ * first and only then arms its own timer, so the longest a call can legitimately
+ * take is both budgets end to end. A shorter figure here — it used to be 20s —
+ * failed the test before the code under test could report the timeout it would
+ * report in production, so a slow machine looked like a hung worker with nothing
+ * to go on. Whatever happens, the coordinator answers or rejects inside this, and
+ * the rejection is what the assertion should see.
+ */
+const WORKER_ROUND_TRIP_TIMEOUT_MS = WORKER_START_TIMEOUT_MS + WORKER_REQUEST_TIMEOUT_MS + 15_000;
 
 function databasePath(): string {
   return join(
@@ -153,7 +168,7 @@ suite("Upgrading an existing installation", () => {
   });
 
   test("the diagnostics report says the database is complete", async function checkReport() {
-    this.timeout(20_000);
+    this.timeout(WORKER_ROUND_TRIP_TIMEOUT_MS);
     await vscode.commands.executeCommand("token-watch.showDiagnostics");
     const text = vscode.window.activeTextEditor?.document.getText() ?? "";
     assert.ok(text.includes("# Token Watch Diagnostics"), "the report should have opened");
@@ -165,11 +180,11 @@ suite("Upgrading an existing installation", () => {
   });
 
   test("the report says where the worker spent its time", async function checkTiming() {
+    this.timeout(WORKER_ROUND_TRIP_TIMEOUT_MS);
     // Measured on the machine that ran it. Benchmarks written here have been
     // repeatedly optimistic — they call the code directly, on a fast disk, with
     // nothing competing — so the wait a user actually sees has to be something
     // they can read back rather than something to guess at.
-    this.timeout(20_000);
     await vscode.commands.executeCommand("token-watch.showDiagnostics");
     const text = vscode.window.activeTextEditor?.document.getText() ?? "";
     assert.ok(text.includes("## Timing"), "the report should have a timing section");

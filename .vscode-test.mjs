@@ -19,6 +19,22 @@ const versions = (process.env.TOKEN_WATCH_VSCODE_VERSIONS ?? "stable")
   .filter(Boolean);
 
 /**
+ * A temp root short enough for VS Code to start in.
+ *
+ * VS Code puts its main IPC socket inside the user-data directory, and a UNIX
+ * socket path cannot exceed ~103 characters. macOS's per-user temp directory
+ * (`/var/folders/<hash>/<hash>/T`) spends most of that budget before the
+ * profile subdirectories are appended, so the run died in `main.js` with
+ * `listen EINVAL: invalid argument .../1.12-main.sock` and no test ever ran —
+ * the local suite only worked with `TMPDIR` overridden by hand. `/tmp` is
+ * short and writable wherever this runs except Windows, which has no such
+ * limit and no `/tmp`.
+ */
+function shortTempRoot() {
+  return process.platform === "win32" ? tmpdir() : "/tmp";
+}
+
+/**
  * A sandboxed home for the run.
  *
  * The harness starts the REAL extension, and activation resolves its log and
@@ -26,7 +42,8 @@ const versions = (process.env.TOKEN_WATCH_VSCODE_VERSIONS ?? "stable")
  * the developer's own Codex and Claude sessions, read their OAuth tokens, and —
  * on an expiring token — refresh and rewrite those credential files.
  */
-const sandboxHome = mkdtempSync(join(tmpdir(), "token-watch-itest-home-"));
+const sandboxHome = mkdtempSync(join(shortTempRoot(), "token-watch-itest-home-"));
+
 /**
  * A throwaway VS Code profile, so no setting from the developer's own install
  * reaches the extension.

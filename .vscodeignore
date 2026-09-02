@@ -8,6 +8,7 @@ out/**
 node_modules/**
 scripts/**
 .codegraph/**
+.omc/**
 .gitignore
 .eslintrc.json
 esbuild.js
@@ -29,3 +30,4 @@ pricing.config.jsonc
 resources/_*.html
 resources/*-src.png
 resources/icons/**
+resources/logo.svg

@@ -1,6 +1,6 @@
 import * as assert from "node:assert";
 
-import { UsageStatusService } from "../../host/UsageStatusService.js";
+import { UsageStatusService, type UsageAccountLookups } from "../../host/UsageStatusService.js";
 import type { CodexConnection } from "../../provider/codex/index.js";
 import type { ClaudeConnection } from "../../provider/claude/index.js";
 import { usageRetryBounds } from "../../shared/usageRetry.js";
@@ -30,8 +30,24 @@ suite("Codex and Claude refresh independently", () => {
     return { calls, codex, claude };
   }
 
+  /**
+   * The account lookups, stubbed.
+   *
+   * The real ones read this machine's Codex auth file and shell out to the
+   * macOS Keychain for Claude's. Left in place they made this file read the
+   * developer's own credentials, and — because a refresh awaits the plan lookup
+   * before it calls the provider — put a subprocess between `refresh()` and the
+   * call these tests count, so `settle()` returned before Claude had been asked
+   * and two of them failed on a fast machine as often as not.
+   */
+  const accounts: UsageAccountLookups = {
+    codexAuthMode: async () => "chatgpt",
+    codexPlan: async () => undefined,
+    claudePlan: async () => undefined,
+  };
+
   function service(connections: { codex: CodexConnection; claude: ClaudeConnection }): UsageStatusService {
-    const created = new UsageStatusService(undefined, connections);
+    const created = new UsageStatusService(undefined, { ...connections, accounts });
     // Refreshing only runs while something is showing the numbers.
     created.setConsumerActive("test", true);
     return created;

@@ -64,6 +64,34 @@ export function nextRefreshAt(
   return now + refreshFloorMs(provider);
 }
 
+/**
+ * The account lookups a refresh makes besides the quota call itself.
+ *
+ * They read the machine's real sign-in state — the Codex auth file, and on
+ * macOS a `security find-generic-password` subprocess for Claude — so a test
+ * that replaces the connections but not these still reads the developer's own
+ * credentials, and waits on a subprocess to decide whether a call went out.
+ * Injectable so a test can replace the lot.
+ */
+export interface UsageAccountLookups {
+  codexAuthMode(): Promise<string | undefined>;
+  codexPlan(planType: string | undefined, previous?: UsagePlanInfo): Promise<UsagePlanInfo | undefined>;
+  claudePlan(previous?: UsagePlanInfo): Promise<UsagePlanInfo | undefined>;
+}
+
+/** What the service talks to. Everything defaults to the real thing. */
+export interface UsageStatusDeps {
+  codex?: CodexConnection;
+  claude?: ClaudeConnection;
+  accounts?: UsageAccountLookups;
+}
+
+const REAL_ACCOUNT_LOOKUPS: UsageAccountLookups = {
+  codexAuthMode: () => readCodexAuthMode(DEFAULT_CODEX_AUTH_FILE),
+  codexPlan: resolveCodexPlan,
+  claudePlan: resolveClaudePlan,
+};
+
 export interface UsageStatusState {
   codexRateLimit?: RateLimitInfo;
   claudeRateLimit?: ClaudeRateLimitInfo;
@@ -95,25 +123,28 @@ export class UsageStatusService implements vscode.Disposable {
 
   private readonly codexConnection: CodexConnection;
   private readonly claudeConnection: ClaudeConnection;
+  private readonly accounts: UsageAccountLookups;
   private readonly activeConsumers = new Set<string>();
   private state: UsageStatusState = { codexUnavailable: false, claudeUnavailable: false };
   private disposed = false;
   private readonly runtime: Record<UsageProvider, ProviderRuntime>;
 
   /**
-   * `connections` exists so a test can watch what each provider is actually
-   * asked for. Whether refreshing one provider drags the other along with it is
-   * the kind of thing that is easy to assert about by reading and easy to get
-   * wrong, and getting it wrong means a 429 on the service that tolerates the
-   * least polling.
+   * `deps` exists so a test can watch what each provider is actually asked for.
+   * Whether refreshing one provider drags the other along with it is the kind of
+   * thing that is easy to assert about by reading and easy to get wrong, and
+   * getting it wrong means a 429 on the service that tolerates the least
+   * polling. Replacing the connections alone is not enough — see
+   * `UsageAccountLookups`.
    */
   constructor(
     private readonly limitResetReminder?: LimitResetReminder,
-    connections?: { codex?: CodexConnection; claude?: ClaudeConnection },
+    deps?: UsageStatusDeps,
   ) {
-    this.codexConnection = connections?.codex
+    this.codexConnection = deps?.codex
       ?? new CodexConnection({ authFile: DEFAULT_CODEX_AUTH_FILE });
-    this.claudeConnection = connections?.claude ?? new ClaudeConnection();
+    this.claudeConnection = deps?.claude ?? new ClaudeConnection();
+    this.accounts = deps?.accounts ?? REAL_ACCOUNT_LOOKUPS;
     this.runtime = {
       codex: {
         inFlight: undefined,
@@ -219,7 +250,7 @@ export class UsageStatusService implements vscode.Disposable {
 
   private async refreshCodex(options: UsageRefreshOptions): Promise<void> {
     try {
-      const authMode = await readCodexAuthMode(DEFAULT_CODEX_AUTH_FILE);
+      const authMode = await this.accounts.codexAuthMode();
       if (authMode && authMode !== "chatgpt") {
         // API-key auth has no subscription quota to report.
         this.patch({ codexRateLimit: undefined, codexPlan: undefined, codexUnavailable: true });
@@ -236,7 +267,7 @@ export class UsageStatusService implements vscode.Disposable {
           options.bypassCache,
         );
       }
-      const plan = await resolveCodexPlan(usage.plan_type, this.state.codexPlan);
+      const plan = await this.accounts.codexPlan(usage.plan_type, this.state.codexPlan);
       if (this.disposed) { return; }
       if (rateLimit) {
         void this.limitResetReminder?.evaluate(rateLimit.limitResets);
@@ -251,14 +282,14 @@ export class UsageStatusService implements vscode.Disposable {
       if (!isCodexUsageRateLimitError(error)) {
         console.warn("[TokenWatch] Codex usage refresh failed:", error);
       }
-      const plan = await resolveCodexPlan(undefined, this.state.codexPlan);
+      const plan = await this.accounts.codexPlan(undefined, this.state.codexPlan);
       this.patch({ codexPlan: plan, codexUnavailable: !this.state.codexRateLimit });
     }
   }
 
   private async refreshClaude(options: UsageRefreshOptions): Promise<void> {
     try {
-      const plan = await resolveClaudePlan(this.state.claudePlan);
+      const plan = await this.accounts.claudePlan(this.state.claudePlan);
       const usage = await this.claudeConnection.usageInfo<ClaudeUsageResponse>({ force: options.bypassCache });
       if (this.disposed) { return; }
       const rateLimit = mapClaudeUsageToRateLimitInfo(usage);

@@ -76,15 +76,15 @@ export function App() {
           {granularity === "day" && <DayUsageTrend />}
           {granularity !== "today" && <RecentPeriodsCard />}
         </div>
-        <FooterBar />
       </>
     );
   }
 
   return (
     <div className="tw-flex tw-flex-col tw-h-full tw-overflow-hidden">
-      <Header status={status} />
+      <Header />
       {content}
+      <FooterBar status={status} />
     </div>
   );
 }
