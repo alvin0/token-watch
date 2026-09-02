@@ -11,7 +11,8 @@ import type { FileContribution } from "../shared/storeTypes.js";
 import type { CumulativeTotals } from "../shared/types.js";
 import { localDayFromMs } from "../shared/time.js";
 import { LONG_CONTEXT_THRESHOLD_TOKENS, PricingEngine } from "./pricing.js";
-import { aggregateIntegrity } from "./store/queries.js";
+import { aggregateIntegrity, warnings } from "./store/queries.js";
+import { timeline } from "./timeline.js";
 
 type SqlValue = number | string | Uint8Array | null;
 
@@ -30,12 +31,24 @@ export function buildDiagnosticsReport(
       fallbackCount: metaNumber(db, "aggregate_fallback_count"),
       algorithmVersion: metaString(db, "aggregate_algorithm_version"),
     },
-    pricing: pricingAudit,
+    pricing: { ...pricingAudit, unmappedModels: warnings(db).unmappedModels },
     longContext: longContextDiagnostics(db, pricing),
     crossingMidnightSessions: crossingMidnightSessions(db),
     folderDayComparison: folderDay.comparison,
     folderDayMismatches: folderDay.mismatches,
     reconciliation: reconciliationDiagnostics(db),
+    ingestion: {
+      malformedLineCount: metaNumber(db, "malformed_line_count"),
+      oversizedLineCount: metaNumber(db, "oversized_line_count"),
+      oversizedRecoveredCount: metaNumber(db, "oversized_recovered_count"),
+      lostUsageLineCount: metaNumber(db, "lost_usage_line_count"),
+    },
+    timing: timeline(),
+    retention: {
+      schemaVersion: metaNumber(db, "schema_version"),
+      retainedFromDay: metaString(db, "raw_retained_from_day"),
+      rawRecordCount: Number(db.exec("SELECT COUNT(*) FROM usage_record")[0]?.values[0]?.[0] ?? 0),
+    },
   };
 }
 

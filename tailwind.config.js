@@ -29,6 +29,7 @@ module.exports = {
         "chart-yellow": "var(--vscode-charts-yellow, #cca700)",
         "chart-orange": "var(--vscode-charts-orange, #e07c3e)",
         "chart-red": "var(--vscode-charts-red, #f14c4c)",
+        "chart-purple": "var(--vscode-charts-purple, #b180d7)",
       },
       boxShadow: {
         widget: "0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36))",

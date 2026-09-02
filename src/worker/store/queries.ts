@@ -26,7 +26,7 @@ import type {
   RateLimitInfo,
 } from "../../shared/protocol.js";
 import { PricingEngine } from "../pricing.js";
-import { localDayFromMs } from "../../shared/time.js";
+import { localDayFromMs, parseLocalDay } from "../../shared/time.js";
 import { baseModelOf } from "../../shared/variant.js";
 
 // ---------------------------------------------------------------------------
@@ -119,6 +119,35 @@ function buildRecordWhere(q: AnalyticsQuery, tablePrefix = ""): WhereClause {
 
   const sql = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
   return { sql, params };
+}
+
+/**
+ * Whether the tool tables can answer a query without joining `usage_record`.
+ *
+ * `tool_event` carries its own `day_local` and `source`, and is indexed on the
+ * pair, so a query filtered on nothing else can be read straight from it. It
+ * does NOT carry a usable model, effort or workspace — the commit path writes
+ * those blank — so any filter on one of those still needs the join.
+ *
+ * Worth the branch: joining 20,630 tool events to 162,742 records took 77 ms
+ * per query on a real database, and the two tool queries between them were 87%
+ * of the time the dashboard spent reading.
+ */
+function toolsAnswerableDirectly(q: AnalyticsQuery): boolean {
+  return (q.models?.length ?? 0) === 0
+    && (q.efforts?.length ?? 0) === 0
+    && (q.workspaces?.length ?? 0) === 0;
+}
+
+/** Day-and-source filter against whichever table carries those columns. */
+function buildToolWhere(q: AnalyticsQuery, prefix: string): WhereClause {
+  const conditions = [`${prefix}day_local >= ?`, `${prefix}day_local <= ?`];
+  const params: SqlValue[] = [localDayFromMs(q.range.fromUtc), localDayFromMs(q.range.toUtc)];
+  if (q.sources && q.sources.length > 0) {
+    conditions.push(`${prefix}source IN (${placeholders(q.sources.length)})`);
+    params.push(...q.sources);
+  }
+  return { sql: `WHERE ${conditions.join(" AND ")}`, params };
 }
 
 function placeholders(n: number): string {
@@ -341,7 +370,34 @@ export function variantBreakdown(db: Database, q: AnalyticsQuery): VariantMetric
 /**
  * 3. sessionLeaderboard — SELECT from session_aggregate filtered by range overlap.
  */
-export function sessionLeaderboard(db: Database, q: AnalyticsQuery): SessionAggregate[] {
+/**
+ * Sessions ordered by peak context fill rather than cost.
+ *
+ * The cost leaderboard is truncated before it reaches the UI, so a session that
+ * nearly filled its context window but cost little was invisible to the context
+ * warning. This orders by the property being warned about.
+ */
+export function sessionsByContextFill(db: Database, q: AnalyticsQuery, limit = 20): SessionAggregate[] {
+  return sessionLeaderboard(db, q, "peak_context_fill DESC, total_tokens DESC", limit);
+}
+
+/**
+ * NOTE ON SEMANTICS: rows are whole sessions selected by OVERLAP with the
+ * range, so a session that straddles the boundary contributes its full totals,
+ * not just the part inside the window. `session_aggregate` has no model or
+ * effort column, so those filters SELECT the matching sessions (via the
+ * records that belong to them) but cannot narrow each session's totals. This
+ * is why the daily series, not this, is the source of truth for period totals.
+ *
+ * `limit` is applied in SQL: loading every session to slice twenty grew with
+ * total history rather than with what is shown.
+ */
+export function sessionLeaderboard(
+  db: Database,
+  q: AnalyticsQuery,
+  orderBy = "cost_usd DESC",
+  limit?: number,
+): SessionAggregate[] {
   const conditions: string[] = [];
   const params: SqlValue[] = [];
 
@@ -359,6 +415,27 @@ export function sessionLeaderboard(db: Database, q: AnalyticsQuery): SessionAggr
     conditions.push(`workspace IN (${placeholders(q.workspaces.length)})`);
     params.push(...q.workspaces);
   }
+  // Model and effort live on the records, not the session rollup. Selecting
+  // through them at least stops a filtered view listing sessions that contain
+  // none of the chosen models.
+  if (q.models && q.models.length > 0) {
+    conditions.push(
+      `EXISTS (SELECT 1 FROM usage_record ur
+               WHERE ur.source = session_aggregate.source
+                 AND ur.session_id = session_aggregate.session_id
+                 AND ur.model IN (${placeholders(q.models.length)}))`,
+    );
+    params.push(...q.models);
+  }
+  if (q.efforts && q.efforts.length > 0) {
+    conditions.push(
+      `EXISTS (SELECT 1 FROM usage_record ur
+               WHERE ur.source = session_aggregate.source
+                 AND ur.session_id = session_aggregate.session_id
+                 AND ur.effort IN (${placeholders(q.efforts.length)}))`,
+    );
+    params.push(...q.efforts);
+  }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
@@ -367,7 +444,8 @@ export function sessionLeaderboard(db: Database, q: AnalyticsQuery): SessionAggr
            turns, total_tokens, cost_usd, peak_context_fill, sidechain_tokens
     FROM session_aggregate
     ${whereClause}
-    ORDER BY cost_usd DESC`;
+    ORDER BY ${orderBy}
+    ${typeof limit === "number" ? `LIMIT ${Math.max(0, Math.floor(limit))}` : ""}`;
 
   const results = db.exec(sql, params);
   if (results.length === 0) {
@@ -397,9 +475,17 @@ export function sessionLeaderboard(db: Database, q: AnalyticsQuery): SessionAggr
  * 4. toolUsage — SELECT from tool_event grouped by tool_name.
  */
 export function toolUsage(db: Database, q: AnalyticsQuery): ToolUsageRow[] {
-  const where = buildRecordWhere(q, "r.");
+  const direct = toolsAnswerableDirectly(q);
+  const where = direct ? buildToolWhere(q, "t.") : buildRecordWhere(q, "r.");
 
-  const sql = `
+  const sql = direct
+    ? `
+    SELECT t.tool_name, t.source, COUNT(*) as cnt
+    FROM tool_event t
+    ${where.sql}
+    GROUP BY t.tool_name, t.source
+    ORDER BY cnt DESC, t.tool_name ASC`
+    : `
     SELECT t.tool_name, r.source, COUNT(*) as cnt
     FROM tool_event t
     JOIN usage_record r ON r.dedup_key = t.record_dedup_key
@@ -430,9 +516,17 @@ export function toolUsage(db: Database, q: AnalyticsQuery): ToolUsageRow[] {
 }
 
 export function toolCallsByDay(db: Database, q: AnalyticsQuery): ToolCallsByDay[] {
-  const where = buildRecordWhere(q, "r.");
+  const direct = toolsAnswerableDirectly(q);
+  const where = direct ? buildToolWhere(q, "t.") : buildRecordWhere(q, "r.");
 
-  const sql = `
+  const sql = direct
+    ? `
+    SELECT t.day_local, COUNT(*) as cnt
+    FROM tool_event t
+    ${where.sql}
+    GROUP BY t.day_local
+    ORDER BY t.day_local`
+    : `
     SELECT r.day_local, COUNT(*) as cnt
     FROM tool_event t
     JOIN usage_record r ON r.dedup_key = t.record_dedup_key
@@ -583,6 +677,7 @@ export function freshness(db: Database): FreshnessInfo {
 export function warnings(db: Database): WarningInfo {
   let malformedLineCount = 0;
   let oversizedLineCount = 0;
+  let lostUsageLineCount = 0;
 
   const malformedResult = db.exec(
     "SELECT value FROM meta WHERE key = ?",
@@ -614,7 +709,18 @@ export function warnings(db: Database): WarningInfo {
     }
   }
 
-  return { unmappedModels, malformedLineCount, oversizedLineCount };
+  const lostUsageResult = db.exec(
+    "SELECT value FROM meta WHERE key = ?",
+    ["lost_usage_line_count"],
+  );
+  if (lostUsageResult.length > 0 && lostUsageResult[0].values.length > 0) {
+    const value = lostUsageResult[0].values[0][0];
+    if (value !== null) {
+      lostUsageLineCount = Number(value);
+    }
+  }
+
+  return { unmappedModels, malformedLineCount, oversizedLineCount, lostUsageLineCount };
 }
 
 /**
@@ -700,6 +806,18 @@ export interface AggregateIntegrityResult {
 }
 
 export function aggregateIntegrity(db: Database): AggregateIntegrityResult {
+  // Retention deletes raw rows but deliberately keeps the aggregates derived
+  // from them, so beyond the watermark there is nothing left to cross-check
+  // against. Comparing the whole tables would report a healthy database as
+  // corrupt forever, and the worker answers that by rebuilding aggregates on
+  // every single scan.
+  const watermark = retainedFromDay(db);
+  const since = watermark === undefined ? undefined : parseLocalDay(watermark).getTime();
+  const dayFilter = watermark === undefined ? "" : " WHERE day_local >= ?";
+  const dayArgs = watermark === undefined ? [] : [watermark];
+  const sessionFilter = since === undefined ? "" : " WHERE first_ts_utc >= ?";
+  const sessionArgs = since === undefined ? [] : [since];
+
   const record = db.exec(
     `SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_unknown), 0)
      FROM usage_record`,
@@ -707,11 +825,13 @@ export function aggregateIntegrity(db: Database): AggregateIntegrityResult {
   const daily = db.exec(
     `SELECT COALESCE(SUM(turns), 0), COALESCE(SUM(total_tokens), 0),
             COALESCE(SUM(cost_usd), 0), COALESCE(SUM(unknown_cost_turns), 0)
-     FROM daily_aggregate`,
+     FROM daily_aggregate${dayFilter}`,
+    dayArgs,
   )[0]?.values[0] ?? [0, 0, 0, 0];
   const session = db.exec(
     `SELECT COALESCE(SUM(turns), 0), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0)
-     FROM session_aggregate`,
+     FROM session_aggregate${sessionFilter}`,
+    sessionArgs,
   )[0]?.values[0] ?? [0, 0, 0];
   const result: AggregateIntegrityResult = {
     recordTurns: num(record[0]),
@@ -734,6 +854,18 @@ export function aggregateIntegrity(db: Database): AggregateIntegrityResult {
     result.recordUnknownTurns === result.dailyUnknownTurns &&
     Math.abs(result.dailyCost - result.sessionCost) <= 1e-9;
   return result;
+}
+
+/**
+ * The first local day that still has raw rows, or undefined if none were pruned.
+ *
+ * Read straight from meta rather than passed in, so no caller can rebuild
+ * aggregates while unaware that the rows behind the older ones are gone.
+ */
+function retainedFromDay(db: Database): string | undefined {
+  const result = db.exec("SELECT value FROM meta WHERE key = ?", ["raw_retained_from_day"]);
+  const value = result[0]?.values[0]?.[0];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
@@ -767,8 +899,24 @@ export function rebuildAggregates(db: Database, pricing: PricingEngine): void {
      GROUP BY source, session_id`
   );
 
-    db.run("DELETE FROM daily_aggregate");
-    db.run("DELETE FROM session_aggregate");
+    // Only clear what the surviving raw rows can rebuild. Once retention has
+    // pruned old days, their aggregates are the only remaining record of them;
+    // clearing those unconditionally deleted the user's history for good, and
+    // the next rebuild had nothing left to put back.
+    const watermark = retainedFromDay(db);
+    if (watermark === undefined) {
+      db.run("DELETE FROM daily_aggregate");
+      db.run("DELETE FROM session_aggregate");
+    } else {
+      db.run("DELETE FROM daily_aggregate WHERE day_local >= ?", [watermark]);
+      // Pruning never splits a session, so every session that still has rows
+      // started on or after the watermark. Anything that started earlier is
+      // fully pruned and its stored row is all that is left of it.
+      db.run(
+        "DELETE FROM session_aggregate WHERE first_ts_utc >= ?",
+        [parseLocalDay(watermark).getTime()],
+      );
+    }
 
     const dailyMap = new Map<string, {
       day: string;

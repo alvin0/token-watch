@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { CostAlertPeriod, CostAlertRule, CostAlertSource } from "../../shared/protocol";
 import { useStore } from "../store";
 import { useTranslation } from "../i18n";
+import { useModalFocus } from "../hooks/useModalFocus";
 
 interface DraftRule {
   id: string;
@@ -19,20 +20,15 @@ export function CostAlertSettingsDialog({ onClose }: { onClose: () => void }) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<string>();
   const [saving, setSaving] = useState(false);
-  const dialogRef = useRef<HTMLElement>(null);
+  const requestClose = useCallback(() => {
+    if (!saving) { onClose(); }
+  }, [onClose, saving]);
+  // Traps Tab inside the dialog and restores focus to the opener on close.
+  const dialogRef = useModalFocus<HTMLElement>({ open: true, onClose: requestClose });
 
   useEffect(() => {
     setDrafts(toDrafts(rules));
   }, [rules]);
-
-  useEffect(() => {
-    dialogRef.current?.focus();
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !saving) { onClose(); }
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose, saving]);
 
   const updateDraft = (id: string, partial: Partial<DraftRule>) => {
     setDrafts((current) => current.map((draft) => draft.id === id ? { ...draft, ...partial } : draft));

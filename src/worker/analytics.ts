@@ -21,6 +21,8 @@ import * as queries from "./store/queries.js";
 import { PricingEngine } from "./pricing.js";
 
 const HOURLY_SERIES_MAX_RANGE_MS = 2 * 24 * 60 * 60 * 1000;
+/** Sessions the dashboard renders; the rest are never looked at. */
+const DASHBOARD_SESSION_LIMIT = 20;
 
 export class AnalyticsService {
   constructor(private db: Database, private pricing: PricingEngine) {}
@@ -63,18 +65,32 @@ export class AnalyticsService {
   // ---------------------------------------------------------------------------
 
   private dashboard(q: AnalyticsQuery): AnalyticsResult {
-    // Use the range as-is from the query (store controls the range based on granularity)
+    // `range` is everything to read: visible period + comparison + baseline.
+    // The daily series needs all of it, because the comparison and the anomaly
+    // baseline are computed from it and the cards filter by day themselves.
     const series = queries.dailySeries(this.db, q);
-    const variants = queries.variantBreakdown(this.db, q);
-    const allSessions = queries.sessionLeaderboard(this.db, q);
-    const sessions = allSessions.slice(0, 20);
-    const tools = queries.toolUsage(this.db, q);
-    const toolCallsByDay = queries.toolCallsByDay(this.db, q);
-    const hourlySeries = q.range.toUtc - q.range.fromUtc <= HOURLY_SERIES_MAX_RANGE_MS
-      ? queries.hourlySeries(this.db, q, this.pricing)
+
+    // These are rendered whole, so they are scoped to what the reader can see.
+    // Sharing `range` with the series meant the Today tab listed tool calls and
+    // flagged context-heavy sessions from weeks of trailing baseline history.
+    const visible = q.visibleRange ? { ...q, range: q.visibleRange } : q;
+    const variants = queries.variantBreakdown(this.db, visible);
+    // Limited in SQL: loading every session in order to show twenty grew with
+    // total history rather than with what is on screen.
+    const sessions = queries.sessionLeaderboard(this.db, visible, undefined, DASHBOARD_SESSION_LIMIT);
+    // Ordered by peak fill, not cost: the cost leaderboard is truncated, and a
+    // near-full context window is worth flagging however little it cost.
+    const contextSessions = queries.sessionsByContextFill(this.db, visible);
+    const tools = queries.toolUsage(this.db, visible);
+    const toolCallsByDay = queries.toolCallsByDay(this.db, visible);
+    // Bounded by the sub-range the caller will actually draw, falling back to
+    // the full range for callers that do not ask for one.
+    const hourlyQuery = q.hourlyRange ? { ...q, range: q.hourlyRange } : q;
+    const hourlySeries = hourlyQuery.range.toUtc - hourlyQuery.range.fromUtc <= HOURLY_SERIES_MAX_RANGE_MS
+      ? queries.hourlySeries(this.db, hourlyQuery, this.pricing)
       : [];
 
-    return { view: "dashboard", series, variants, sessions, tools, toolCallsByDay, hourlySeries };
+    return { view: "dashboard", series, variants, sessions, contextSessions, tools, toolCallsByDay, hourlySeries };
   }
 
   /**

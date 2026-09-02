@@ -7,6 +7,9 @@ type WatchEntry = {
   recursive: boolean;
 };
 
+/** Lower bound for the safety-net poll interval. */
+export const POLL_FLOOR_MS = 60_000;
+
 /**
  * Watches a set of directories via `fs.watch` (recursive where supported)
  * and debounces all change events into a single callback invocation.
@@ -38,8 +41,13 @@ export class FileWatcher implements vscode.Disposable {
     // `fs.watch` can miss recursive events depending on the VS Code runtime,
     // OS, and whether source roots appear after activation. Periodic empty scans
     // use the worker's throttled hot-catalog/full-discovery path.
+    //
+    // The floor is deliberately well above the debounce: real edits arrive via
+    // `fs.watch`, so this poll only re-attaches watchers to directories that
+    // appeared later and acts as a safety net. Ticking every few seconds just
+    // made the worker re-scan and rewrite its database for nothing.
     if (this.watchRoots.length > 0) {
-      const pollMs = Math.max(10_000, this.debounceMs * 10);
+      const pollMs = Math.max(POLL_FLOOR_MS, this.debounceMs * 10);
       this.pollTimer = setInterval(() => {
         for (const dir of this.watchRoots) {
           this.tryWatchTree(dir);

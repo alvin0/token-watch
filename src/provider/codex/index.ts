@@ -1,8 +1,10 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { UsageCacheInfo } from "../../shared/protocol";
-import { randomUsageRetryMs } from "../../shared/usageRetry";
+import { randomUsageRetryMs, rateLimitBackoffMs } from "../../shared/usageRetry";
+import { fileIdentityOf, writeFileAtomicSync, type FileIdentity } from "../atomicFile";
+import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout } from "../http";
 
 export const DEFAULT_CODEX_AUTH_FILE = "~/.codex/auth.json";
 export const WHAM_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
@@ -12,7 +14,6 @@ export const DEFAULT_CODEX_ISSUER = "https://auth.openai.com";
 export const DEFAULT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 const REFRESH_SAFETY_MARGIN_MS = 30_000;
-const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
 const DEFAULT_FAILURE_RETRY_MS = 60 * 1000;
 
 const DEFAULT_ORIGINATOR = "opencode";
@@ -20,6 +21,13 @@ const DEFAULT_USER_AGENT = "codex-standalone-client";
 const usageInfoPromises = new Map<string, Promise<unknown>>();
 const usageCooldowns = new Map<string, number>();
 const usageInfoCache = new Map<string, { value: unknown; cachedAt: number; expiresAt: number }>();
+/**
+ * Refusals in a row, per endpoint, so the wait can widen.
+ *
+ * Cleared as soon as a call succeeds: the next refusal after a good response
+ * is a blip, not a pattern, and should not inherit the last one's wait.
+ */
+const usageRefusals = new Map<string, number>();
 
 export interface CodexAuthFile {
   auth_mode?: string;
@@ -38,6 +46,8 @@ export interface CodexAuthSnapshot {
   refreshToken: string;
   accountId?: string;
   expiresAt?: number;
+  /** Identity of the auth file when it was read, for the write-back guard. */
+  identity?: FileIdentity;
 }
 
 export interface CodexConnectionOptions {
@@ -51,6 +61,8 @@ export interface CodexConnectionOptions {
   now?: () => number;
   usageCacheTtlMs?: number;
   random?: () => number;
+  /** Per-request deadline; a hung socket must not pin the refresh forever. */
+  timeoutMs?: number;
 }
 
 export interface CodexRequestOptions {
@@ -149,7 +161,9 @@ export class CodexConnection {
     const response = await this.requestWithRefresh(url, options);
     if (response.status === 429) {
       const now = (this.options.now ?? Date.now)();
-      const retryAt = retryAtFromHeader(response.headers.get("retry-after"), now);
+      const refusals = (usageRefusals.get(key) ?? 0) + 1;
+      usageRefusals.set(key, refusals);
+      const retryAt = retryAtFromHeader(response.headers.get("retry-after"), now, refusals);
       usageCooldowns.set(key, retryAt);
       const cached = usageInfoCache.get(key);
       if (cached) {
@@ -161,12 +175,14 @@ export class CodexConnection {
       throw new Error(`Codex request to ${url} failed: ${response.status} ${await response.text()}`);
     }
     usageCooldowns.delete(key);
+    // A good response ends the run of refusals, so the next one starts short.
+    usageRefusals.delete(key);
     const value = (await response.json()) as T;
     const now = (this.options.now ?? Date.now)();
     usageInfoCache.set(key, {
       value,
       cachedAt: now,
-      expiresAt: now + (this.options.usageCacheTtlMs ?? randomUsageRetryMs(this.options.random)),
+      expiresAt: now + (this.options.usageCacheTtlMs ?? randomUsageRetryMs("codex", this.options.random)),
     });
     return value;
   }
@@ -193,10 +209,11 @@ export class CodexConnection {
   }
 
   private async fetchWithAuth(url: string, auth: CodexAuthSnapshot, options?: CodexRequestOptions) {
-    return (this.options.fetch ?? fetch)(url, {
+    return fetchWithTimeout(this.options.fetch ?? fetch, url, {
       method: "GET",
       headers: buildUsageHeaders(auth, options?.headers, this.options),
-      signal: options?.signal,
+      ...(options?.signal ? { signal: options.signal } : {}),
+      timeoutMs: this.options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
     });
   }
 
@@ -214,6 +231,9 @@ export class CodexConnection {
 
 export async function readCodexAuthSnapshot(authFile = DEFAULT_CODEX_AUTH_FILE): Promise<CodexAuthSnapshot> {
   const resolved = resolveCodexAuthPath(authFile);
+  // Captured before the read so a rotation by Codex itself is detected when we
+  // come to write the refreshed tokens back.
+  const identity = fileIdentityOf(resolved);
   const auth = await readCodexAuthFile(resolved);
   if (auth.auth_mode && auth.auth_mode !== "chatgpt") {
     throw new Error(`Unsupported Codex auth_mode "${auth.auth_mode}" at ${resolved}`);
@@ -232,6 +252,7 @@ export async function readCodexAuthSnapshot(authFile = DEFAULT_CODEX_AUTH_FILE):
     refreshToken,
     ...(accountId ? { accountId } : {}),
     ...(expiresAt ? { expiresAt } : {}),
+    ...(identity ? { identity } : {}),
   };
 }
 
@@ -261,7 +282,15 @@ function requestKey(options: CodexConnectionOptions, url: string): string {
   return `codex:${resolveCodexAuthPath(options.authFile)}:${url}`;
 }
 
-function retryAtFromHeader(value: string | null, now: number): number {
+/**
+ * When to try again after a refusal.
+ *
+ * `Retry-After` is honoured when the service sends one. Claude's usage
+ * endpoint does not, so the wait has to be guessed; starting at the maximum,
+ * as this used to, meant a single transient refusal cost a quarter of an hour
+ * of stale figures.
+ */
+function retryAtFromHeader(value: string | null, now: number, refusals = 1): number {
   if (value) {
     const seconds = Number(value);
     if (Number.isFinite(seconds) && seconds >= 0) {
@@ -272,7 +301,7 @@ function retryAtFromHeader(value: string | null, now: number): number {
       return date;
     }
   }
-  return now + DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+  return now + rateLimitBackoffMs(refusals);
 }
 
 function setFailureCooldown(cooldowns: Map<string, number>, key: string, now: number): void {
@@ -300,27 +329,32 @@ async function readCodexAuthFile(resolvedPath: string): Promise<CodexAuthFile> {
 
 async function refreshCodexAuthSnapshot(
   current: CodexAuthSnapshot,
-  options?: Pick<CodexConnectionOptions, "fetch" | "issuer" | "clientId">,
+  options?: Pick<CodexConnectionOptions, "fetch" | "issuer" | "clientId" | "timeoutMs">,
 ) {
   const authFile = await readCodexAuthFile(current.path);
   if (authFile.auth_mode && authFile.auth_mode !== "chatgpt") {
     throw new Error(`Unsupported Codex auth_mode "${authFile.auth_mode}" at ${current.path}`);
   }
-  const response = await (options?.fetch ?? fetch)(`${options?.issuer ?? DEFAULT_CODEX_ISSUER}/oauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: current.refreshToken,
-      client_id: options?.clientId ?? DEFAULT_CODEX_CLIENT_ID,
-    }).toString(),
-  });
+  const response = await fetchWithTimeout(
+    options?.fetch ?? fetch,
+    `${options?.issuer ?? DEFAULT_CODEX_ISSUER}/oauth/token`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: current.refreshToken,
+        client_id: options?.clientId ?? DEFAULT_CODEX_CLIENT_ID,
+      }).toString(),
+      timeoutMs: options?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+    },
+  );
 
   if (!response.ok) {
     throw new Error(`Token refresh failed: ${response.status} ${await response.text()}`);
   }
 
-  const tokens = await response.json().catch(() => undefined) as CodexTokenResponse | undefined;
+  const tokens = validateCodexTokenResponse(await response.json().catch(() => undefined));
   const nextAccessToken = cleanToken(tokens?.access_token);
   const nextRefreshToken = cleanToken(tokens?.refresh_token) || current.refreshToken;
   if (!nextAccessToken || !nextRefreshToken) {
@@ -342,7 +376,10 @@ async function refreshCodexAuthSnapshot(
     },
   };
 
-  await writeCodexAuthFile(current.path, nextAuth).catch(() => undefined);
+  // A failed write is NOT swallowed: the returned snapshot would then carry a
+  // token pair that is not on disk, and the next process to read the file would
+  // present the already-rotated refresh token and be signed out.
+  const identity = writeCodexAuthFile(current.path, nextAuth, current.identity);
 
   return {
     path: current.path,
@@ -350,11 +387,38 @@ async function refreshCodexAuthSnapshot(
     refreshToken: nextRefreshToken,
     ...(nextAccountId ? { accountId: nextAccountId } : {}),
     ...(nextExpiresAt ? { expiresAt: nextExpiresAt } : {}),
+    identity,
   } satisfies CodexAuthSnapshot;
 }
 
-async function writeCodexAuthFile(path: string, auth: CodexAuthFile) {
-  await writeFile(path, `${JSON.stringify(auth, null, 2)}\n`);
+function writeCodexAuthFile(path: string, auth: CodexAuthFile, expectedIdentity?: FileIdentity): FileIdentity {
+  return writeFileAtomicSync(path, `${JSON.stringify(auth, null, 2)}\n`, {
+    mode: 0o600,
+    ...(expectedIdentity ? { expectedIdentity } : {}),
+  });
+}
+
+/**
+ * Shape-check the token endpoint's reply before trusting it.
+ *
+ * The response contract belongs to another product and can change without
+ * notice; a silently-wrong shape here would be written straight into the user's
+ * credentials file.
+ */
+function validateCodexTokenResponse(value: unknown): CodexTokenResponse | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  for (const key of ["access_token", "refresh_token", "id_token"] as const) {
+    if (raw[key] !== undefined && typeof raw[key] !== "string") {
+      throw new Error(`Token refresh response field "${key}" is not a string`);
+    }
+  }
+  if (raw.expires_in !== undefined && (typeof raw.expires_in !== "number" || !Number.isFinite(raw.expires_in))) {
+    throw new Error('Token refresh response field "expires_in" is not a number');
+  }
+  return raw as unknown as CodexTokenResponse;
 }
 
 function buildUsageHeaders(

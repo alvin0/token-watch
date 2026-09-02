@@ -1,11 +1,12 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useCallback, useState } from "react";
 import { useStore } from "../store";
 import { useQuery } from "../hooks/useQuery";
 import { pRange, fmtT } from "../lib/periodData";
 import type { Period } from "../lib/periodData";
-import { formatCostPerTurn } from "../format";
+import { useCostFormat } from "../hooks/useCostFormat";
 import { formatModelCost, modelCostTitle } from "../modelCost";
-import { baseModelOf, effortOf } from "../../shared/variant";
+import { effortOf } from "../../shared/variant";
+import { summarizeModels } from "../../shared/modelSummary";
 import {
   formatEffortLabel,
   sortModelUsage,
@@ -14,10 +15,12 @@ import {
   type SortDirection,
 } from "../modelUsage";
 import { useTranslation } from "../i18n";
+import { useModalFocus } from "../hooks/useModalFocus";
+import { Chevron } from "./Chevron";
 
 const COLLAPSED_COUNT = 3;
 const EXPANDED_COUNT = 10;
-const DETAIL_GRID = { gridTemplateColumns: "repeat(5, minmax(0, 1fr))" };
+const DETAIL_GRID = { gridTemplateColumns: "repeat(3, minmax(0, 1fr))" };
 
 export function TopModelsCard() {
   const [expanded, setExpanded] = useState(false);
@@ -30,53 +33,19 @@ export function TopModelsCard() {
   const currency = useStore((state) => state.currency);
   const { locale, t } = useTranslation();
 
-  useEffect(() => {
-    if (!modalOpen) { return; }
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { setModalOpen(false); }
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [modalOpen]);
+  const closeModal = useCallback(() => setModalOpen(false), []);
+  // Traps Tab inside the dialog and restores focus to the opener on close.
+  const dialogRef = useModalFocus<HTMLElement>({ open: modalOpen, onClose: closeModal });
 
   if (!result || result.view !== "dashboard") { return null; }
 
-  const { from } = pRange(period);
-  const summaries = new Map<string, Omit<ModelUsageSummary, "id" | "total" | "share">>();
-  for (const row of result.series) {
-    if (row.day < from) { continue; }
-    const model = summaries.get(row.variantId) ?? {
-      input: 0,
-      output: 0,
-      cache: 0,
-      reasoning: 0,
-      turns: 0,
-      cost: 0,
-      unknownCostTurns: 0,
-      model: baseModelOf(row.variantId),
-      source: row.source,
-      effort: effortOf(row.variantId),
-    };
-    model.input += row.inputTokens;
-    model.output += row.outputTokens;
-    model.cache += row.cacheReadTokens + row.cacheCreationTokens;
-    model.reasoning += row.reasoningTokens;
-    model.turns += row.turns;
-    model.cost += row.costUsd;
-    model.unknownCostTurns += row.unknownCostTurns;
-    summaries.set(row.variantId, model);
-  }
-
-  const totalTokens = [...summaries.values()].reduce(
-    (sum, model) => sum + model.input + model.output + model.cache + model.reasoning,
-    0,
-  );
-  const allModels = [...summaries.entries()]
-    .map(([id, model]) => {
-      const total = model.input + model.output + model.cache + model.reasoning;
-      return { id, total, share: totalTokens > 0 ? (total / totalTokens) * 100 : 0, ...model };
-    })
-    .sort((left, right) => right.total - left.total);
+  const { from, to } = pRange(period);
+  // summarizeModels keys on source + variant, so Codex and Claude models that
+  // share an id never merge, and one model used from several workspaces stays
+  // a single row.
+  const allModels: ModelUsageSummary[] = summarizeModels(
+    result.series.filter((row) => row.day >= from && row.day <= to),
+  ).map((model) => ({ ...model, effort: effortOf(model.variantId) }));
 
   if (allModels.length === 0) { return null; }
 
@@ -132,7 +101,7 @@ export function TopModelsCard() {
                 className="tw-flex tw-cursor-pointer tw-items-center tw-gap-1.5 tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-underline"
               >
                 {expanded ? t("common.showLess") : t("common.showMore")}
-                <span aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
+                <Chevron up={expanded} />
               </button>
             )}
           </div>
@@ -148,10 +117,12 @@ export function TopModelsCard() {
           }}
         >
           <section
+            ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-label={t("models.all")}
-            className="tw-flex tw-max-h-full tw-w-full tw-max-w-[720px] tw-flex-col tw-overflow-hidden tw-rounded-lg tw-border tw-border-control tw-bg-card tw-shadow-widget"
+            tabIndex={-1}
+            className="tw-flex tw-max-h-full tw-w-full tw-max-w-[720px] tw-flex-col tw-overflow-hidden tw-rounded-lg tw-border tw-border-control tw-bg-card tw-shadow-widget tw-outline-none"
           >
             <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-border-b tw-border-edge tw-px-3 tw-py-2.5">
               <div>
@@ -208,6 +179,7 @@ function ModelsTable({
   onSort?: (key: ModelSortKey) => void;
 }) {
   const { language, locale, t } = useTranslation();
+  const money = useCostFormat();
   return (
     <table className="tw-w-full tw-table-fixed tw-border-collapse">
       <colgroup>
@@ -246,8 +218,8 @@ function ModelsTable({
                 }}
                 className={`tw-cursor-pointer tw-border-t tw-border-edge tw-text-[9px] hover:tw-bg-hover ${selected ? "tw-bg-hover" : ""}`}
               >
-                <td className="tw-truncate tw-px-3 tw-py-1.5 tw-font-medium tw-text-[var(--vscode-foreground)]" title={model.model}>
-                  {model.model}
+                <td className="tw-truncate tw-px-3 tw-py-1.5 tw-font-medium tw-text-[var(--vscode-foreground)]" title={`${model.baseModel} · ${model.source}`}>
+                  {model.baseModel}
                 </td>
                 <td
                   className="tw-truncate tw-px-1 tw-py-1.5 tw-text-left tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]"
@@ -265,7 +237,7 @@ function ModelsTable({
                   className="tw-truncate tw-px-1 tw-py-1.5 tw-text-right tw-font-medium tw-tabular-nums tw-text-chart-yellow"
                   title={modelCostTitle(model.cost, model.unknownCostTurns, model.turns, currency, language)}
                 >
-                  {formatModelCost(model.cost, model.unknownCostTurns, model.turns)}
+                  {formatModelCost(model.cost, model.unknownCostTurns, model.turns, currency, locale)}
                 </td>
                 <td className="tw-truncate tw-px-3 tw-py-1.5 tw-text-right tw-font-medium tw-tabular-nums tw-text-chart-green">
                   {model.share.toFixed(1)}%
@@ -277,9 +249,10 @@ function ModelsTable({
                     <div className="tw-grid tw-gap-1.5" style={DETAIL_GRID}>
                       <DetailMetric label={t("common.input")} value={fmtT(model.input)} />
                       <DetailMetric label={t("common.output")} value={fmtT(model.output)} />
-                      <DetailMetric label={t("common.cache")} value={fmtT(model.cache)} />
+                      <DetailMetric label={t("common.cacheRead")} value={fmtT(model.cacheRead)} />
+                      <DetailMetric label={t("common.cacheWrite")} value={fmtT(model.cacheWrite)} />
                       <DetailMetric label={t("common.reasoning")} value={fmtT(model.reasoning)} />
-                      <DetailMetric label={t("overview.costPerTurn")} value={formatCostPerTurn(model.turns > 0 ? model.cost / model.turns : 0)} />
+                      <DetailMetric label={t("overview.costPerTurn")} value={money.perTurn(model.turns > 0 ? model.cost / model.turns : 0)} />
                     </div>
                   </td>
                 </tr>

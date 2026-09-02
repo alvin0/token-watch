@@ -1,7 +1,8 @@
 import * as assert from "assert";
+import { CODEX_PARSE_REVISION } from "../../worker/parsers/revision.js";
 import fc from "fast-check";
 import initSqlJs from "sql.js";
-import { appendFileSync, writeFileSync, unlinkSync, statSync } from "node:fs";
+import { appendFileSync, writeFileSync, unlinkSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -140,10 +141,27 @@ suite("Ingestion property tests", () => {
         ),
         // resumeBoundary: split point for resume (0 = no resume)
         fc.nat({ max: 7 }),
-        async ([inputDeltas, outputDeltas, reasoningDeltas, cachedDeltas], resumeBoundary) => {
+        async ([rawInput, rawOutput, rawReasoning, rawCached], resumeBoundary) => {
           const sessionId = "delta-test";
-          const numTurns = inputDeltas.length;
+          const numTurns = rawInput.length;
           const boundary = Math.min(resumeBoundary, numTurns - 1);
+
+          // Shape the generated deltas like the format actually promises.
+          //
+          // A reading that consumed nothing is not a turn — the parser skips it,
+          // deliberately, so it does not show up in the turn count or the cost per
+          // turn. And cached sits inside input, reasoning inside output; a
+          // generator that ignores that containment is testing a log Codex does
+          // not write. Both are covered explicitly by their own tests below.
+          const inputDeltas = rawInput.slice();
+          const outputDeltas = rawOutput.slice();
+          const reasoningDeltas: number[] = [];
+          const cachedDeltas: number[] = [];
+          for (let i = 0; i < numTurns; i++) {
+            if (inputDeltas[i] + outputDeltas[i] === 0) { outputDeltas[i] = 1; }
+            cachedDeltas.push(Math.min(rawCached[i], inputDeltas[i]));
+            reasoningDeltas.push(Math.min(rawReasoning[i], outputDeltas[i]));
+          }
 
           // Build cumulative totals from deltas
           const cumInput: number[] = [];
@@ -223,6 +241,8 @@ suite("Ingestion property tests", () => {
                 endState: suffixOutput?.endState ?? prefixOutput.endState,
                 malformedCount: 0,
                 oversizedCount: 0,
+                oversizedRecoveredCount: 0,
+                oversizedLostUsageCount: 0,
               };
             } else {
               // Full parse, no resume
@@ -371,10 +391,10 @@ suite("Ingestion property tests", () => {
 suite("Ingestion example tests", () => {
   test("no-op result is not reported as a data change", () => {
     assert.strictEqual(hasIngestedChanges({
-      processed: 200, skipped: 200, appended: 0, reingested: 0, firstReads: 0,
+      processed: 200, skipped: 200, appended: 0, reingested: 0, firstReads: 0, failed: 0, quarantined: 0, oversizedRecovered: 0, oversizedLostUsage: 0, partialCommits: 0, stoppedEarly: false,
     }), false);
     assert.strictEqual(hasIngestedChanges({
-      processed: 1, skipped: 0, appended: 1, reingested: 0, firstReads: 0,
+      processed: 1, skipped: 0, appended: 1, reingested: 0, firstReads: 0, failed: 0, quarantined: 0, oversizedRecovered: 0, oversizedLostUsage: 0, partialCommits: 0, stoppedEarly: false,
     }), true);
   });
   test("Skip path: decideAction returns 'skip' when cursor matches size+mtime (no fs.open)", () => {
@@ -405,7 +425,7 @@ suite("Ingestion example tests", () => {
         tailAnchorHash: "irrelevant-because-skip",
         runningTotals: {},
         recentRequestIds: [],
-        parseRevision: 1,
+        parseRevision: CODEX_PARSE_REVISION,
         contribution: oneDayContribution("2026-06-04"),
       };
 
@@ -503,7 +523,7 @@ suite("Ingestion example tests", () => {
       tailAnchorHash: "tail",
       runningTotals: {},
       recentRequestIds: [],
-      parseRevision: 1,
+      parseRevision: CODEX_PARSE_REVISION,
       contribution: { daily: [], sessions: [], recordKeys: [], toolEventCount: 0 },
     };
 
@@ -534,7 +554,7 @@ suite("Ingestion example tests", () => {
         tailAnchorHash: computeTailAnchorHash(file, stat.size),
         runningTotals: {},
         recentRequestIds: [],
-        parseRevision: 1,
+        parseRevision: CODEX_PARSE_REVISION,
         contribution: oneDayContribution("2026-06-04"),
       };
 
@@ -567,13 +587,17 @@ suite("Ingestion example tests", () => {
         tailAnchorHash,
         runningTotals: {},
         recentRequestIds: [],
-        parseRevision: 1,
+        parseRevision: CODEX_PARSE_REVISION,
         contribution: oneDayContribution("2026-06-04"),
       };
 
       // Overwrite file keeping first line but changing tail
       const rewrittenContent = "AAAA\nCCCC\n";
       writeFileSync(file, rewrittenContent, "utf8");
+      // Force a distinct mtime: same-size rewrites can land inside the
+      // filesystem's timestamp resolution, which would make this assert on
+      // "skip" purely because the clock did not tick.
+      utimesSync(file, new Date(stat.mtimeMs + 2000), new Date(stat.mtimeMs + 2000));
       const newStat = statSync(file);
 
       const candidate: CandidateFile = {
@@ -738,7 +762,7 @@ function cursorForCandidate(candidate: CandidateFile, day: string): FileCursor {
     tailAnchorHash: "tail",
     runningTotals: {},
     recentRequestIds: [],
-    parseRevision: 1,
+    parseRevision: CODEX_PARSE_REVISION,
     contribution: oneDayContribution(day),
   };
 }

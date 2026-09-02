@@ -1,28 +1,32 @@
 import { useStore } from "../store";
 import { useQuery } from "../hooks/useQuery";
-import { formatCost } from "../format";
+import { useCostFormat, type CostFormatter } from "../hooks/useCostFormat";
 import { computePeriods, fmtT, pRange } from "../lib/periodData";
 import type { Period } from "../lib/periodData";
 import { useTranslation } from "../i18n";
+import { summarizeModels } from "../../shared/modelSummary";
+import type { DailyAggregate } from "../../shared/storeTypes";
 
 export function TodayInsightsCard() {
   const result = useQuery("dashboard");
   const g = useStore((s) => s.granularity) as Period;
   const { locale, t } = useTranslation();
+  const money = useCostFormat();
   if (g !== "today" || !result || result.view !== "dashboard") { return null; }
 
-  const { cur, prev } = computePeriods(result.series, "today");
+  const { cur, prev } = computePeriods(result.series, "today", locale);
   if (cur.tokens === 0 && cur.turns === 0) { return null; }
 
   const { from } = pRange("today");
   const todayRows = result.series.filter((r) => r.day === from);
-  const totalTokenParts = cur.input + cur.output + cur.cache + cur.reasoning;
-  const cachePct = pct(cur.cache, totalTokenParts);
-  const reasoningPct = pct(cur.reasoning, totalTokenParts);
-  const tokensPerTurn = cur.turns > 0 ? cur.tokens / cur.turns : 0;
+  // Cache leverage is the read hit rate: cache CREATION is a miss that fills
+  // the cache, so counting it here would make a cold cache look warm.
+  const cachePct = cur.metrics.cacheHitPct;
+  const reasoningPct = pct(cur.metrics.reasoning, cur.metrics.breakdownTotal);
+  const tokensPerTurn = cur.turns > 0 ? cur.metrics.total / cur.turns : 0;
   const costPerTurn = cur.turns > 0 ? cur.cost / cur.turns : 0;
   const topModel = topModelInsight(todayRows, locale, t);
-  const costDelta = deltaLabel(cur.cost, prev.cost, t);
+  const costDelta = deltaLabel(cur.cost, prev.cost, t, money);
 
   const insights = [
     {
@@ -34,13 +38,13 @@ export function TodayInsightsCard() {
     {
       label: t("insights.cacheLeverage"),
       value: `${cachePct.toFixed(1)}%`,
-      detail: t("insights.cacheDetail", { cached: fmtT(cur.cache), input: fmtT(cur.input) }),
+      detail: t("insights.cacheDetail", { cached: fmtT(cur.metrics.cacheRead), input: fmtT(cur.metrics.input) }),
       tone: cachePct >= 70 ? "good" : cachePct >= 30 ? "neutral" : "warn",
     },
     {
       label: t("insights.turnWeight"),
       value: fmtT(tokensPerTurn),
-      detail: t("insights.turnDetail", { cost: formatCost(costPerTurn), turns: cur.turns.toLocaleString(locale) }),
+      detail: t("insights.turnDetail", { cost: money.cost(costPerTurn), turns: cur.turns.toLocaleString(locale) }),
       tone: tokensPerTurn >= 100_000 ? "warn" : "neutral",
     },
     {
@@ -52,13 +56,13 @@ export function TodayInsightsCard() {
     {
       label: t("insights.reasoningMix"),
       value: `${reasoningPct.toFixed(1)}%`,
-      detail: t("insights.reasoningDetail", { tokens: fmtT(cur.reasoning) }),
+      detail: t("insights.reasoningDetail", { tokens: fmtT(cur.metrics.reasoning) }),
       tone: reasoningPct > 15 ? "warn" : reasoningPct > 5 ? "neutral" : "good",
     },
     {
       label: t("insights.outputShape"),
-      value: outputShape(cur.input, cur.output),
-      detail: t("insights.outputDetail", { output: fmtT(cur.output), input: fmtT(cur.input) }),
+      value: outputShape(cur.metrics.input, cur.metrics.output),
+      detail: t("insights.outputDetail", { output: fmtT(cur.metrics.output), input: fmtT(cur.metrics.input) }),
       tone: "neutral",
     },
   ] as const;
@@ -86,39 +90,41 @@ function pct(value: number, total: number): number {
   return total > 0 ? (value / total) * 100 : 0;
 }
 
-function deltaLabel(cur: number, prev: number, t: ReturnType<typeof useTranslation>["t"]): { value: string; detail: string; tone: "good" | "neutral" | "warn" } {
+function deltaLabel(
+  cur: number,
+  prev: number,
+  t: ReturnType<typeof useTranslation>["t"],
+  money: CostFormatter,
+): { value: string; detail: string; tone: "good" | "neutral" | "warn" } {
   if (prev <= 0) {
-    return { value: formatCost(cur), detail: t("insights.noBaseline"), tone: "neutral" };
+    return { value: money.cost(cur), detail: t("insights.noBaseline"), tone: "neutral" };
   }
   const delta = ((cur - prev) / prev) * 100;
   const down = delta <= 0;
   return {
     value: `${down ? "↓" : "↑"} ${Math.abs(delta).toFixed(1)}%`,
-    detail: t("insights.todayVsYesterday", { today: formatCost(cur), yesterday: formatCost(prev) }),
+    detail: t("insights.todayVsYesterday", { today: money.cost(cur), yesterday: money.cost(prev) }),
     tone: down ? "good" : "warn",
   };
 }
 
 function topModelInsight(
-  rows: Array<{ variantId: string; totalTokens: number; turns: number }>,
+  rows: DailyAggregate[],
   locale: string,
   t: ReturnType<typeof useTranslation>["t"],
 ): { value: string; detail: string; tone: "good" | "neutral" | "warn" } {
-  const total = rows.reduce((sum, r) => sum + r.totalTokens, 0);
-  const top = rows.reduce<{ variantId: string; totalTokens: number; turns: number } | undefined>((best, row) => {
-    if (!best || row.totalTokens > best.totalTokens) { return row; }
-    return best;
-  }, undefined);
+  // Roll up first: a model split across workspaces is still one model, and a
+  // model id shared by Codex and Claude is two.
+  const [top] = summarizeModels(rows);
 
-  if (!top || total <= 0) {
+  if (!top || top.total <= 0) {
     return { value: "—", detail: t("insights.noModel"), tone: "neutral" };
   }
 
-  const share = (top.totalTokens / total) * 100;
   return {
-    value: top.variantId,
-    detail: t("insights.modelDetail", { share: share.toFixed(1), turns: top.turns.toLocaleString(locale) }),
-    tone: share >= 90 ? "warn" : "neutral",
+    value: top.baseModel,
+    detail: t("insights.modelDetail", { share: top.share.toFixed(1), turns: top.turns.toLocaleString(locale) }),
+    tone: top.share >= 90 ? "warn" : "neutral",
   };
 }
 

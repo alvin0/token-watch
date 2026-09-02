@@ -1,31 +1,29 @@
 import * as vscode from "vscode";
 import { getNonce } from "./utils";
-import { isCoordinatorDisposedError, type IngestionCoordinator } from "./host/IngestionCoordinator";
-import { CodexConnection, DEFAULT_CODEX_AUTH_FILE, isCodexUsageRateLimitError } from "./provider/codex";
-import { ClaudeConnection, isClaudeUsageRateLimitError } from "./provider/claude";
-import { mapCodexUsageToRateLimitInfo, type CodexUsageResponse } from "./shared/codexUsage";
-import { mapClaudeUsageToRateLimitInfo, type ClaudeUsageResponse } from "./shared/claudeUsage";
-import { resolveClaudePlan, resolveCodexPlan } from "./host/usagePlan";
+import {
+  isCoordinatorDisposedError,
+  type CoordinatorHealthState,
+  type IngestionCoordinator,
+} from "./host/IngestionCoordinator";
 import type { CostAlertController } from "./host/CostAlertController";
 import type { LanguageController } from "./host/LanguageController";
 import type { LimitResetReminder } from "./host/LimitResetReminder";
-import { codexLimitResetsFetcher, withLimitResetDetails } from "./host/limitResets";
 import { effectivePricingOverrides, getConfig } from "./host/config";
-import type { ModelRate, PricingTable } from "./shared/types";
+import type { PricingTable } from "./shared/types";
+import { validatePricingTableStrict } from "./shared/pricingValidation";
 import type {
   WebviewRequest,
   HostMessage,
+  AnalyticsThresholds,
   DisplayCurrencyConfig,
   FreshnessInfo,
-  ClaudeRateLimitInfo,
-  RateLimitInfo,
-  UsageCacheInfo,
-  UsagePlanInfo,
   WarningInfo,
 } from "./shared/protocol";
-import { UsageRefreshTimer } from "./host/UsageRefreshTimer";
+import { UsageStatusService } from "./host/UsageStatusService";
+import { buildSidebarHtml } from "./host/sidebarHtml";
 
-const USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+/** Identifies this consumer to the shared usage service. */
+const CONSUMER_ID = "sidebar";
 
 export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   public static readonly viewId = "token-watch.sidebarView";
@@ -33,27 +31,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   private view: vscode.WebviewView | undefined;
   private disposables: vscode.Disposable[] = [];
   private currency: DisplayCurrencyConfig;
+  private analytics: AnalyticsThresholds;
+  private readonly usageStatus: UsageStatusService;
+  private readonly ownsUsageStatus: boolean;
   private latestFreshness: FreshnessInfo = {};
-  private latestWarnings: WarningInfo = { unmappedModels: [], malformedLineCount: 0, oversizedLineCount: 0 };
-  private latestRateLimit: RateLimitInfo | undefined;
-  private latestClaudeRateLimit: ClaudeRateLimitInfo | undefined;
-  private latestCodexUsageCache: UsageCacheInfo | undefined;
-  private latestClaudeUsageCache: UsageCacheInfo | undefined;
-  private latestCodexPlan: UsagePlanInfo | undefined;
-  private latestClaudePlan: UsagePlanInfo | undefined;
-  private readonly codexConnection = new CodexConnection({ authFile: DEFAULT_CODEX_AUTH_FILE });
-  private readonly claudeConnection = new ClaudeConnection();
-  private rateLimitRefreshPromise: Promise<void> | undefined;
-  private claudeRateLimitRefreshPromise: Promise<void> | undefined;
-  private lastCodexUsageRefreshAt = 0;
-  private lastClaudeUsageRefreshAt = 0;
+  private latestWarnings: WarningInfo = {
+    unmappedModels: [], malformedLineCount: 0, oversizedLineCount: 0, lostUsageLineCount: 0,
+  };
+  private latestWorkerHealth: CoordinatorHealthState;
   private disposed = false;
-  private readonly codexUsageTimer = new UsageRefreshTimer(() => {
-    void this.refreshCodexUsage(true);
-  });
-  private readonly claudeUsageTimer = new UsageRefreshTimer(() => {
-    void this.refreshClaudeUsage(true);
-  });
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -61,24 +47,41 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     private readonly costAlerts: CostAlertController,
     private readonly language: LanguageController,
     currency: DisplayCurrencyConfig,
-    private readonly limitResetReminder?: LimitResetReminder,
+    limitResetReminder?: LimitResetReminder,
+    analytics: AnalyticsThresholds = { anomalyMultiplier: 2, contextFillWarnPct: 80 },
+    private readonly globalStoragePath?: string,
+    usageStatus?: UsageStatusService,
   ) {
     this.currency = currency;
+    this.analytics = analytics;
+    this.latestWorkerHealth = coordinator.healthState();
+    this.usageStatus = usageStatus ?? new UsageStatusService(limitResetReminder);
+    this.ownsUsageStatus = usageStatus === undefined;
 
-    // Subscribe to coordinator data changes → push dataChanged to WebView
     this.disposables.push(
       coordinator.onChanged(() => {
         this.postMessage({ type: "dataChanged" });
-        void this.refreshCodexUsage();
-        void this.refreshClaudeUsage();
+        void this.usageStatus.refresh("codex");
+        void this.usageStatus.refresh("claude");
       }),
       coordinator.onScanComplete((freshness) => {
         this.latestFreshness = freshness;
         this.pushStatus();
       }),
+      // The worker has always reported these; nothing forwarded them, so the
+      // WebView's warnings were permanently the empty defaults.
+      coordinator.onWarnings((warnings) => {
+        this.latestWarnings = warnings;
+        this.pushStatus();
+      }),
+      coordinator.onHealthChanged((health) => {
+        this.latestWorkerHealth = health;
+        this.pushStatus();
+      }),
       coordinator.onProgress((progress) => {
         this.postMessage({ type: "ingestProgress", processed: progress.processed, total: progress.total, partial: progress.partial });
       }),
+      this.usageStatus.onDidChange(() => this.pushStatus()),
     );
   }
 
@@ -96,10 +99,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     };
 
     webviewView.webview.html = this._getHtml(webviewView.webview);
-    if (webviewView.visible) {
-      void this.refreshCodexUsage(true);
-      void this.refreshClaudeUsage(true);
-    }
+    this.usageStatus.setConsumerActive(CONSUMER_ID, webviewView.visible);
 
     // WebView → host message relay
     webviewView.webview.onDidReceiveMessage(
@@ -115,17 +115,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
         if (this.view !== webviewView) {
           return;
         }
-        if (webviewView.visible) {
-          void this.refreshCodexUsage(true);
-          void this.refreshClaudeUsage(true);
-        } else {
-          this.clearUsageTimers();
-        }
+        this.usageStatus.setConsumerActive(CONSUMER_ID, webviewView.visible);
       }),
       webviewView.onDidDispose(() => {
         if (this.view === webviewView) {
           this.view = undefined;
-          this.clearUsageTimers();
+          this.usageStatus.setConsumerActive(CONSUMER_ID, false);
         }
       }),
     );
@@ -135,11 +130,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     if (this.disposed) { return; }
     this.disposed = true;
     this.view = undefined;
-    this.clearUsageTimers();
+    this.usageStatus.setConsumerActive(CONSUMER_ID, false);
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
     this.disposables = [];
+    if (this.ownsUsageStatus) {
+      this.usageStatus.dispose();
+    }
   }
 
   /** Push updated currency config to the WebView (called on config change). */
@@ -148,168 +146,32 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     this.pushStatus();
   }
 
+  /** Push updated analytics thresholds to the WebView (called on config change). */
+  pushAnalytics(analytics: AnalyticsThresholds): void {
+    this.analytics = analytics;
+    this.pushStatus();
+  }
+
   private pushStatus(): void {
+    const usage = this.usageStatus.getState();
     this.postMessage({
       type: "status",
       freshness: this.latestFreshness,
       warnings: this.latestWarnings,
-      rateLimit: this.latestRateLimit,
-      claudeRateLimit: this.latestClaudeRateLimit,
-      codexUsageCache: this.latestCodexUsageCache,
-      claudeUsageCache: this.latestClaudeUsageCache,
-      codexPlan: this.latestCodexPlan,
-      claudePlan: this.latestClaudePlan,
+      rateLimit: usage.codexRateLimit,
+      claudeRateLimit: usage.claudeRateLimit,
+      codexUsageCache: usage.codexUsageCache,
+      claudeUsageCache: usage.claudeUsageCache,
+      codexPlan: usage.codexPlan,
+      claudePlan: usage.claudePlan,
       currency: this.currency,
+      analytics: this.analytics,
+      workerHealth: {
+        status: this.latestWorkerHealth.status,
+        ...(this.latestWorkerHealth.message ? { message: this.latestWorkerHealth.message } : {}),
+        restarts: this.latestWorkerHealth.restarts,
+      },
     });
-  }
-
-  private async refreshCodexPlan(planType?: string): Promise<void> {
-    this.latestCodexPlan = await resolveCodexPlan(planType, this.latestCodexPlan);
-  }
-
-  private async refreshClaudePlan(): Promise<void> {
-    this.latestClaudePlan = await resolveClaudePlan(this.latestClaudePlan);
-  }
-
-  private async refreshClaudeUsage(force = false, bypassCache = false): Promise<void> {
-    if (!this.isUsageActive()) {
-      return;
-    }
-    if (this.claudeRateLimitRefreshPromise) {
-      return this.claudeRateLimitRefreshPromise;
-    }
-    if (!force && Date.now() - this.lastClaudeUsageRefreshAt < USAGE_REFRESH_INTERVAL_MS) {
-      return;
-    }
-
-    this.latestClaudeUsageCache = {
-      ...this.claudeConnection.usageCacheInfo(),
-      refreshing: true,
-      unavailable: !this.latestClaudeRateLimit,
-    };
-    this.pushStatus();
-
-    const refreshPromise = this.claudeConnection.usageInfo<ClaudeUsageResponse>({ force: bypassCache })
-      .then((usage) => {
-        const rateLimit = mapClaudeUsageToRateLimitInfo(usage);
-        if (rateLimit) {
-          this.latestClaudeRateLimit = rateLimit;
-        }
-        this.latestClaudeUsageCache = {
-          ...this.claudeConnection.usageCacheInfo(),
-          unavailable: !this.latestClaudeRateLimit,
-        };
-      })
-      .catch((error) => {
-        if (!isClaudeUsageRateLimitError(error)) {
-          console.warn("[TokenWatch] Claude usage refresh failed:", error);
-        }
-        this.latestClaudeUsageCache = {
-          ...this.claudeConnection.usageCacheInfo(),
-          unavailable: !this.latestClaudeRateLimit,
-        };
-      })
-      .finally(async () => {
-        await this.refreshClaudePlan();
-        this.lastClaudeUsageRefreshAt = Date.now();
-        this.claudeRateLimitRefreshPromise = undefined;
-        this.latestClaudeUsageCache = {
-          ...this.claudeConnection.usageCacheInfo(),
-          refreshing: false,
-          unavailable: !this.latestClaudeRateLimit,
-        };
-        this.pushStatus();
-        this.scheduleClaudeUsageRefresh();
-      });
-
-    this.claudeRateLimitRefreshPromise = refreshPromise;
-    return refreshPromise;
-  }
-
-  private async refreshCodexUsage(force = false, bypassCache = false): Promise<void> {
-    if (!this.isUsageActive()) {
-      return;
-    }
-    if (this.rateLimitRefreshPromise) {
-      return this.rateLimitRefreshPromise;
-    }
-    if (!force && Date.now() - this.lastCodexUsageRefreshAt < USAGE_REFRESH_INTERVAL_MS) {
-      return;
-    }
-
-    this.latestCodexUsageCache = {
-      ...this.codexConnection.usageCacheInfo(),
-      refreshing: true,
-      unavailable: !this.latestRateLimit,
-    };
-    this.pushStatus();
-
-    let codexPlanType: string | undefined;
-    const refreshPromise = this.codexConnection.usageInfo<CodexUsageResponse>({ force: bypassCache })
-      .then(async (usage) => {
-        codexPlanType = usage.plan_type;
-        const rateLimit = mapCodexUsageToRateLimitInfo(usage);
-        if (rateLimit) {
-          rateLimit.limitResets = await withLimitResetDetails(codexLimitResetsFetcher(this.codexConnection), rateLimit.limitResets, bypassCache);
-          this.latestRateLimit = rateLimit;
-          void this.limitResetReminder?.evaluate(rateLimit.limitResets);
-        }
-        this.latestCodexUsageCache = {
-          ...this.codexConnection.usageCacheInfo(),
-          unavailable: !this.latestRateLimit,
-        };
-      })
-      .catch((error) => {
-        if (!isCodexUsageRateLimitError(error)) {
-          console.warn("[TokenWatch] Codex usage refresh failed:", error);
-        }
-        this.latestCodexUsageCache = {
-          ...this.codexConnection.usageCacheInfo(),
-          unavailable: !this.latestRateLimit,
-        };
-      })
-      .finally(async () => {
-        await this.refreshCodexPlan(codexPlanType);
-        this.lastCodexUsageRefreshAt = Date.now();
-        this.rateLimitRefreshPromise = undefined;
-        this.latestCodexUsageCache = {
-          ...this.codexConnection.usageCacheInfo(),
-          refreshing: false,
-          unavailable: !this.latestRateLimit,
-        };
-        this.pushStatus();
-        this.scheduleCodexUsageRefresh();
-      });
-
-    this.rateLimitRefreshPromise = refreshPromise;
-    return refreshPromise;
-  }
-
-  private isUsageActive(): boolean {
-    return !this.disposed && Boolean(this.view?.visible);
-  }
-
-  private scheduleCodexUsageRefresh(): void {
-    if (!this.isUsageActive()) {
-      this.codexUsageTimer.clear();
-      return;
-    }
-    const cache = this.codexConnection.usageCacheInfo();
-    this.codexUsageTimer.schedule(cache.retryPending ? cache.retryAtUtc : undefined);
-  }
-
-  private scheduleClaudeUsageRefresh(): void {
-    if (!this.isUsageActive()) {
-      this.claudeUsageTimer.clear();
-      return;
-    }
-    const cache = this.claudeConnection.usageCacheInfo();
-    this.claudeUsageTimer.schedule(cache.retryPending ? cache.retryAtUtc : undefined);
-  }
-
-  private clearUsageTimers(): void {
-    this.codexUsageTimer.clear();
-    this.claudeUsageTimer.clear();
   }
 
   private handleWebviewMessage(message: WebviewRequest): void {
@@ -323,8 +185,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
         this.pushCostAlertSettings();
         this.pushPricingSettings();
         this.pushLanguage();
-        void this.refreshCodexUsage();
-        void this.refreshClaudeUsage();
+        void this.usageStatus.refresh("codex");
+        void this.usageStatus.refresh("claude");
         break;
       case "query":
         this.coordinator.query(message.query).then(
@@ -351,11 +213,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
         });
         break;
       case "refreshUsage":
-        if (message.provider === "codex") {
-          void this.refreshCodexUsage(true, true);
-        } else {
-          void this.refreshClaudeUsage(true, true);
-        }
+        void this.usageStatus.refresh(message.provider, { force: true, bypassCache: true });
         break;
       case "openSetting":
         vscode.commands.executeCommand(
@@ -409,27 +267,18 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   }
 
   private async savePricingSettings(table: PricingTable): Promise<PricingTable> {
-    const validated: PricingTable = {};
-    for (const [rawModel, rawRate] of Object.entries(table)) {
-      const model = rawModel.trim();
-      if (!model || model.startsWith("$")) {
-        throw new Error(`Invalid custom model ID: ${rawModel}`);
-      }
-      validated[model] = validateModelRate(rawRate, model);
-    }
+    // Strict: the person is editing these values and should be told what is
+    // wrong, rather than having the offending row silently disappear.
+    const validated = validatePricingTableStrict(table);
     const pricingConfig = vscode.workspace.getConfiguration("tokenWatch");
-    const inspected = pricingConfig.inspect<PricingTable>("pricing.overrides");
-    const target = inspected?.workspaceFolderValue !== undefined
-      ? vscode.ConfigurationTarget.WorkspaceFolder
-      : inspected?.workspaceValue !== undefined
-        ? vscode.ConfigurationTarget.Workspace
-        : vscode.ConfigurationTarget.Global;
+    // Always Global: the usage database is global, so prices written into a
+    // workspace would silently change other windows' cost history.
     await pricingConfig.update(
       "pricing.overrides",
       validated,
-      target,
+      vscode.ConfigurationTarget.Global,
     );
-    await this.coordinator.updatePricing(effectivePricingOverrides(validated));
+    await this.coordinator.updatePricing(effectivePricingOverrides(validated, this.globalStoragePath));
     return validated;
   }
 
@@ -454,41 +303,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
       vscode.Uri.joinPath(this._extensionUri, "dist", "webview.css").with({ query: `v=${cacheBust}` }),
     );
 
-    return /* html */ `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="
-    default-src 'none';
-    style-src ${webview.cspSource} 'unsafe-inline';
-    script-src 'nonce-${nonce}';
-    img-src ${webview.cspSource} https: data:;
-  ">
-  <link rel="stylesheet" href="${styleUri}" />
-  <title>Token Watch</title>
-</head>
-<body>
-  <div id="root"></div>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
-</body>
-</html>`;
+    return buildSidebarHtml({
+      nonce,
+      scriptUri: scriptUri.toString(),
+      styleUri: styleUri.toString(),
+      cspSource: webview.cspSource,
+      lang: this.language.getLanguage(),
+    });
   }
-}
-
-function validateModelRate(rate: ModelRate, model: string): ModelRate {
-  const validated: ModelRate = {};
-  for (const key of ["inputPer1K", "cachedInputPer1K", "cacheCreationPer1K", "outputPer1K"] as const) {
-    const value = rate[key];
-    if (value !== undefined) {
-      if (!Number.isFinite(value) || value < 0) {
-        throw new Error(`Invalid ${key} rate for ${model}`);
-      }
-      validated[key] = value;
-    }
-  }
-  if (validated.inputPer1K === undefined || validated.outputPer1K === undefined) {
-    throw new Error(`Input and output rates are required for ${model}`);
-  }
-  return validated;
 }

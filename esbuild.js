@@ -7,6 +7,18 @@ const production = process.argv.includes("--production");
 const watch = process.argv.includes("--watch");
 
 /**
+ * Downlevel targets for the OLDEST VS Code the manifest claims to support
+ * (`engines.vscode: ^1.90.0`).
+ *
+ * VS Code 1.90 ships Electron 29: Node 20.9 in the extension host and worker
+ * threads, Chromium 122 in WebViews. Without an explicit target esbuild emits
+ * for the toolchain's default, so syntax newer than the floor can ship and
+ * only fail on the users actually running that floor.
+ */
+const NODE_TARGET = "node20.9";
+const CHROMIUM_TARGET = "chrome122";
+
+/**
  * Logs esbuild problems in a format VS Code's problem matcher understands.
  * @type {import('esbuild').Plugin}
  */
@@ -56,6 +68,7 @@ async function main() {
     sourcemap: !production,
     sourcesContent: false,
     platform: "node",
+    target: NODE_TARGET,
     outfile: "dist/extension.js",
     external: ["vscode"],
     logLevel: "silent",
@@ -71,6 +84,7 @@ async function main() {
     sourcemap: !production,
     sourcesContent: false,
     platform: "browser",
+    target: CHROMIUM_TARGET,
     outfile: "dist/webview.js",
     // CSS is handled by PostCSS/Tailwind separately
     loader: { ".css": "empty" },
@@ -87,6 +101,7 @@ async function main() {
     sourcemap: !production,
     sourcesContent: false,
     platform: "node",
+    target: NODE_TARGET,
     outfile: "dist/ingestionWorker.js",
     external: ["vscode"],
     logLevel: "silent",

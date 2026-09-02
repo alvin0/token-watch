@@ -13,6 +13,7 @@ import { TodayClaudeUsageCard } from "./components/TodayClaudeUsageCard";
 import { TodayInsightsCard } from "./components/TodayInsightsCard";
 import { TodayUsageTrend } from "./components/TodayUsageTrend";
 import { DayUsageTrend } from "./components/DayUsageTrend";
+import { AttentionCard } from "./components/AttentionCard";
 import { FooterBar } from "./components/FooterBar";
 import { LoadingState } from "./components/LoadingState";
 import { EmptyState } from "./components/EmptyState";
@@ -29,14 +30,24 @@ export function App() {
   const setFilter = useStore((s) => s.setFilter);
   const freshness = useStore((s) => s.freshness);
   const { t } = useTranslation();
+  const activeKey = useStore((s) => s.activeKey);
   const hasData = Object.keys(results).length > 0;
   const isLoading = progress !== undefined && progress.partial;
+  /**
+   * A first scan answers queries long before it has found anything, so a result
+   * can arrive with nothing in it. Showing an empty dashboard then is worse
+   * than saying how far the scan has got — but once there are rows to draw, the
+   * rows win, however much scanning is left.
+   */
+  const shown = results[activeKey];
+  const hasRows = shown !== undefined
+    && (shown.view !== "dashboard" || shown.series.length > 0);
 
   const status = isLoading ? "Scanning" : freshness.latestRecordUtc ? freshnessIsToday(freshness.latestRecordUtc) ? "Live" : "Stale" : "Paused";
   const activeSource = sources && sources.length === 1 ? sources[0] : "all";
 
   let content;
-  if (isLoading && !hasData) {
+  if (isLoading && !hasRows) {
     content = <div className="tw-min-h-0 tw-flex-1"><LoadingState processed={progress.processed} total={progress.total} /></div>;
   } else if (queryPending && !hasData) {
     content = <div className="tw-min-h-0 tw-flex-1"><LoadingState processed={0} total={0} label={t("loading.usage")} /></div>;
@@ -51,6 +62,7 @@ export function App() {
         <PeriodTabs selected={granularity}
           onChange={(p) => setFilter({ granularity: p })} />
         <div className="tw-flex-1 tw-overflow-y-auto tw-px-3 tw-pb-3 tw-space-y-2.5">
+          <AttentionCard />
           <CurrentPeriodCard />
           <SummaryCard />
           <TopModelsCard />

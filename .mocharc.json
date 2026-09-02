@@ -1,0 +1,6 @@
+{
+  "ui": "tdd",
+  "timeout": 20000,
+  "require": ["./scripts/mocha-vscode-stub.cjs"],
+  "spec": ["out/test/properties/**/*.test.js"]
+}

@@ -95,7 +95,10 @@ suite("Diagnostics report tests", () => {
 
     const report = buildDiagnosticsReport(db, pricing, audit);
 
-    assert.deepStrictEqual(report.pricing, audit);
+    // The report carries the audit through, plus the models with no rate. That
+    // list used to be a panel warning; it belongs here, because a missing rate
+    // makes a cost read low without losing a single token.
+    assert.deepStrictEqual(report.pricing, { ...audit, unmappedModels: [] });
     assert.strictEqual(report.longContext.missingRates[0].model, "custom-large");
     assert.strictEqual(report.crossingMidnightSessions[0].sessionId, "diag-session");
     assert.strictEqual(report.folderDayMismatches[0].folderDay, "2026-06-07");

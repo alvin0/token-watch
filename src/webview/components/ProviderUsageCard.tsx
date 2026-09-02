@@ -15,6 +15,8 @@ import {
 import { vscodeApi } from "../store";
 import { formatUsageTime } from "../usageCacheDisplay";
 import { useTranslation } from "../i18n";
+import { soonestExpiry } from "../limitResets";
+import { Chevron } from "./Chevron";
 
 const TWO_COLUMN_GRID = { gridTemplateColumns: "repeat(2, minmax(0, 1fr))" };
 
@@ -51,13 +53,18 @@ export function ProviderUsageCard({
     return null;
   }
 
-  const hasAdditional = layout.additionalLimitCount > 0;
-  const collapsedSummary = layout.additionalGroups.length === 1
-    ? t(layout.additionalLimitCount === 1 ? "quota.additionalOne" : "quota.additionalMany", {
-      name: layout.additionalGroups[0].name,
-      count: layout.additionalLimitCount,
-    })
-    : t("quota.additionalTotal", { count: layout.additionalLimitCount });
+  const detailedResets = limitResets?.resets ?? [];
+  // Without this the list would have nowhere to live on an account whose only
+  // extra detail is its resets: the expander is what reveals it.
+  const hasAdditional = layout.additionalLimitCount > 0 || detailedResets.length > 0;
+  const collapsedSummary = layout.additionalLimitCount === 0
+    ? t("quota.limitResetsHeading", { count: limitResets?.availableCount ?? detailedResets.length })
+    : layout.additionalGroups.length === 1
+      ? t(layout.additionalLimitCount === 1 ? "quota.additionalOne" : "quota.additionalMany", {
+        name: layout.additionalGroups[0].name,
+        count: layout.additionalLimitCount,
+      })
+      : t("quota.additionalTotal", { count: layout.additionalLimitCount });
   const cachedLabel = formatUsageTime(t("quota.cachedAt"), cacheInfo?.cachedAtUtc, locale);
   const retryAtLabel = formatUsageTime(t("quota.retryAt"), cacheInfo?.retryAtUtc, locale);
   const retryWaiting = Boolean(cacheInfo?.retryAtUtc && cacheInfo.retryAtUtc > Date.now());
@@ -143,6 +150,8 @@ export function ProviderUsageCard({
         )}
       </div>
 
+      {expanded && <LimitResetDetails limitResets={limitResets} locale={locale} />}
+
       {expanded && layout.additionalGroups.map((group) => (
         <div key={group.id} className="tw-border-t tw-border-edge tw-p-3">
           <div className="tw-truncate tw-text-[9px] tw-font-medium tw-uppercase tw-text-[var(--vscode-foreground)]" title={group.name}>
@@ -168,7 +177,7 @@ export function ProviderUsageCard({
           </span>
           <span className="tw-flex tw-shrink-0 tw-items-center tw-gap-1.5 tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)]">
             {expanded ? t("common.showLess") : t("common.showMore")}
-            <span aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
+            <Chevron up={expanded} />
           </span>
         </button>
       )}
@@ -181,24 +190,56 @@ export function ProviderUsageCard({
  * limit and expire, so the deadline is called out once it is close. The reset
  * itself is used inside Codex; this card only reports it.
  */
+/**
+ * How many resets are left and when the first of them runs out.
+ *
+ * The full list used to sit here, one line per reset. It is reference material
+ * — which reset, of what kind, expiring when — and it pushed the numbers people
+ * open this card for further down the further away they were from needing it.
+ * The date that matters is the soonest one, because that is the deadline; the
+ * rest moved behind "show more".
+ */
 function LimitResets({ limitResets, locale }: { limitResets?: UsageLimitResetsInfo; locale: string }) {
   const { t } = useTranslation();
   if (!limitResets || limitResets.availableCount <= 0) {
     return null;
   }
-  const resets = limitResets.resets ?? [];
+  const soonest = soonestExpiry(limitResets);
+  const count = limitResets.availableCount;
   return (
     <div className="tw-mt-2 tw-min-w-0" title={t("quota.limitResetsTitle")}>
       <div className="tw-truncate tw-text-[9px] tw-font-semibold tw-tabular-nums tw-text-[var(--vscode-foreground)]">
-        {t("quota.limitResetsHeading", { count: limitResets.availableCount })}
+        {soonest === undefined
+          ? t("quota.limitResetsRemaining", { count })
+          : t("quota.limitResetsSoonest", { count, date: formatExpiry(soonest, locale) })}
       </div>
-      {resets.length > 0 && (
-        <ol className="tw-mt-0.5 tw-min-w-0 tw-list-none tw-space-y-0.5 tw-p-0">
-          {resets.map((reset, index) => (
-            <LimitResetItem key={reset.id} reset={reset} position={index + 1} locale={locale} />
-          ))}
-        </ol>
-      )}
+    </div>
+  );
+}
+
+/** The itemised resets, shown once the card is expanded. */
+function LimitResetDetails({
+  limitResets,
+  locale,
+}: {
+  limitResets?: UsageLimitResetsInfo;
+  locale: string;
+}) {
+  const { t } = useTranslation();
+  const resets = limitResets?.resets ?? [];
+  if (resets.length === 0) {
+    return null;
+  }
+  return (
+    <div className="tw-border-t tw-border-edge tw-p-3" title={t("quota.limitResetsTitle")}>
+      <div className="tw-truncate tw-text-[9px] tw-font-medium tw-uppercase tw-text-[var(--vscode-foreground)]">
+        {t("quota.limitResetsHeading", { count: limitResets?.availableCount ?? resets.length })}
+      </div>
+      <ol className="tw-mt-2 tw-min-w-0 tw-list-none tw-space-y-0.5 tw-p-0">
+        {resets.map((reset, index) => (
+          <LimitResetItem key={reset.id} reset={reset} position={index + 1} locale={locale} />
+        ))}
+      </ol>
     </div>
   );
 }

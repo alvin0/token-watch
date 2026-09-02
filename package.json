@@ -74,73 +74,93 @@
         "tokenWatch.sources.codex.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Toggle Codex ingestion."
+          "description": "Toggle Codex ingestion.",
+          "scope": "application"
         },
         "tokenWatch.sources.claude.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Toggle Claude ingestion."
+          "description": "Toggle Claude ingestion.",
+          "scope": "application"
         },
         "tokenWatch.sources.codex.path": {
           "type": "string",
           "default": "",
-          "description": "Custom Codex sessions path. Empty means default (~/.codex/sessions)."
+          "description": "Custom Codex sessions path. Empty means default (~/.codex/sessions).",
+          "scope": "application"
         },
         "tokenWatch.sources.claude.path": {
           "type": "string",
           "default": "",
-          "description": "Custom Claude projects path. Empty means default (~/.claude/projects)."
+          "description": "Custom Claude projects path. Empty means default (~/.claude/projects).",
+          "scope": "application"
         },
         "tokenWatch.pricing.overrides": {
           "type": "object",
           "default": {},
-          "description": "Map of unique custom modelId → { inputPer1K, cachedInputPer1K, cacheCreationPer1K, outputPer1K }. Custom pricing overrides matching bundled models."
+          "description": "Map of unique custom modelId → { inputPer1K, cachedInputPer1K, cacheCreationPer1K, outputPer1K }. Custom pricing overrides matching bundled models.",
+          "scope": "application"
         },
         "tokenWatch.currency.secondary": {
           "type": "string",
           "default": "",
-          "description": "ISO currency code for secondary display (e.g. JPY). Empty disables."
+          "description": "ISO currency code for secondary display (e.g. JPY). Empty disables.",
+          "scope": "window"
         },
         "tokenWatch.currency.secondaryRate": {
           "type": "number",
           "default": 0,
-          "description": "USD → secondary currency multiplier. Must be > 0 to display."
+          "description": "USD → secondary currency multiplier. Must be > 0 to display.",
+          "scope": "window"
         },
         "tokenWatch.ingestion.watchDebounceMs": {
           "type": "number",
           "default": 500,
           "minimum": 250,
           "maximum": 60000,
-          "description": "File-watch debounce interval in milliseconds."
+          "description": "File-watch debounce interval in milliseconds.",
+          "scope": "application"
         },
         "tokenWatch.ingestion.maxLineBytes": {
           "type": "number",
           "default": 1048576,
           "minimum": 4096,
-          "description": "Lines larger than this are skipped without buffering."
+          "description": "Buffering budget per log line. Longer lines are still read when they carry token counts, up to an 8 MB ceiling, so raising this is only needed if the panel reports lines whose tokens could not be read.",
+          "scope": "application"
         },
         "tokenWatch.ingestion.backfillMonths": {
           "type": "number",
           "default": 0,
-          "description": "Historical backfill cap in months. 0 = unlimited. Bounds first-time reads only and depends on file mtimes."
+          "description": "Historical backfill cap in months. 0 = unlimited. Bounds first-time reads only and depends on file mtimes.",
+          "scope": "application"
+        },
+        "tokenWatch.retention.rawRecordDays": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Delete per-turn records older than this many days, in whole days. Daily and per-session totals are kept forever, so the dashboard history stays complete; what is given up for older days is the hourly drill-down, the tool-call detail, and the ability to reprice them if you change rates. 0 = keep every raw record, which lets the database grow without limit. Turning this on marks the database so that a window still running a build from before retention will not open it — those builds would rebuild the kept totals from the deleted records and lose the history — so reload any such window. Resetting the database undoes that mark.",
+          "scope": "application"
         },
         "tokenWatch.analytics.anomalyMultiplier": {
           "type": "number",
           "default": 2,
           "minimum": 1,
-          "description": "Day cost > k × trailing median flags anomaly."
+          "description": "Day cost > k × trailing median flags anomaly.",
+          "scope": "window"
         },
         "tokenWatch.analytics.contextFillWarnPct": {
           "type": "number",
           "default": 80,
           "minimum": 0,
           "maximum": 100,
-          "description": "Session peak-fill highlight threshold (%)."
+          "description": "Session peak-fill highlight threshold (%).",
+          "scope": "window"
         },
         "tokenWatch.statusBar.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show/hide the status bar item."
+          "description": "Show/hide the status bar item.",
+          "scope": "window"
         }
       }
     },
@@ -174,19 +194,22 @@
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "npm run check-types && npm run lint && node esbuild.js --production",
-    "package:vsix": "vsce package --out token-watch.vsix",
-    "publish": "vsce publish",
+    "package": "npm run clean && npm run check-types && npm run lint && node esbuild.js --production",
+    "package:vsix": "vsce package --out token-watch.vsix && npm run check:vsix",
+    "publish": "npm run verify && npm run package:vsix && vsce publish --packagePath token-watch.vsix",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "check-types": "tsc --noEmit",
-    "lint": "eslint src",
+    "lint": "eslint .",
     "benchmark:ingestion": "npm run compile-tests && node scripts/benchmark-ingestion.mjs",
     "pretest": "npm run compile-tests && npm run compile",
-    "test": "vscode-test",
-    "build:icons": "node scripts/build-icons.mjs",
-    "trace:logo": "node scripts/trace-logo.mjs",
-    "build:icon-pngs": "node scripts/build-icon-pngs.mjs"
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npm run compile-tests && mocha",
+    "test:integration": "npm run pretest && vscode-test",
+    "check:vsix": "node scripts/check-vsix.mjs token-watch.vsix",
+    "watch:css": "postcss src/webview/index.css -o dist/webview.css --watch",
+    "clean": "node scripts/clean.mjs",
+    "verify": "npm run check-types && npm run lint && npm run test:unit && npm run test:integration && npm audit --omit=dev --audit-level=high"
   },
   "dependencies": {
     "react": "18.3.1",
@@ -196,32 +219,26 @@
     "zustand": "5.0.3"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/mocha": "^10.0.7",
     "@types/node": "^20.14.0",
     "@types/react": "18.3.3",
     "@types/react-dom": "18.3.0",
     "@types/sql.js": "^1.4.11",
-    "@types/vscode": "^1.90.0",
-    "@typescript-eslint/eslint-plugin": "^8.60.1",
-    "@typescript-eslint/parser": "^8.60.1",
+    "@types/vscode": "1.90.0",
     "@vscode/test-cli": "^0.0.9",
     "@vscode/test-electron": "^2.4.0",
     "@vscode/vsce": "^3.9.2",
-    "autoprefixer": "10.4.19",
-    "esbuild": "^0.21.5",
-    "eslint": "^8.57.0",
+    "autoprefixer": "^10.5.4",
+    "esbuild": "^0.25.12",
+    "eslint": "^9.39.5",
     "fast-check": "4.8.0",
-    "jimp": "^0.14.0",
+    "mocha": "^11.8.0",
     "npm-run-all": "^4.1.5",
-    "postcss": "8.4.39",
-    "postcss-cli": "11.0.0",
-    "potrace": "^2.1.8",
-    "sharp": "^0.35.4",
-    "simple-icons": "^16.29.0",
-    "svg2ttf": "^6.1.0",
-    "svgicons2svgfont": "^16.0.0",
+    "postcss": "^8.5.26",
+    "postcss-cli": "^11.0.1",
     "tailwindcss": "3.4.4",
-    "ttf2woff": "^3.0.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "typescript-eslint": "^8.68.0"
   }
 }

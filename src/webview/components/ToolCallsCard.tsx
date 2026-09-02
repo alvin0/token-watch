@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { ToolUsageRow } from "../../shared/storeTypes";
 import { useQuery } from "../hooks/useQuery";
 import {
@@ -8,6 +8,8 @@ import {
   type ToolSourceFilter,
 } from "../toolUsage";
 import { useTranslation } from "../i18n";
+import { useModalFocus } from "../hooks/useModalFocus";
+import { Chevron } from "./Chevron";
 
 const EXPANDED_TOOL_LIMIT = 6;
 
@@ -18,14 +20,9 @@ export function ToolCallsCard() {
   const result = useQuery("dashboard");
   const { locale, t } = useTranslation();
 
-  useEffect(() => {
-    if (!modalOpen) { return; }
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { setModalOpen(false); }
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [modalOpen]);
+  const closeModal = useCallback(() => setModalOpen(false), []);
+  // Traps Tab inside the dialog and restores focus to the opener on close.
+  const dialogRef = useModalFocus<HTMLElement>({ open: modalOpen, onClose: closeModal });
 
   if (!result || result.view !== "dashboard") { return null; }
 
@@ -63,7 +60,7 @@ export function ToolCallsCard() {
                   onClick={() => setExpanded(true)}
                   className="tw-flex tw-shrink-0 tw-cursor-pointer tw-items-center tw-gap-1.5 tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-underline"
                 >
-                  {t("common.showMore")} <span aria-hidden="true">⌄</span>
+                  {t("common.showMore")} <Chevron />
                 </button>
               )}
             </div>
@@ -91,7 +88,7 @@ export function ToolCallsCard() {
                 onClick={() => setExpanded(false)}
                 className="tw-flex tw-cursor-pointer tw-items-center tw-gap-1.5 tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-underline"
               >
-                {t("common.showLess")} <span aria-hidden="true">⌃</span>
+                {t("common.showLess")} <Chevron up />
               </button>
             </div>
           </>
@@ -107,10 +104,12 @@ export function ToolCallsCard() {
           }}
         >
           <section
+            ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-label={t("tools.all")}
-            className="tw-flex tw-max-h-full tw-w-full tw-max-w-[720px] tw-flex-col tw-overflow-hidden tw-rounded-lg tw-border tw-border-control tw-bg-card tw-shadow-widget"
+            tabIndex={-1}
+            className="tw-flex tw-max-h-full tw-w-full tw-max-w-[720px] tw-flex-col tw-overflow-hidden tw-rounded-lg tw-border tw-border-control tw-bg-card tw-shadow-widget tw-outline-none"
           >
             <div className="tw-flex tw-items-start tw-justify-between tw-gap-3 tw-border-b tw-border-edge tw-px-3 tw-py-2.5">
               <div>

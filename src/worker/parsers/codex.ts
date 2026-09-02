@@ -14,6 +14,15 @@ import { createHash } from "node:crypto";
 
 const CODEX_RESUME_PREFIX = "codex-context:";
 
+/**
+ * Substrings that mark a Codex line as carrying token counts.
+ *
+ * A line matching one of these is parsed even when it is over `maxLineBytes`:
+ * length is not evidence that a line is uninteresting, and a dropped
+ * `token_count` is a turn missing from every total.
+ */
+const CODEX_USAGE_MARKERS = ['"token_count"', '"total_token_usage"', '"last_token_usage"'] as const;
+
 interface CodexTokenUsage {
   input_tokens?: number | null;
   cached_input_tokens?: number | null;
@@ -57,7 +66,7 @@ interface CodexLogLine {
 
 export class CodexParser implements SourceParser {
   async parse(input: ParseInput, sink: (batch: ParseOutput) => void): Promise<void> {
-    const { filePath, fileId, startOffset, endOffset, maxLineBytes, resumeState } = input;
+    const { filePath, fileId, startOffset, endOffset, maxLineBytes, resumeState, checkpointTurns } = input;
     const fileScope = scopedFileId(fileId ?? filePath);
     const resumeContext = resumeState?.codex ?? decodeCodexResumeContext(resumeState?.recentRequestIds);
 
@@ -71,15 +80,67 @@ export class CodexParser implements SourceParser {
     const runningTotals: Record<string, CumulativeTotals> = resumeState?.runningTotals
       ? { ...resumeState.runningTotals }
       : {};
+    /**
+     * The last cumulative total seen anywhere in this file.
+     *
+     * Codex counts cumulatively per rollout file, and the counter runs straight
+     * through a change of session id: resuming a session replays its history
+     * under the old id and then continues under a new one from the same number.
+     * Keying the baseline by session id therefore made the first line after a
+     * resume look like a turn that had consumed the entire history — measured at
+     * 10.3 billion tokens too many, 39% over, across one real set of logs.
+     */
+    let fileTotals: CumulativeTotals = latestTotals(runningTotals);
 
     const rawTurns: RawCodexTurn[] = [];
     const toolEvents: ToolEvent[] = [];
     let malformedCount = 0;
     let sessionMeta: SessionMeta | undefined;
 
+    const currentResumeState = (): ResumeState => {
+      const codexContext = buildCodexResumeContext({
+        sessionId: currentSessionId,
+        model: currentModel,
+        effort: currentEffort,
+        approvalPolicy: currentApprovalPolicy,
+        sandboxMode: currentSandboxMode,
+        pendingToolNames,
+      });
+      return {
+        runningTotals: { ...runningTotals },
+        recentRequestIds: [encodeCodexResumeContext(codexContext)],
+        codex: codexContext,
+      };
+    };
+
+    /**
+     * Hand off everything accumulated so far and start a fresh batch. Called at
+     * the START of an unconsumed line, so `endOffset` is a resumable boundary.
+     */
+    const emitCheckpoint = (boundaryOffset: number): void => {
+      sink({
+        rawTurns: rawTurns.splice(0),
+        toolEvents: toolEvents.splice(0),
+        endOffset: boundaryOffset,
+        endState: currentResumeState(),
+        malformedCount,
+        oversizedCount: 0,
+        oversizedRecoveredCount: 0,
+        oversizedLostUsageCount: 0,
+        sessionMeta,
+      });
+      malformedCount = 0;
+    };
+
     const stats = await readLines(
-      { filePath, startOffset, endOffset, maxLineBytes },
+      { filePath, startOffset, endOffset, maxLineBytes, usageMarkers: CODEX_USAGE_MARKERS },
       (line, byteOffset, isCompleteLine) => {
+        // A turn's tool events are emitted with the turn, so an empty
+        // pendingToolNames means nothing is half-built across the boundary.
+        if (checkpointTurns && rawTurns.length >= checkpointTurns && pendingToolNames.length === 0) {
+          emitCheckpoint(byteOffset);
+        }
+
         // Fast substring check — only parse lines containing relevant keywords
         if (
           !line.includes('"session_meta"') &&
@@ -96,7 +157,10 @@ export class CodexParser implements SourceParser {
           parsed = JSON.parse(line) as CodexLogLine;
         } catch {
           if (!isCompleteLine) {
-            malformedCount++;
+            // The last line of a session that is being written right now. It is
+            // not malformed, it is unfinished: returning false leaves the cursor
+            // before it, so the next scan reads it whole. Counting it made any
+            // active session permanently report lines it "could not parse".
             return false;
           }
           malformedCount++;
@@ -169,26 +233,34 @@ export class CodexParser implements SourceParser {
           const total = info.total_token_usage;
 
           if (total) {
-            const prev = runningTotals[currentSessionId] ?? emptyTotals();
-            const delta = deltaFromTotal(total, prev);
-            const hasNegativeDelta =
-              delta.inputTokens < 0 ||
-              delta.outputTokens < 0 ||
-              delta.cacheReadTokens < 0 ||
-              delta.reasoningTokens < 0;
+            const next = totalsFromUsage(total);
+            // A counter that has gone backwards was reset — a compaction, or a
+            // fresh series in the same file — so what it now reports is usage in
+            // full rather than a step up from anything. Dropping the line instead,
+            // as this used to, threw those tokens away.
+            const restarted = countedTokens(next) < countedTokens(fileTotals);
+            const delta = restarted ? next : deltaFromTotal(total, fileTotals);
 
-            runningTotals[currentSessionId] = totalsFromUsage(total);
+            runningTotals[currentSessionId] = next;
+            fileTotals = next;
 
-            if (hasNegativeDelta || isZeroDelta(delta)) {
+            const consumed = countedTokens(delta);
+            if (consumed <= 0) {
               pendingToolNames = [];
               return;
             }
 
-            inputTokens = delta.inputTokens;
-            cachedInputTokens = delta.cacheReadTokens;
-            outputTokens = delta.outputTokens;
-            reasoningOutputTokens = delta.reasoningTokens;
-            totalTokens = inputTokens + outputTokens;
+            // One component can go backwards while the turn as a whole moved
+            // forward. What Codex reports is the total, so hold that fixed and
+            // give the slack to whichever side actually rose; clamping each
+            // component on its own inflated the total instead.
+            inputTokens = Math.min(Math.max(0, delta.inputTokens), consumed);
+            outputTokens = consumed - inputTokens;
+            // Cached sits inside input and reasoning inside output, so neither can
+            // exceed the bucket it belongs to.
+            cachedInputTokens = Math.min(Math.max(0, delta.cacheReadTokens), inputTokens);
+            reasoningOutputTokens = Math.min(Math.max(0, delta.reasoningTokens), outputTokens);
+            totalTokens = consumed;
           } else if (last && isPresent(last.input_tokens)) {
             inputTokens = last.input_tokens;
             cachedInputTokens = last.cached_input_tokens ?? 0;
@@ -254,28 +326,15 @@ export class CodexParser implements SourceParser {
       },
     );
 
-    const codexContext = buildCodexResumeContext({
-      sessionId: currentSessionId,
-      model: currentModel,
-      effort: currentEffort,
-      approvalPolicy: currentApprovalPolicy,
-      sandboxMode: currentSandboxMode,
-      pendingToolNames,
-    });
-
-    const endState: ResumeState = {
-      runningTotals,
-      recentRequestIds: [encodeCodexResumeContext(codexContext)],
-      codex: codexContext,
-    };
-
     sink({
       rawTurns,
       toolEvents,
       endOffset: stats.endOffset,
-      endState,
+      endState: currentResumeState(),
       malformedCount,
-      oversizedCount: stats.oversizedCount,
+      oversizedCount: stats.oversizedSkippedCount,
+      oversizedRecoveredCount: stats.oversizedRecoveredCount,
+      oversizedLostUsageCount: stats.oversizedLostUsageCount,
       sessionMeta,
     });
   }
@@ -331,6 +390,26 @@ function decodeCodexResumeContext(values: string[] | undefined): CodexResumeCont
   }
 }
 
+/** Tokens a cumulative reading accounts for; cached and reasoning are inside these. */
+function countedTokens(totals: CumulativeTotals): number {
+  return totals.inputTokens + totals.outputTokens;
+}
+
+/**
+ * The furthest a file's counter has reached, from whatever a cursor recorded.
+ *
+ * Older cursors stored one entry per session id seen in the file. The counter
+ * is cumulative and monotonic within a file, so the largest of them is where it
+ * had got to — which is what resuming the parse needs.
+ */
+function latestTotals(bySession: Record<string, CumulativeTotals>): CumulativeTotals {
+  let best = emptyTotals();
+  for (const totals of Object.values(bySession)) {
+    if (countedTokens(totals) > countedTokens(best)) { best = totals; }
+  }
+  return best;
+}
+
 function emptyTotals(): CumulativeTotals {
   return {
     inputTokens: 0,
@@ -359,14 +438,6 @@ function deltaFromTotal(total: CodexTokenUsage, prev: CumulativeTotals): Cumulat
     cacheCreationTokens: 0,
     reasoningTokens: (total.reasoning_output_tokens ?? 0) - prev.reasoningTokens,
   };
-}
-
-function isZeroDelta(delta: CumulativeTotals): boolean {
-  return delta.inputTokens === 0 &&
-    delta.outputTokens === 0 &&
-    delta.cacheReadTokens === 0 &&
-    delta.cacheCreationTokens === 0 &&
-    delta.reasoningTokens === 0;
 }
 
 function isPresent<T>(value: T | null | undefined): value is T {

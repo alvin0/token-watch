@@ -1,14 +1,16 @@
+import { useTranslation } from "../i18n";
+import { chartColors } from "../theme";
+import { fmtT } from "../lib/periodData";
+import type { TokenMetrics } from "../../shared/tokenMetrics";
+
 interface UsageOverviewCardProps {
   title: string;
   cost: string;
   comparisonCost: string;
   delta: number;
   comparisonLabel: string;
-  totalTokens: string;
-  cachedTokens: string;
-  inputTokens: string;
-  outputTokens: string;
-  cacheHitPct: number;
+  /** Single derived source for every token number on the card. */
+  metrics: TokenMetrics;
   turns: string;
   toolCalls: string;
   models: string;
@@ -24,11 +26,7 @@ export function UsageOverviewCard({
   comparisonCost,
   delta,
   comparisonLabel,
-  totalTokens,
-  cachedTokens,
-  inputTokens,
-  outputTokens,
-  cacheHitPct,
+  metrics,
   turns,
   toolCalls,
   models,
@@ -64,20 +62,23 @@ export function UsageOverviewCard({
         <div className="tw-flex tw-items-center tw-justify-between tw-gap-3">
           <div className="tw-text-[10px] tw-font-medium tw-text-[var(--vscode-foreground)]">{t("overview.tokenUsage")}</div>
           <div className="tw-text-[11px] tw-font-semibold tw-tabular-nums tw-text-[var(--vscode-foreground)]">
-            {t("overview.total", { value: totalTokens })}
+            {t("overview.total", { value: fmtT(metrics.total) })}
           </div>
         </div>
 
         <div className="tw-mt-1.5 tw-flex tw-flex-wrap tw-items-center tw-gap-1.5">
-          <LegendChip label={t("overview.cached", { value: cacheHitPct.toFixed(1) })} color={chartColors.cacheRead} />
+          <LegendChip label={t("overview.cached", { value: metrics.cacheHitPct.toFixed(1) })} color={chartColors.cacheRead} />
           <LegendChip label={t("common.input")} color={chartColors.input} />
           <LegendChip label={t("common.output")} color={chartColors.output} />
         </div>
 
+        {/* The five components below add up to the total shown above. */}
         <div className="tw-mt-2.5 tw-grid tw-gap-1.5" style={THREE_COLUMN_GRID}>
-          <TokenMetric label={t("overview.cachedTokens")} value={cachedTokens} tone="cache" />
-          <TokenMetric label={t("overview.inputTokens")} value={inputTokens} tone="input" />
-          <TokenMetric label={t("overview.outputTokens")} value={outputTokens} tone="output" />
+          <TokenMetric label={t("overview.inputTokens")} value={fmtT(metrics.input)} tone="input" />
+          <TokenMetric label={t("overview.outputTokens")} value={fmtT(metrics.output)} tone="output" />
+          <TokenMetric label={t("overview.cacheReadTokens")} value={fmtT(metrics.cacheRead)} tone="cache" />
+          <TokenMetric label={t("overview.cacheWriteTokens")} value={fmtT(metrics.cacheWrite)} tone="cacheWrite" />
+          <TokenMetric label={t("overview.reasoningTokens")} value={fmtT(metrics.reasoning)} tone="reasoning" />
         </div>
       </div>
 
@@ -103,6 +104,17 @@ function LegendChip({ label, color }: { label: string; color: string }) {
   );
 }
 
+type MetricTone = "cache" | "cacheWrite" | "input" | "output" | "reasoning";
+
+const TONE_CLASS: Record<MetricTone, string> = {
+  // Same hue per token type as the trend chart, so the numbers and the bars agree.
+  cache: "tw-text-chart-yellow",
+  cacheWrite: "tw-text-chart-orange",
+  input: "tw-text-chart-blue",
+  output: "tw-text-chart-green",
+  reasoning: "tw-text-chart-purple",
+};
+
 function TokenMetric({
   label,
   value,
@@ -110,19 +122,12 @@ function TokenMetric({
 }: {
   label: string;
   value: string;
-  tone: "cache" | "input" | "output";
+  tone: MetricTone;
 }) {
-  // Same hue per token type as the trend chart, so the numbers and the bars agree.
-  const toneClass = tone === "cache"
-    ? "tw-text-chart-yellow"
-    : tone === "input"
-      ? "tw-text-chart-blue"
-      : "tw-text-chart-green";
-
   return (
     <div className="tw-min-w-0 tw-rounded-md tw-border tw-border-edge tw-bg-recessed tw-px-2 tw-py-2">
       <div className="tw-truncate tw-text-[8px] tw-text-[var(--vscode-descriptionForeground)]">{label}</div>
-      <div className={`tw-mt-0.5 tw-truncate tw-text-[12px] tw-font-semibold tw-tabular-nums ${toneClass}`} title={value}>
+      <div className={`tw-mt-0.5 tw-truncate tw-text-[12px] tw-font-semibold tw-tabular-nums ${TONE_CLASS[tone]}`} title={value}>
         {value}
       </div>
     </div>
@@ -139,5 +144,3 @@ function FooterMetric({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-import { useTranslation } from "../i18n";
-import { chartColors } from "../theme";

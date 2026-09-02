@@ -5,3 +5,4 @@ dist/
 *.vsix
 /.omc/
 /.tmp/
+.codegraph/

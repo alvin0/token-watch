@@ -1,14 +1,6 @@
 import * as vscode from 'vscode';
-import { CodexConnection, DEFAULT_CODEX_AUTH_FILE, isCodexUsageRateLimitError, readCodexAuthMode } from '../provider/codex';
-import { ClaudeConnection, isClaudeUsageRateLimitError } from '../provider/claude';
 import type { IngestionCoordinator } from './IngestionCoordinator';
-import {
-  formatPercent,
-  mapCodexUsageToRateLimitInfo,
-  nextExpiringLimitReset,
-  type CodexUsageResponse,
-} from '../shared/codexUsage';
-import { mapClaudeUsageToRateLimitInfo, type ClaudeUsageResponse } from '../shared/claudeUsage';
+import { formatPercent, nextExpiringLimitReset } from '../shared/codexUsage';
 import type {
   AnalyticsResult,
   ClaudeRateLimitInfo,
@@ -18,19 +10,21 @@ import type {
   UsagePlanInfo,
   UsageQuotaWindow,
 } from '../shared/protocol';
-import type { LimitResetReminder } from './LimitResetReminder';
-import { codexLimitResetsFetcher, withLimitResetDetails } from './limitResets';
-import { resolveClaudePlan, resolveCodexPlan } from './usagePlan';
 import type { DailyAggregate } from '../shared/storeTypes';
 import { localeTag, translate, type AppLanguage } from '../shared/i18n';
 import type { LanguageController } from './LanguageController';
-import { UsageRefreshTimer } from './UsageRefreshTimer';
+import type { UsageStatusService } from './UsageStatusService';
 
 /**
- * Manages the status bar item showing today's token usage and cost.
- * Refreshes on coordinator data changes; respects the tokenWatch.statusBar.enabled setting.
+ * The status bar item showing today's token usage and cost.
+ *
+ * Quota numbers come from the shared `UsageStatusService`; this class only
+ * renders them. It used to carry its own near-duplicate of the fetch, cache,
+ * retry, plan and limit-reset logic that the sidebar also had.
  */
-const CODEX_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+
+/** Identifies this consumer to the shared usage service. */
+const CONSUMER_ID = 'statusBar';
 
 export function millisecondsUntilNextLocalDay(now: Date): number {
   const nextDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
@@ -61,31 +55,13 @@ export class StatusBarController implements vscode.Disposable {
   private disposed = false;
   private refreshVersion = 0;
   private latestUsage: StatusBarUsageSummary | undefined;
-  private latestRateLimit: RateLimitInfo | undefined;
-  private rateLimitRefreshPromise: Promise<void> | undefined;
-  private latestClaudeRateLimit: ClaudeRateLimitInfo | undefined;
-  private claudeRateLimitRefreshPromise: Promise<void> | undefined;
-  private lastCodexUsageRefreshAt = 0;
-  private lastClaudeUsageRefreshAt = 0;
-  private latestCodexUsageMessage: string | undefined;
-  private latestClaudeUsageMessage: string | undefined;
-  private latestCodexPlan: UsagePlanInfo | undefined;
-  private latestClaudePlan: UsagePlanInfo | undefined;
   private dayRolloverTimer: ReturnType<typeof setTimeout> | undefined;
-  private readonly codexConnection = new CodexConnection({ authFile: DEFAULT_CODEX_AUTH_FILE });
-  private readonly claudeConnection = new ClaudeConnection();
-  private readonly codexUsageTimer = new UsageRefreshTimer(() => {
-    void this.refreshCodexUsage(true);
-  });
-  private readonly claudeUsageTimer = new UsageRefreshTimer(() => {
-    void this.refreshClaudeUsage(true);
-  });
 
   constructor(
     private readonly coordinator: IngestionCoordinator,
     enabled: boolean,
     private readonly language?: LanguageController,
-    private readonly limitResetReminder?: LimitResetReminder,
+    private readonly usageStatus?: UsageStatusService,
   ) {
     this.enabled = enabled;
     this.item = vscode.window.createStatusBarItem(
@@ -97,20 +73,16 @@ export class StatusBarController implements vscode.Disposable {
     this.disposables.push(
       coordinator.onChanged(() => this.refresh()),
       ...(language ? [language.onDidChange(() => this.updateItem())] : []),
+      ...(usageStatus ? [usageStatus.onDidChange(() => this.updateItem())] : []),
     );
 
-    if (enabled) {
-      void this.refreshCodexUsage(true);
-      void this.refreshClaudeUsage(true);
-    }
+    this.usageStatus?.setConsumerActive(CONSUMER_ID, enabled);
     void this.refresh();
     this.scheduleDayRollover();
   }
 
   async refresh(): Promise<void> {
     const version = ++this.refreshVersion;
-    void this.refreshCodexUsage();
-    void this.refreshClaudeUsage();
     const range = localDayRange(new Date());
 
     let result: AnalyticsResult;
@@ -137,19 +109,17 @@ export class StatusBarController implements vscode.Disposable {
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
+    this.usageStatus?.setConsumerActive(CONSUMER_ID, enabled);
     if (enabled) {
-      void this.refreshCodexUsage(true);
-      void this.refreshClaudeUsage(true);
       this.item.show();
     } else {
-      this.clearUsageTimers();
       this.item.hide();
     }
   }
 
   dispose(): void {
     this.disposed = true;
-    this.clearUsageTimers();
+    this.usageStatus?.setConsumerActive(CONSUMER_ID, false);
     if (this.dayRolloverTimer) {
       clearTimeout(this.dayRolloverTimer);
       this.dayRolloverTimer = undefined;
@@ -178,159 +148,24 @@ export class StatusBarController implements vscode.Disposable {
       return;
     }
 
-    this.item.text = buildStatusBarText(this.latestUsage, this.latestRateLimit, this.latestClaudeRateLimit);
+    const usage = this.usageStatus?.getState();
+    this.item.text = buildStatusBarText(this.latestUsage, usage?.codexRateLimit, usage?.claudeRateLimit);
     this.item.tooltip = buildStatusBarTooltip(
       this.latestUsage,
-      this.latestRateLimit,
-      this.latestCodexUsageMessage,
-      this.latestClaudeRateLimit,
-      this.latestClaudeUsageMessage,
+      usage?.codexRateLimit,
+      usage?.codexUnavailable ? 'unavailable' : undefined,
+      usage?.claudeRateLimit,
+      usage?.claudeUnavailable ? 'unavailable' : undefined,
       this.language?.getLanguage(),
-      this.latestCodexPlan,
-      this.latestClaudePlan,
-      this.codexConnection.usageCacheInfo(),
-      this.claudeConnection.usageCacheInfo(),
+      usage?.codexPlan,
+      usage?.claudePlan,
+      usage?.codexUsageCache,
+      usage?.claudeUsageCache,
     );
 
     if (this.enabled) {
       this.item.show();
     }
-  }
-
-  private async refreshCodexUsage(force = false): Promise<void> {
-    if (this.disposed || !this.enabled) {
-      return;
-    }
-    if (this.rateLimitRefreshPromise) {
-      return this.rateLimitRefreshPromise;
-    }
-    if (!force && Date.now() - this.lastCodexUsageRefreshAt < CODEX_USAGE_REFRESH_INTERVAL_MS) {
-      return;
-    }
-
-    const refreshPromise = (async () => {
-      try {
-        const authMode = await readCodexAuthMode(DEFAULT_CODEX_AUTH_FILE);
-        if (authMode && authMode !== 'chatgpt') {
-          if (this.disposed) {
-            return;
-          }
-          this.lastCodexUsageRefreshAt = Date.now();
-          this.latestRateLimit = undefined;
-          this.latestCodexPlan = undefined;
-          this.latestCodexUsageMessage = "unavailable";
-          this.updateItem();
-          return;
-        }
-
-        const usage = await this.codexConnection.usageInfo<CodexUsageResponse>();
-        if (this.disposed) {
-          return;
-        }
-        const rateLimit = mapCodexUsageToRateLimitInfo(usage);
-        if (rateLimit) {
-          rateLimit.limitResets = await withLimitResetDetails(codexLimitResetsFetcher(this.codexConnection), rateLimit.limitResets);
-        }
-        this.latestCodexPlan = await resolveCodexPlan(usage.plan_type, this.latestCodexPlan);
-        if (this.disposed) {
-          return;
-        }
-        this.lastCodexUsageRefreshAt = Date.now();
-        this.latestCodexUsageMessage = undefined;
-        if (rateLimit) {
-          this.latestRateLimit = rateLimit;
-          void this.limitResetReminder?.evaluate(rateLimit.limitResets);
-        }
-        this.updateItem();
-      } catch (err) {
-        if (!this.disposed) {
-          this.latestCodexPlan = await resolveCodexPlan(undefined, this.latestCodexPlan);
-          this.lastCodexUsageRefreshAt = Date.now();
-          if (!this.latestRateLimit) {
-            this.latestCodexUsageMessage = "unavailable";
-          }
-          if (!isCodexUsageRateLimitError(err)) {
-            console.warn('[TokenWatch] Codex usage refresh failed:', err);
-          }
-          this.updateItem();
-        }
-      } finally {
-        this.rateLimitRefreshPromise = undefined;
-        this.scheduleCodexUsageRefresh();
-      }
-    })();
-
-    this.rateLimitRefreshPromise = refreshPromise;
-    return refreshPromise;
-  }
-
-  private async refreshClaudeUsage(force = false): Promise<void> {
-    if (this.disposed || !this.enabled) {
-      return;
-    }
-    if (this.claudeRateLimitRefreshPromise) {
-      return this.claudeRateLimitRefreshPromise;
-    }
-    if (!force && Date.now() - this.lastClaudeUsageRefreshAt < CODEX_USAGE_REFRESH_INTERVAL_MS) {
-      return;
-    }
-
-    const refreshPromise = (async () => {
-      try {
-        this.latestClaudePlan = await resolveClaudePlan(this.latestClaudePlan);
-        const usage = await this.claudeConnection.usageInfo<ClaudeUsageResponse>();
-        if (this.disposed) {
-          return;
-        }
-        const rateLimit = mapClaudeUsageToRateLimitInfo(usage);
-        this.lastClaudeUsageRefreshAt = Date.now();
-        this.latestClaudeUsageMessage = undefined;
-        if (rateLimit) {
-          this.latestClaudeRateLimit = rateLimit;
-        }
-        this.updateItem();
-      } catch (err) {
-        if (!this.disposed) {
-          this.lastClaudeUsageRefreshAt = Date.now();
-          if (!this.latestClaudeRateLimit) {
-            this.latestClaudeUsageMessage = "unavailable";
-          }
-          if (!isClaudeUsageRateLimitError(err)) {
-            console.warn('[TokenWatch] Claude usage refresh failed:', err);
-          }
-          this.updateItem();
-        }
-      } finally {
-        this.claudeRateLimitRefreshPromise = undefined;
-        this.scheduleClaudeUsageRefresh();
-      }
-    })();
-
-    this.claudeRateLimitRefreshPromise = refreshPromise;
-    return refreshPromise;
-  }
-
-  private scheduleCodexUsageRefresh(): void {
-    if (this.disposed || !this.enabled) {
-      this.codexUsageTimer.clear();
-      return;
-    }
-    const cache = this.codexConnection.usageCacheInfo();
-    this.codexUsageTimer.schedule(cache.retryPending ? cache.retryAtUtc : undefined);
-  }
-
-  private scheduleClaudeUsageRefresh(): void {
-    if (this.disposed || !this.enabled) {
-      this.claudeUsageTimer.clear();
-      return;
-    }
-    const cache = this.claudeConnection.usageCacheInfo();
-    this.claudeUsageTimer.schedule(cache.retryPending ? cache.retryAtUtc : undefined);
-  }
-
-  private clearUsageTimers(): void {
-    this.codexUsageTimer.clear();
-    this.claudeUsageTimer.clear();
   }
 }
 
@@ -357,6 +192,7 @@ export function summarizeDailySeries(series: DailyAggregate[]): StatusBarUsageSu
 }
 
 const CODEX_PRIMARY_WINDOW_IDS = ['codex:primary', 'codex:secondary'];
+
 const CLAUDE_PRIMARY_WINDOW_IDS = ['session', 'weekly'];
 
 /**
@@ -480,7 +316,9 @@ function formatLimitResets(limitResets: UsageLimitResetsInfo | undefined, langua
   const expires = typeof expiresAtUtc === 'number'
     ? translate(language, "statusBar.limitResetExpires", { date: formatCompactDate(expiresAtUtc, language) })
     : undefined;
-  return expires ? `${counts} · ${expires}` : counts;
+  // Joined with a dash rather than the middot used between peer facts: the
+  // date qualifies the count, it is not a second thing alongside it.
+  return expires ? `${counts} - ${expires}` : counts;
 }
 
 function formatCompactDate(utcMs: number, language: AppLanguage): string {

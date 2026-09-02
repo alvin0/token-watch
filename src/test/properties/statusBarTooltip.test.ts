@@ -250,7 +250,11 @@ suite('Status bar tooltip', () => {
       },
     });
 
-    assert.ok(tooltip.includes('Limit resets (1) · expires '));
+    // Reads as one sentence, and matches how the usage card puts it.
+    assert.ok(
+      tooltip.includes('1 usage limit reset(s) left - expires '),
+      tooltip,
+    );
     assert.ok(!/credit/i.test(tooltip));
   });
 
@@ -260,7 +264,7 @@ suite('Status bar tooltip', () => {
       limitResets: { availableCount: 1 },
     });
 
-    assert.ok(tooltip.includes('Limit resets (1)'));
+    assert.ok(tooltip.includes('1 usage limit reset(s) left'), tooltip);
     assert.ok(!tooltip.includes('expires'));
   });
 
@@ -270,7 +274,7 @@ suite('Status bar tooltip', () => {
       limitResets: { availableCount: 0 },
     });
 
-    assert.ok(!tooltip.includes('Limit resets'));
+    assert.ok(!tooltip.includes('usage limit reset'), tooltip);
   });
 
   test('closes with one cache line for both providers, aged to the oldest', () => {

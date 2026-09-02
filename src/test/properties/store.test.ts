@@ -1,4 +1,5 @@
 import * as assert from "assert";
+import { CODEX_PARSE_REVISION } from "../../worker/parsers/revision.js";
 import fc from "fast-check";
 import initSqlJs, { Database } from "sql.js";
 
@@ -277,7 +278,7 @@ suite("Store property tests (in-memory sql.js)", () => {
             tailAnchorHash: "def",
             runningTotals: {},
             recentRequestIds: [],
-            parseRevision: 1,
+            parseRevision: CODEX_PARSE_REVISION,
             contribution: batch.contribution,
           });
 
@@ -662,7 +663,7 @@ function catalogCursor(
     tailAnchorHash: "tail",
     runningTotals: {},
     recentRequestIds: [],
-    parseRevision: 1,
+    parseRevision: CODEX_PARSE_REVISION,
     contribution: {
       daily: [{
         day,

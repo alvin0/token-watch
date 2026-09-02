@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast gate: types, lint, and every pure/property suite. These run under bare
+  # mocha, so they need no display and no VS Code download.
+  unit:
+    name: Unit (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Paths, line endings, and file timestamps differ per platform, and the
+        # store and parsers depend on all three.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run check-types
+      - run: npm run lint
+      - run: npm run test:unit
+
+  # Local-day boundaries and DST are a recurring source of off-by-one-day bugs,
+  # so the pure suites run again in zones that actually shift.
+  timezones:
+    name: Unit (TZ ${{ matrix.tz }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tz: [America/New_York, Europe/Berlin, Pacific/Auckland, Asia/Kolkata]
+    env:
+      TZ: ${{ matrix.tz }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:unit
+
+  # Extension Host suites, against the manifest floor and current stable.
+  integration:
+    name: Integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      TOKEN_WATCH_VSCODE_VERSIONS: 1.90.0,stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Run integration tests
+        run: npm run test:integration
+        if: runner.os != 'Linux'
+      - name: Run integration tests (virtual display)
+        run: xvfb-run -a npm run test:integration
+        if: runner.os == 'Linux'
+
+  # Release gate: the VSIX must build and must not carry development artefacts.
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    # Everything has to be green first: a VSIX that passes its own content
+    # check but fails the timezone, Extension Host or audit gates is not a
+    # release candidate.
+    needs: [unit, timezones, integration, audit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx vsce package --out token-watch.vsix
+      - name: Verify VSIX contents
+        run: node scripts/check-vsix.mjs token-watch.vsix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: token-watch-vsix
+          path: token-watch.vsix
+
+  audit:
+    name: Runtime audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # Dev-tooling advisories are tracked separately; a shipped runtime
+      # vulnerability blocks the build.
+      - run: npm audit --omit=dev --audit-level=high

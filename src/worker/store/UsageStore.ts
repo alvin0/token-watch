@@ -12,29 +12,31 @@
  * This module MUST NOT import `vscode`.
  */
 
-import initSqlJs, { Database } from "sql.js";
+import initSqlJs, { Database, Statement } from "sql.js";
 import {
   closeSync,
   existsSync,
   fsyncSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
+import { MAX_READABLE_SCHEMA, PRUNED_SCHEMA_VERSION, SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
+import { storageKey } from "./dedupKey.js";
 import type { ModelRate, Source } from "../../shared/types.js";
 import type { FileCursor, FileContribution, StoreBatch } from "../../shared/storeTypes.js";
 import { totalTokens } from "../../shared/types.js";
 import { baseModelOf } from "../../shared/variant.js";
-import { localDay } from "../../shared/time.js";
-import { parseRevisionForSource } from "../parsers/revision.js";
+import { localDay, localDayFromMs, parseLocalDay } from "../../shared/time.js";
+import { LEGACY_V6_PARSE_REVISION } from "../parsers/revision.js";
 import { PricingEngine } from "../pricing.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -63,6 +65,36 @@ export interface CursorRankInfo {
 
 type CatalogIngestDecision = "skip" | "append" | "reingest" | "firstRead";
 
+/**
+ * Aggregate rows a commit has invalidated but may not have rebuilt yet.
+ *
+ * Carried between the batch commits of one file so the rebuild happens once,
+ * at the end, rather than once per batch over an ever-growing session.
+ */
+export interface DerivedKeys {
+  daily: Set<string>;
+  session: Set<string>;
+  sessionModel: Set<string>;
+}
+
+/**
+ * The write fence rejected this worker: it no longer holds the writer lease.
+ *
+ * Distinct from a concurrent-write collision because the response differs — a
+ * collision means "someone wrote while you weren't looking, reload"; a lost
+ * fence means "you are not the writer any more, stop writing".
+ */
+export class WriterFenceLostError extends Error {
+  constructor() {
+    super("Lost the usage database writer lease; another VS Code window owns it now");
+    this.name = "WriterFenceLostError";
+  }
+}
+
+export function isWriterFenceLostError(error: unknown): error is WriterFenceLostError {
+  return error instanceof WriterFenceLostError;
+}
+
 export class ConcurrentUsageStoreWriteError extends Error {
   constructor() {
     super("Usage database changed in another VS Code window; refusing to overwrite it");
@@ -74,25 +106,144 @@ export function isConcurrentUsageStoreWriteError(error: unknown): error is Concu
   return error instanceof ConcurrentUsageStoreWriteError;
 }
 
+/**
+ * How long a temp snapshot must sit untouched before it is assumed abandoned.
+ *
+ * Writing one is a single fsync of the whole database — slow, but nowhere near
+ * an hour even for a very large file — so nothing this old can still belong to
+ * a live writer in another window.
+ */
+const ABANDONED_SNAPSHOT_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Delete temp snapshots that earlier runs could not clean up.
+ *
+ * The write is atomic by temp-file-and-rename, and a process killed between the
+ * two — a window closed mid-flush, a crash — leaves the temp behind. Each one is
+ * a full copy of the database, so on a large install they quietly accumulated
+ * into gigabytes that nothing would ever reclaim.
+ */
+function sweepAbandonedSnapshots(dbPath: string, now = Date.now()): number {
+  const dir = dirname(dbPath);
+  const prefix = `${basename(dbPath)}.`;
+  let removed = 0;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix) || !entry.endsWith(".tmp")) { continue; }
+    const full = join(dir, entry);
+    try {
+      if (now - statSync(full).mtimeMs < ABANDONED_SNAPSHOT_AGE_MS) { continue; }
+      unlinkSync(full);
+      removed++;
+    } catch { /* another window may be sweeping the same directory */ }
+  }
+  return removed;
+}
+
+/** Meta key holding the first local day that still has raw rows. */
+const RETAINED_FROM_DAY_KEY = "raw_retained_from_day";
+const RETENTION_DAY_MS = 24 * 60 * 60 * 1000;
+
+/** What a retention pass removed. */
+export interface PruneOutcome {
+  prunedRecords: number;
+  prunedToolEvents: number;
+  /** The watermark now in force, or undefined if nothing is pruned. */
+  retainedFromDay: string | undefined;
+}
+
 export class UsageStore {
   private db: Database | null = null;
   private dbPath: string = "";
   private sqlJs: initSqlJs.SqlJsStatic | null = null;
   private persistedFileIdentity: string | undefined;
+  /** `total_changes()` at the last successful flush; undefined = never flushed. */
+  private lastFlushedChangeCount: number | undefined;
+  private lastFlushAtMs = 0;
+  /** Set for DDL and other writes SQLite does not count in `total_changes()`. */
+  private structurallyDirty = false;
+  /**
+   * Checked while the write lock is held, immediately before the snapshot is
+   * renamed into place.
+   *
+   * Deciding "am I the writer?" before starting a scan is not a fence: the
+   * lease can be taken over during the minutes that scan runs. This is the
+   * check that actually gates the write.
+   */
+  private writeFence: (() => boolean) | undefined;
 
   async open(dbPath: string, sqlJs?: initSqlJs.SqlJsStatic): Promise<void> {
     this.dbPath = dbPath;
     const SQL = sqlJs ?? await initSqlJs();
     this.sqlJs = SQL;
+    sweepAbandonedSnapshots(dbPath);
 
     if (existsSync(dbPath)) {
       const snapshot = readStableSnapshot(dbPath);
       this.db = new SQL.Database(snapshot.buffer);
       this.persistedFileIdentity = snapshot.identity;
+      this.lastFlushedChangeCount = this.changeCount();
+      this.structurallyDirty = false;
     } else {
       this.db = new SQL.Database();
       this.persistedFileIdentity = undefined;
+      // Nothing on disk yet, so the first flush must write regardless.
+      this.lastFlushedChangeCount = undefined;
+      this.structurallyDirty = true;
     }
+    this.lastFlushAtMs = 0;
+  }
+
+  /**
+   * Row changes SQLite has applied on this connection. Cheap to read, and the
+   * signal that decides whether a flush would rewrite an identical file.
+   */
+  private changeCount(): number {
+    const result = this.getDb().exec("SELECT total_changes()");
+    return Number(result[0]?.values?.[0]?.[0] ?? 0);
+  }
+
+  /** True when the in-memory database differs from the persisted snapshot. */
+  isDirty(): boolean {
+    if (this.structurallyDirty || this.lastFlushedChangeCount === undefined) {
+      return true;
+    }
+    return this.changeCount() !== this.lastFlushedChangeCount;
+  }
+
+  /** Mark writes SQLite does not count — schema DDL, migrations, truncations. */
+  markStructurallyDirty(): void {
+    this.structurallyDirty = true;
+  }
+
+  /**
+   * Install the ownership check consulted at the moment of writing.
+   *
+   * Passing `undefined` removes it, for single-writer contexts such as tests
+   * and migrations that own the file outright.
+   */
+  setWriteFence(fence: (() => boolean) | undefined): void {
+    this.writeFence = fence;
+  }
+
+  /**
+   * Flush only if enough time has passed since the last one.
+   *
+   * Watch ticks rewrite bookkeeping (last-seen stamps, catalog priorities) even
+   * when no usage row moved. Exporting and rewriting the whole database for
+   * that, every few seconds, is the write amplification this bounds; losing a
+   * few minutes of bookkeeping on a crash costs nothing but a rescan.
+   */
+  flushIfDue(intervalMs: number, now = Date.now()): boolean {
+    if (now - this.lastFlushAtMs < intervalMs) {
+      return false;
+    }
+    return this.flush();
   }
 
   schemaVersion(): number {
@@ -120,6 +271,12 @@ export class UsageStore {
       throw new Error(`Unsupported target database schema ${targetVersion}`);
     }
     if (current > targetVersion) {
+      // A pruned database carries a higher number so older builds stay out of
+      // it; this build is the one that put it there and knows how to read it.
+      if (targetVersion === SCHEMA_VERSION && current <= MAX_READABLE_SCHEMA) {
+        this.ensureAuxiliarySchema();
+        return "ok";
+      }
       throw new Error(`Database schema ${current} is newer than supported schema ${targetVersion}`);
     }
     if (current === 6 && targetVersion >= 7) {
@@ -130,6 +287,11 @@ export class UsageStore {
       this.migrateV7ToV8();
       current = 8;
     }
+    if (current === 8 && targetVersion >= 9) {
+      this.migrateV8ToV9();
+      current = 9;
+    }
+
     if (current === targetVersion) {
       this.ensureAuxiliarySchema();
       return "migrated";
@@ -148,8 +310,16 @@ export class UsageStore {
     throw new Error(`Unsupported database schema ${current}; refusing to rebuild destructively`);
   }
 
-  flush(): void {
+  /**
+   * Persist the in-memory database. Returns whether a write actually happened:
+   * an unchanged database is not re-exported, because `db.export()` plus a full
+   * rewrite is the single most expensive thing this store does.
+   */
+  flush(options: { force?: boolean } = {}): boolean {
     const db = this.getDb();
+    if (!options.force && !this.isDirty()) {
+      return false;
+    }
     const data = db.export();
     const dir = dirname(this.dbPath);
     if (!existsSync(dir)) {
@@ -158,6 +328,11 @@ export class UsageStore {
     const lockPath = `${this.dbPath}.lock`;
     const lock = acquireWriteLock(lockPath);
     try {
+      // Inside the lock, so the answer cannot go stale between the check and
+      // the rename below.
+      if (this.writeFence && !this.writeFence()) {
+        throw new WriterFenceLostError();
+      }
       const currentFileIdentity = existsSync(this.dbPath)
         ? fileIdentity(this.dbPath)
         : undefined;
@@ -165,17 +340,19 @@ export class UsageStore {
         throw new ConcurrentUsageStoreWriteError();
       }
       const tempPath = `${this.dbPath}.${process.pid}.${randomUUID()}.tmp`;
-      const fd = openSync(tempPath, "w");
       try {
-        writeFileSync(fd, data);
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-      try {
+        const fd = openSync(tempPath, "w");
+        try {
+          writeFileSync(fd, data);
+          fsyncSync(fd);
+        } finally {
+          closeSync(fd);
+        }
         renameSync(tempPath, this.dbPath);
         this.persistedFileIdentity = fileIdentity(this.dbPath);
       } catch (error) {
+        // Every failure path, not just a failed rename: a write or fsync that
+        // threw used to leave a full-size snapshot on disk permanently.
         try { unlinkSync(tempPath); } catch { /* best-effort cleanup */ }
         throw error;
       }
@@ -187,6 +364,28 @@ export class UsageStore {
         }
       } catch { /* best-effort cleanup */ }
     }
+    this.lastFlushedChangeCount = this.changeCount();
+    this.structurallyDirty = false;
+    this.lastFlushAtMs = Date.now();
+    return true;
+  }
+
+  /**
+   * Reload only when another window has replaced the file on disk.
+   *
+   * A follower worker (one that does not hold the writer lease) uses this to
+   * pick up the owner's writes without ingesting anything itself. Returns
+   * whether a reload happened.
+   */
+  reloadIfChangedOnDisk(): boolean {
+    if (!this.sqlJs || !this.dbPath || !existsSync(this.dbPath)) {
+      return false;
+    }
+    if (fileIdentity(this.dbPath) === this.persistedFileIdentity) {
+      return false;
+    }
+    this.reload();
+    return true;
   }
 
   /** Restore the last atomically persisted snapshot after a failed force-full scan. */
@@ -198,6 +397,8 @@ export class UsageStore {
     this.db?.close();
     this.db = new this.sqlJs.Database(snapshot.buffer);
     this.persistedFileIdentity = snapshot.identity;
+    this.lastFlushedChangeCount = this.changeCount();
+    this.structurallyDirty = false;
   }
 
   getCursor(filePath: string): FileCursor | undefined {
@@ -392,6 +593,8 @@ export class UsageStore {
 
   clearIngestedData(): void {
     const db = this.getDb();
+    // Bare DELETEs can take SQLite's truncate path, which does not count rows.
+    this.markStructurallyDirty();
     db.run("BEGIN TRANSACTION");
     try {
       db.run("DELETE FROM tool_event");
@@ -401,6 +604,13 @@ export class UsageStore {
       db.run("DELETE FROM file_cursor");
       db.run("DELETE FROM file_catalog");
       db.run("DELETE FROM unmapped_model");
+      // Every day is about to be re-read from the logs, so none is pruned any
+      // more. Leaving the watermark would make the next rebuild preserve stale
+      // aggregates for days it is about to recompute properly.
+      db.run("DELETE FROM meta WHERE key = 'raw_retained_from_day'");
+      // No aggregate outlives its rows any more, so the reason older builds
+      // were locked out is gone with them. A reset restores compatibility.
+      db.run("UPDATE meta SET value = ? WHERE key = 'schema_version'", [String(SCHEMA_VERSION)]);
       db.run("COMMIT");
     } catch (e) {
       db.run("ROLLBACK");
@@ -410,6 +620,7 @@ export class UsageStore {
 
   resetDatabase(): void {
     const db = this.getDb();
+    this.markStructurallyDirty();
     db.run("BEGIN TRANSACTION");
     try {
       db.run("DELETE FROM tool_event");
@@ -421,11 +632,20 @@ export class UsageStore {
       db.run("DELETE FROM pricing");
       db.run("DELETE FROM unmapped_model");
       db.run("DELETE FROM meta WHERE key != 'schema_version'");
+      // Nothing is pruned any more, so the lock-out that protected the pruned
+      // aggregates has nothing left to protect. A reset is the documented way
+      // back to a database every build can read.
+      db.run("UPDATE meta SET value = ? WHERE key = 'schema_version'", [String(SCHEMA_VERSION)]);
       db.run("COMMIT");
     } catch (e) {
       db.run("ROLLBACK");
       throw e;
     }
+    // Deleting every row leaves the file exactly as large as it was, all of it
+    // now free pages, and this store rewrites the whole file on every flush.
+    // A reset is what someone reaches for when things have gone wrong; handing
+    // back an empty database that still costs 70 MB a flush is a poor answer.
+    this.compact();
   }
 
   hotCatalogFilePaths(now = Date.now(), limit = 200): string[] {
@@ -481,7 +701,7 @@ export class UsageStore {
             is_sidechain, stop_reason)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            rec.dedupKey,
+            storageKey(rec.dedupKey),
             fileId,
             rec.source,
             rec.sessionId,
@@ -507,7 +727,10 @@ export class UsageStore {
         );
 
         // Delete existing tool_event rows for this record's dedupKey
-        db.run("DELETE FROM tool_event WHERE record_dedup_key = ?", [rec.dedupKey]);
+        db.run(
+          "DELETE FROM tool_event WHERE record_dedup_key = ?",
+          [storageKey(rec.dedupKey)],
+        );
       }
 
       // Insert tool events
@@ -521,8 +744,10 @@ export class UsageStore {
             day_local, tool_name, model, variant_id, workspace, is_sidechain)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
-            evt.eventKey,
-            evt.recordDedupKey,
+            // Both are opaque on disk: one is the primary key, the other joins
+            // back to usage_record. Nothing reads inside either.
+            storageKey(evt.eventKey),
+            storageKey(evt.recordDedupKey),
             fileId,
             evt.source,
             evt.sessionId,
@@ -630,6 +855,17 @@ export class UsageStore {
    * Canonical targeted commit used by schema v8 ingestion. Aggregate rows are
    * recomputed from usage_record for every affected key, so cursor contribution
    * costs are never used as an accounting source.
+   *
+   * `options.deferDerived` writes only the durable part — the usage rows, the
+   * tool events and the cursor — and returns the keys whose derived rows still
+   * need rebuilding. A large file is committed in many batches, and each
+   * rebuild re-reads and re-prices the WHOLE session, so doing it per batch is
+   * quadratic in the file's size. The caller accumulates the keys and passes
+   * them back on the final commit, which rebuilds each one exactly once.
+   *
+   * A crash between a deferred commit and the final one leaves aggregates
+   * stale against usage_record; that is what `aggregateIntegrity` +
+   * `rebuildAggregates` already check for after every scan that changed data.
    */
   commitFileResult(
     fileId: string,
@@ -638,11 +874,18 @@ export class UsageStore {
     pricing: PricingEngine,
     cursor: FileCursor,
     previousFileId = fileId,
-  ): void {
+    options: { deferDerived?: boolean; pendingKeys?: DerivedKeys } = {},
+  ): DerivedKeys {
     const db = this.getDb();
-    const dailyKeys = new Set<string>();
-    const sessionKeys = new Set<string>();
-    const sessionModelKeys = new Set<string>();
+    const statements: Statement[] = [];
+    const prepare = (sql: string): Statement => {
+      const statement = db.prepare(sql);
+      statements.push(statement);
+      return statement;
+    };
+    const dailyKeys = new Set<string>(options.pendingKeys?.daily);
+    const sessionKeys = new Set<string>(options.pendingKeys?.session);
+    const sessionModelKeys = new Set<string>(options.pendingKeys?.sessionModel);
 
     const rememberRow = (row: Array<string | number | Uint8Array | null>): void => {
       const day = String(row[0]);
@@ -669,46 +912,67 @@ export class UsageStore {
         db.run("DELETE FROM usage_record WHERE file_id = ?", [previousFileId]);
       }
 
+      const insertRecord = prepare(
+        `INSERT OR REPLACE INTO usage_record
+         (dedup_key, file_id, source, session_id, ts_utc, day_local, dow_local, hour_local,
+          model, effort, variant_id, workspace, input_tokens, output_tokens,
+          cache_read_tokens, cache_creation_tokens, reasoning_tokens, total_tokens,
+          context_window, context_used_tokens, is_sidechain, stop_reason, cost_usd, cost_unknown)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+      );
       for (const rec of batch.records) {
         const tsDate = new Date(rec.timestamp);
         const day = localDay(tsDate);
+        const sessionModelKey = encodeKey(rec.source, rec.sessionId, rec.model);
         dailyKeys.add(encodeKey(day, rec.source, rec.variantId, rec.workspace ?? ""));
         sessionKeys.add(encodeKey(rec.source, rec.sessionId));
-        sessionModelKeys.add(encodeKey(rec.source, rec.sessionId, rec.model));
-        db.run(
-          `INSERT OR REPLACE INTO usage_record
-           (dedup_key, file_id, source, session_id, ts_utc, day_local, dow_local, hour_local,
-            model, effort, variant_id, workspace, input_tokens, output_tokens,
-            cache_read_tokens, cache_creation_tokens, reasoning_tokens, total_tokens,
-            context_window, context_used_tokens, is_sidechain, stop_reason, cost_usd, cost_unknown)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
-          [
-            rec.dedupKey, fileId, rec.source, rec.sessionId, rec.timestamp, day,
-            tsDate.getDay(), tsDate.getHours(), rec.model, rec.effort ?? "n/a",
-            rec.variantId, rec.workspace ?? "", rec.inputTokens, rec.outputTokens,
-            rec.cacheReadTokens, rec.cacheCreationTokens, rec.reasoningTokens,
-            totalTokens(rec), rec.meta?.contextWindow ?? null,
-            rec.meta?.contextUsedTokens ?? null, rec.meta?.isSidechain ? 1 : 0,
-            rec.meta?.stopReason ?? null,
-          ],
-        );
-        db.run("DELETE FROM tool_event WHERE record_dedup_key = ?", [rec.dedupKey]);
+        sessionModelKeys.add(sessionModelKey);
+        insertRecord.run([
+          storageKey(rec.dedupKey), fileId, rec.source, rec.sessionId, rec.timestamp, day,
+          tsDate.getDay(), tsDate.getHours(), rec.model, rec.effort ?? "n/a",
+          rec.variantId, rec.workspace ?? "", rec.inputTokens, rec.outputTokens,
+          rec.cacheReadTokens, rec.cacheCreationTokens, rec.reasoningTokens,
+          totalTokens(rec), rec.meta?.contextWindow ?? null,
+          rec.meta?.contextUsedTokens ?? null, rec.meta?.isSidechain ? 1 : 0,
+          rec.meta?.stopReason ?? null,
+        ]);
       }
 
-      for (const evt of batch.toolEvents) {
-        db.run(
+      // Parser dedup keys include the file identity and byte offset, so a normal
+      // first read/append cannot replace another record. Reingest deleted the
+      // file's tool rows above; per-record DELETEs only added an indexed lookup
+      // for every turn in the common path.
+
+      if (batch.toolEvents.length > 0) {
+        const insertToolEvent = prepare(
           `INSERT OR REPLACE INTO tool_event
            (event_key, record_dedup_key, file_id, source, session_id, ts_utc,
             day_local, tool_name, model, variant_id, workspace, is_sidechain)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', ?)`,
-          [
-            evt.eventKey, evt.recordDedupKey, fileId, evt.source, evt.sessionId,
+        );
+        for (const evt of batch.toolEvents) {
+          insertToolEvent.run([
+            // Opaque on disk: one is the primary key, the other joins back to
+            // usage_record, and nothing reads inside either.
+            storageKey(evt.eventKey), storageKey(evt.recordDedupKey),
+            fileId, evt.source, evt.sessionId,
             evt.timestamp, localDay(new Date(evt.timestamp)), evt.toolName,
             evt.isSidechain ? 1 : 0,
-          ],
-        );
+          ]);
+        }
       }
 
+      if (options.deferDerived) {
+        // Rows and cursor are durable; the derived tables are rebuilt once, by
+        // the final commit for this file.
+        this.putCursor(cursor);
+        db.run("COMMIT");
+        return { daily: dailyKeys, session: sessionKeys, sessionModel: sessionModelKeys };
+      }
+
+      const updateRecordCost = prepare(
+        "UPDATE usage_record SET cost_usd = ?, cost_unknown = ? WHERE dedup_key = ?",
+      );
       for (const encoded of sessionModelKeys) {
         const [source, sessionId, model] = decodeKey(encoded);
         const rows = db.exec(
@@ -735,10 +999,7 @@ export class UsageStore {
             cacheCreationTokens: Number(row[7]),
             reasoningTokens: Number(row[8]),
           }, { forceLongContext });
-          db.run(
-            "UPDATE usage_record SET cost_usd = ?, cost_unknown = ? WHERE dedup_key = ?",
-            [cost.usd, cost.unknown ? 1 : 0, String(row[0])],
-          );
+          updateRecordCost.run([cost.usd, cost.unknown ? 1 : 0, String(row[0])]);
         }
       }
 
@@ -783,9 +1044,14 @@ export class UsageStore {
 
       this.putCursor(cursor);
       db.run("COMMIT");
+      return { daily: dailyKeys, session: sessionKeys, sessionModel: sessionModelKeys };
     } catch (error) {
       db.run("ROLLBACK");
       throw error;
+    } finally {
+      for (const statement of statements) {
+        statement.free();
+      }
     }
   }
 
@@ -887,7 +1153,7 @@ export class UsageStore {
    * Incremental appends only parse new bytes, so each run adds only newly-seen
    * issues. forceFull rescans call `resetQualityCounters()` first.
    */
-  updateMetaCounts(malformed: number, oversized: number): void {
+  updateMetaCounts(malformed: number, oversized: number, lostUsageLines = 0, recovered = 0): void {
     const db = this.getDb();
     if (malformed > 0) {
       db.run(
@@ -903,12 +1169,33 @@ export class UsageStore {
         [String(oversized), oversized],
       );
     }
+    // Tracked apart from `oversized_line_count`: that one counts lines with no
+    // token data in them, this one counts tokens actually missing from totals.
+    if (lostUsageLines > 0) {
+      db.run(
+        `INSERT INTO meta (key, value) VALUES ('lost_usage_line_count', ?)
+         ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + ? AS TEXT)`,
+        [String(lostUsageLines), lostUsageLines],
+      );
+    }
+    // Not a problem, but the number that proves the previous counter is a
+    // real ceiling and not a silent drop.
+    if (recovered > 0) {
+      db.run(
+        `INSERT INTO meta (key, value) VALUES ('oversized_recovered_count', ?)
+         ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + ? AS TEXT)`,
+        [String(recovered), recovered],
+      );
+    }
   }
 
   /** Reset the quality counters to 0 (called before a forceFull rescan). */
   resetQualityCounters(): void {
     const db = this.getDb();
-    db.run("DELETE FROM meta WHERE key IN ('malformed_line_count', 'oversized_line_count')");
+    db.run(
+      "DELETE FROM meta WHERE key IN ('malformed_line_count', 'oversized_line_count',"
+      + " 'lost_usage_line_count', 'oversized_recovered_count')",
+    );
   }
 
   /** Return the set of distinct model names currently in the store. */
@@ -1065,6 +1352,13 @@ export class UsageStore {
   }
 
   private ensureAuxiliarySchema(): void {
+    // DDL is invisible to total_changes(), so flag it explicitly.
+    this.markStructurallyDirty();
+    this.dropRedundantIndexes();
+    // Runs last, after every step that may have left holes, so an upgrade that
+    // both rewrites the keys and drops the indexes pays for one rewrite of the
+    // file rather than two.
+    this.compactIfPending();
     this.getDb().exec(`
       CREATE TABLE IF NOT EXISTS file_catalog (
         file_path         TEXT PRIMARY KEY,
@@ -1120,7 +1414,8 @@ export class UsageStore {
             try {
               const contribution = JSON.parse(serialized) as FileContribution;
               if (!isEmptyContribution(contribution)) {
-                update.run([parseRevisionForSource(source), filePath]);
+                // What produced this cursor, not what would produce it today.
+                update.run([LEGACY_V6_PARSE_REVISION, filePath]);
               }
             } catch {
               // Leave malformed legacy cursors at revision 0 so they are safely reparsed.
@@ -1172,6 +1467,292 @@ export class UsageStore {
     if (JSON.stringify(before) !== JSON.stringify(after)) {
       throw new Error("Schema v8 migration changed canonical usage data");
     }
+  }
+
+  /**
+   * Replace every stored dedup key with its compact form.
+   *
+   * The keys held seventy bytes of structure that no query ever reads inside —
+   * the column is a primary key, joined to `tool_event.record_dedup_key` and
+   * compared for equality. On a real 122 MB database the structure cost 32 MB,
+   * spread across the primary-key index, the tool-event rows that repeat the
+   * key, and the cursor contributions that list them.
+   *
+   * Hashing whatever is stored is exactly what the write path now does to the
+   * readable key, so a record ingested after this migration lands on the same
+   * key as the one it replaces. That equivalence is the whole correctness
+   * argument, and it is why this cannot be applied twice: the version check
+   * above is what stops it.
+   */
+  private migrateV8ToV9(): void {
+    const db = this.getDb();
+    const before = this.migrationFingerprint();
+
+    const stored = db.exec("SELECT dedup_key FROM usage_record");
+    const keys = stored.length === 0 ? [] : stored[0].values.map((row) => String(row[0]));
+
+    // 96 bits over a few million rows makes a collision vanishingly unlikely,
+    // but a collision would silently replace one turn with another, so it is
+    // checked rather than assumed.
+    const shortByFull = new Map<string, string>();
+    const fullByShort = new Map<string, string>();
+    for (const full of keys) {
+      const short = storageKey(full);
+      const clash = fullByShort.get(short);
+      if (clash !== undefined && clash !== full) {
+        throw new Error(
+          "Two usage records hash to the same compact dedup key; refusing to migrate",
+        );
+      }
+      fullByShort.set(short, full);
+      shortByFull.set(full, short);
+    }
+
+    db.run("BEGIN TRANSACTION");
+    try {
+      const updateRecord = db.prepare("UPDATE usage_record SET dedup_key = ? WHERE dedup_key = ?");
+      try {
+        for (const [full, short] of shortByFull) {
+          updateRecord.run([short, full]);
+          updateRecord.reset();
+        }
+      } finally {
+        updateRecord.free();
+      }
+
+      // Tool events carry the key twice: once as their own primary key, once as
+      // the link back. Both are opaque, so both become the hash of what was
+      // there — which is what the write path produces for a new event.
+      const events = db.exec("SELECT event_key, record_dedup_key FROM tool_event");
+      if (events.length > 0) {
+        const updateEvent = db.prepare(
+          "UPDATE tool_event SET event_key = ?, record_dedup_key = ? WHERE event_key = ?",
+        );
+        try {
+          for (const row of events[0].values) {
+            const eventKey = String(row[0]);
+            updateEvent.run([storageKey(eventKey), storageKey(String(row[1])), eventKey]);
+            updateEvent.reset();
+          }
+        } finally {
+          updateEvent.free();
+        }
+      }
+
+      // Cursor contributions list the keys of the records a file produced, and
+      // are compared against stored keys to spot an overlapping re-read.
+      const cursors = db.exec("SELECT file_path, contribution FROM file_cursor");
+      if (cursors.length > 0) {
+        const updateCursor = db.prepare("UPDATE file_cursor SET contribution = ? WHERE file_path = ?");
+        try {
+          for (const row of cursors[0].values) {
+            const filePath = String(row[0]);
+            const contribution = JSON.parse(String(row[1])) as { recordKeys?: unknown };
+            if (!Array.isArray(contribution.recordKeys)) { continue; }
+            contribution.recordKeys = contribution.recordKeys.map((key) => storageKey(String(key)));
+            updateCursor.run([JSON.stringify(contribution), filePath]);
+            updateCursor.reset();
+          }
+        } finally {
+          updateCursor.free();
+        }
+      }
+
+      db.run("UPDATE meta SET value = ? WHERE key = 'schema_version'", [String(SCHEMA_VERSION)]);
+      db.run("COMMIT");
+    } catch (error) {
+      db.run("ROLLBACK");
+      throw error;
+    }
+
+    const after = this.migrationFingerprint();
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      throw new Error("Compacting the dedup keys changed canonical usage data");
+    }
+    // Rewriting every primary key churns the index, and the file keeps the space
+    // the old keys occupied until it is squeezed out. Deferred rather than done
+    // here: dropping the redundant indexes right afterwards would otherwise pay
+    // for a second full rewrite of the same file.
+    this.compactionPending = true;
+  }
+
+  /**
+   * Drop two indexes that never earned their keep, if they are still there.
+   *
+   * `idx_rec_session(source, session_id)` is a leading prefix of
+   * `idx_rec_session_model`, and `idx_rec_day(day_local)` a prefix of
+   * `idx_rec_daily_key`. SQLite answers the same lookups from the wider index
+   * by the same access path — verified against a real 162k-row database, where
+   * the pair cost 10.9 MB and turned no SEARCH into a SCAN.
+   *
+   * Deliberately not a schema migration. No code names an index, so a database
+   * without them is still a version 8 database that every shipped build reads
+   * correctly; running this as idempotent maintenance instead means upgrading
+   * costs an existing user nothing, not even a window reload.
+   */
+  private dropRedundantIndexes(): void {
+    const db = this.getDb();
+    const present = db.exec(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN "
+      + "('idx_rec_session', 'idx_rec_day')",
+    );
+    if (present.length === 0 || present[0].values.length === 0) { return; }
+
+    const before = this.migrationFingerprint();
+    db.run("DROP INDEX IF EXISTS idx_rec_session");
+    db.run("DROP INDEX IF EXISTS idx_rec_day");
+    this.markStructurallyDirty();
+    // Dropping an index frees pages inside the file without shrinking it, so the
+    // space is reclaimed on paper only until the file is rewritten.
+    this.compactionPending = true;
+    const after = this.migrationFingerprint();
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      throw new Error("Dropping the redundant indexes changed canonical usage data");
+    }
+  }
+
+  /**
+   * Set when something has freed pages that only a rewrite gives back.
+   *
+   * An upgrade can do two of those in a row — rewriting every dedup key and
+   * dropping two indexes — and each rewrite of a 122 MB file costs the better
+   * part of a second, so they are collapsed into one.
+   */
+  private compactionPending = false;
+
+  /** Rewrite the file if anything has left holes in it, at most once. */
+  compactIfPending(): boolean {
+    if (!this.compactionPending) { return false; }
+    this.compactionPending = false;
+    this.compact();
+    return true;
+  }
+
+  /**
+   * Rewrite the database without its free pages.
+   *
+   * Deletes and dropped indexes leave holes that SQLite reuses but never gives
+   * back, and this store persists by writing the whole file — so a hole is paid
+   * for on every single flush until it is squeezed out. VACUUM cannot run inside
+   * a transaction, hence the separate step.
+   */
+  compact(): { pagesBefore: number; pagesAfter: number } {
+    const db = this.getDb();
+    const pages = () => Number(db.exec("PRAGMA page_count")[0].values[0][0]);
+    const pagesBefore = pages();
+    db.run("VACUUM");
+    // VACUUM moves no rows, so total_changes() does not see it.
+    this.markStructurallyDirty();
+    return { pagesBefore, pagesAfter: pages() };
+  }
+
+  /**
+   * The first local day for which raw `usage_record` rows still exist.
+   *
+   * `undefined` means nothing has been pruned and every day is complete. Once
+   * set it is a hard promise the rest of the code relies on: no day before it
+   * holds any raw row, and no session with a row before it holds one after it
+   * either. `rebuildAggregates` leans on that to know which pre-computed
+   * aggregates it must leave alone, because they can no longer be recomputed.
+   */
+  retainedFromDay(): string | undefined {
+    return this.getMeta(RETAINED_FROM_DAY_KEY);
+  }
+
+  /**
+   * Delete raw rows older than `retentionDays`, in whole days.
+   *
+   * Raw rows are what `daily_aggregate` and `session_aggregate` are derived
+   * from, and those aggregates are what the dashboard reads — so the history
+   * survives pruning. What is given up is per-hour drill-down and tool detail
+   * for old days, and the ability to reprice them if rates change.
+   *
+   * The cutoff is pulled earlier when a session is still running across it. A
+   * half-pruned day or session would make the next aggregate rebuild recompute
+   * it from what was left and silently shrink the totals, so nothing partial is
+   * ever left behind.
+   */
+  pruneRawRecords(retentionDays: number, now = Date.now()): PruneOutcome {
+    const unchanged: PruneOutcome = {
+      prunedRecords: 0,
+      prunedToolEvents: 0,
+      retainedFromDay: this.retainedFromDay(),
+    };
+    if (!Number.isFinite(retentionDays) || retentionDays <= 0) {
+      return unchanged;
+    }
+    const db = this.getDb();
+    const cutoffDay = localDayFromMs(now - retentionDays * RETENTION_DAY_MS);
+    const cutoffTs = parseLocalDay(cutoffDay).getTime();
+
+    // Earliest day touched by a session that is still active at or past the
+    // cutoff. Its rows have to stay whole, so the cutoff cannot pass it.
+    const straddling = db.exec(
+      "SELECT MIN(r.day_local) FROM usage_record r JOIN ("
+      + " SELECT source, session_id FROM usage_record"
+      + " GROUP BY source, session_id HAVING MAX(ts_utc) >= ?"
+      + ") live ON live.source = r.source AND live.session_id = r.session_id",
+      [cutoffTs],
+    );
+    const straddlingDay = straddling[0]?.values[0]?.[0];
+    const effectiveDay = typeof straddlingDay === "string" && straddlingDay < cutoffDay
+      ? straddlingDay
+      : cutoffDay;
+
+    const before = Number(db.exec("SELECT COUNT(*) FROM usage_record")[0].values[0][0]);
+    if (before === 0) {
+      return unchanged;
+    }
+    const oldestDay = db.exec("SELECT MIN(day_local) FROM usage_record")[0].values[0][0];
+    if (typeof oldestDay !== "string" || oldestDay >= effectiveDay) {
+      // Nothing old enough to remove, but the promise still holds and a rebuild
+      // needs to know it.
+      this.setMeta(RETAINED_FROM_DAY_KEY, effectiveDay);
+      return { ...unchanged, retainedFromDay: effectiveDay };
+    }
+
+    const toolsBefore = Number(db.exec("SELECT COUNT(*) FROM tool_event")[0].values[0][0]);
+    this.markStructurallyDirty();
+    db.run("BEGIN TRANSACTION");
+    try {
+      db.run("DELETE FROM tool_event WHERE day_local < ?", [effectiveDay]);
+      db.run("DELETE FROM usage_record WHERE day_local < ?", [effectiveDay]);
+      db.run(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+        [RETAINED_FROM_DAY_KEY, effectiveDay],
+      );
+      // Aggregates now outlive the rows behind them. A build that predates
+      // retention reads that as corruption and rebuilds them from what is left,
+      // which deletes the history; refusing at its version check is the only
+      // way to stop it, since it is already shipped. A reset undoes this.
+      db.run(
+        "UPDATE meta SET value = ? WHERE key = 'schema_version'",
+        [String(PRUNED_SCHEMA_VERSION)],
+      );
+      db.run("COMMIT");
+    } catch (error) {
+      db.run("ROLLBACK");
+      throw error;
+    }
+    const prunedRecords = before
+      - Number(db.exec("SELECT COUNT(*) FROM usage_record")[0].values[0][0]);
+    const prunedToolEvents = toolsBefore
+      - Number(db.exec("SELECT COUNT(*) FROM tool_event")[0].values[0][0]);
+    // Deleted rows leave free pages, and this store writes the whole file on
+    // every flush, so skipping the compaction would make a prune cost disk
+    // rather than save it.
+    if (prunedRecords > 0 || prunedToolEvents > 0) {
+      this.compact();
+    }
+    return { prunedRecords, prunedToolEvents, retainedFromDay: effectiveDay };
+  }
+
+  /** Free pages as a fraction of the file — how much a compaction would return. */
+  fragmentation(): number {
+    const db = this.getDb();
+    const pages = Number(db.exec("PRAGMA page_count")[0].values[0][0]);
+    if (pages === 0) { return 0; }
+    return Number(db.exec("PRAGMA freelist_count")[0].values[0][0]) / pages;
   }
 
   private getMetaNumber(key: string): number | undefined {

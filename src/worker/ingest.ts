@@ -9,8 +9,8 @@
  */
 
 import type { CandidateFile } from "./discovery";
-import type { FileCursorHeader, UsageStore } from "./store/UsageStore";
-import type { FileCursor, StoreBatch, FileContribution } from "../shared/storeTypes";
+import type { DerivedKeys, FileCursorHeader, UsageStore } from "./store/UsageStore";
+import type { FileCursor, FileContribution } from "../shared/storeTypes";
 import type { UsageRecord, ToolEvent, Source, TokenSums } from "../shared/types";
 import { totalTokens } from "../shared/types";
 import { computeHeadHash, computeTailAnchorHash } from "./cursor";
@@ -18,9 +18,12 @@ import { CodexParser } from "./parsers/codex";
 import { ClaudeParser } from "./parsers/claude";
 import { normalize } from "./normalizer";
 import { LONG_CONTEXT_THRESHOLD_TOKENS, PricingEngine } from "./pricing";
-import { localDay } from "../shared/time";
+import { localDay, localDayFromMs } from "../shared/time";
+import { storageKey } from "./store/dedupKey.js";
 import type { ParseOutput, ResumeState } from "./parsers/types";
 import { parseRevisionForSource } from "./parsers/revision";
+import type { FileQuarantine } from "./quarantine";
+import { rebuildAggregates } from "./store/queries";
 
 export type IngestDecision = "skip" | "append" | "reingest" | "firstRead";
 
@@ -30,21 +33,88 @@ export interface IngestResult {
   appended: number;
   reingested: number;
   firstReads: number;
+  /** Files that threw and were quarantined instead of aborting the scan. */
+  failed: number;
+  /** Files skipped because they are still inside a quarantine backoff window. */
+  quarantined: number;
+  /** Oversized lines parsed anyway because they carried token data. */
+  oversizedRecovered: number;
+  /** Oversized lines whose token data could not be read — the only real loss. */
+  oversizedLostUsage: number;
+  /** Failed files that had already committed at least one batch. */
+  partialCommits: number;
+  /** True when the scan stopped before processing every candidate. */
+  stoppedEarly: boolean;
 }
 
 export function hasIngestedChanges(result: IngestResult): boolean {
-  return result.appended + result.reingested + result.firstReads > 0;
+  // `partialCommits` counts files that wrote at least one batch and THEN threw.
+  // Those rows are in the database; leaving them out of this made the host
+  // report "nothing changed", so the panel never refreshed, unmapped-model
+  // pricing was never recomputed, and the snapshot could stay unflushed.
+  return result.appended + result.reingested + result.firstReads + result.partialCommits > 0;
+}
+
+/**
+ * A file that committed some batches before failing.
+ *
+ * Carries the count so the caller can tell "nothing happened" apart from
+ * "something happened and then it broke" — the two need different handling.
+ */
+export class PartialIngestError extends Error {
+  constructor(
+    readonly committedBatches: number,
+    override readonly cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "PartialIngestError";
+  }
+}
+
+export function isPartialIngestError(error: unknown): error is PartialIngestError {
+  return error instanceof PartialIngestError;
 }
 
 export interface IngestOptions {
   maxLineBytes: number;
   backfillMonths: number;
+  /**
+   * Called after each batch is committed to the in-memory database, and after
+   * each file completes.
+   *
+   * A parser checkpoint alone is not durable: it only reaches sql.js's memory,
+   * and the snapshot is written when the scan ends. The worker uses this to
+   * persist on a time throttle, so an interrupted scan keeps its progress.
+   */
+  onCheckpoint?: () => void;
+  /**
+   * Checked between files AND between the batches of one file; returning true
+   * ends the scan early.
+   *
+   * Shutdown uses it so the final flush waits for the current batch rather
+   * than a whole file, which for a large log can exceed the host's deadline
+   * and get the worker terminated with the batch still unwritten.
+   */
+  shouldStop?: () => boolean;
+  /**
+   * Bulk-load mode for an empty database: persist raw rows/cursors per file,
+   * then price and rebuild all derived rows once after the scan.
+   */
+  deferDerivedUntilEnd?: boolean;
 }
 
 const SMALL_FILE_THRESHOLD_BYTES = 5 * 1024 * 1024;
 const RECENT_FILE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const STORED_PRIORITY_LIMIT = 500;
+/** Progress placeholder for a file that was not read at all. */
+const EMPTY_FILE_RESULT: FileIngestResult = {
+  decision: "skip",
+  malformedCount: 0,
+  oversizedCount: 0,
+  oversizedRecoveredCount: 0,
+  oversizedLostUsageCount: 0,
+};
 const EVENT_LOOP_YIELD_INTERVAL = 25;
 
 /**
@@ -78,8 +148,20 @@ export function decideAction(
 }
 
 /**
+ * Turns accumulated before a parser hands off a committable batch. Bounds peak
+ * memory on a single very large session log: without it, every turn and tool
+ * event of a multi-GB file is held until the file is fully read.
+ */
+export const CHECKPOINT_TURNS = 5_000;
+
+/**
  * Process a single candidate file: decide action, perform I/O (hash checks,
- * parsing), normalize, price, build batch, apply to store, update cursor.
+ * parsing), normalize, price, build batches, apply each to the store, and
+ * advance the cursor.
+ *
+ * A parse can yield several batches. Each is committed as it arrives with a
+ * cursor checkpoint, so a crash or a shutdown mid-file loses at most the last
+ * partial batch instead of every byte read so far.
  */
 export async function ingestFile(
   candidate: CandidateFile,
@@ -89,6 +171,7 @@ export async function ingestFile(
 ): Promise<FileIngestResult> {
   const empty = (d: IngestDecision): FileIngestResult => ({
     decision: d, malformedCount: 0, oversizedCount: 0,
+    oversizedRecoveredCount: 0, oversizedLostUsageCount: 0,
   });
 
   const cursorHeader = store.getCursorHeader(candidate.filePath);
@@ -113,7 +196,7 @@ export async function ingestFile(
     }
   }
 
-  // For append: verify hashes (requires I/O). If they fail → reingest.
+  // For append: verify hashes (requires I/O). If they fail -> reingest.
   if (decision === "append" && cursor) {
     const headHash = computeHeadHash(candidate.filePath, candidate.size);
     if (headHash !== cursor.headHash) {
@@ -127,14 +210,16 @@ export async function ingestFile(
   }
 
   const parser = candidate.source === "codex" ? new CodexParser() : new ClaudeParser();
-  const parseForDecision = async (parseDecision: IngestDecision): Promise<ParseOutput | undefined> => {
+  const parseForDecision = async (
+    parseDecision: IngestDecision,
+    onBatch: (batch: ParseOutput) => void,
+  ): Promise<void> => {
     const startOffset = parseDecision === "append" && cursor ? cursor.lastByteOffset : 0;
     const resumeState: ResumeState | undefined =
       parseDecision === "append" && cursor
         ? { runningTotals: cursor.runningTotals, recentRequestIds: cursor.recentRequestIds }
         : undefined;
 
-    let output: ParseOutput | undefined;
     await parser.parse(
       {
         filePath: candidate.filePath,
@@ -142,17 +227,26 @@ export async function ingestFile(
         startOffset,
         endOffset: candidate.size,
         maxLineBytes: options.maxLineBytes,
+        checkpointTurns: CHECKPOINT_TURNS,
         resumeState,
       },
-      (batch) => { output = batch; },
+      onBatch,
     );
-    return output;
   };
 
-  let parseOutput = await parseForDecision(decision);
+  const run = await runIngestPass(decision, candidate, store, pricing, cursor, parseForDecision, options);
 
-  if (!parseOutput) {
-    // No output — still update cursor to reflect current stat
+  if (run.outcome === "needsFullReingest") {
+    // Nothing was committed on the first pass, so a clean full re-parse is safe.
+    const reparse = await runIngestPass("reingest", candidate, store, pricing, cursor, parseForDecision, options);
+    if (reparse.outcome !== "committed") {
+      return { ...countsOf(reparse), decision: "skip" };
+    }
+    return { ...countsOf(reparse), decision: "reingest" };
+  }
+
+  if (run.outcome === "noOutput") {
+    // No parseable content - still record the current stat so the next scan skips.
     const headHash = computeHeadHash(candidate.filePath, candidate.size);
     const tailAnchor = computeTailAnchorHash(candidate.filePath, candidate.size);
     const emptyContribution: FileContribution = {
@@ -175,83 +269,209 @@ export async function ingestFile(
     return empty(decision);
   }
 
-  if (parseOutput.endOffset < candidate.size) {
-    return empty("skip");
+  if (run.outcome === "truncated") {
+    // The parse stopped short of the announced size (an incomplete trailing
+    // line, or the file shrank). Anything already checkpointed stands; the rest
+    // is picked up on the next scan.
+    return { ...countsOf(run), decision: run.committedBatches > 0 ? run.decision : "skip" };
   }
 
-  // Normalize raw turns → UsageRecords
-  // Drop turns with no valid timestamp (would land in 1970-01-01 bucket)
-  let parsedRecords: UsageRecord[] = parseOutput.rawTurns
-    .map(normalize)
-    .filter((r) => r.timestamp > 0);
-  let parsedToolEvents: ToolEvent[] = parseOutput.toolEvents
-    .filter((e) => e.timestamp > 0);
-  let { records, toolEvents } = dedupeParsedRecords(parsedRecords, parsedToolEvents);
+  return { ...countsOf(run), decision: run.decision };
+}
 
-  if (
-    decision === "append" &&
-    cursor &&
-    (
-      hasOverlappingRecordKeys(cursor.contribution, records) ||
-      shouldReingestForLongContextCrossing(cursor, parseOutput, records, pricing)
-    )
-  ) {
-    const reparseOutput = await parseForDecision("reingest");
-    if (!reparseOutput || reparseOutput.endOffset < candidate.size) {
-      return empty("skip");
+/** The quality counters a pass accumulated, in FileIngestResult shape. */
+function countsOf(run: IngestPassResult): Omit<FileIngestResult, "decision"> {
+  return {
+    malformedCount: run.malformedCount,
+    oversizedCount: run.oversizedCount,
+    oversizedRecoveredCount: run.oversizedRecoveredCount,
+    oversizedLostUsageCount: run.oversizedLostUsageCount,
+  };
+}
+
+interface IngestPassResult {
+  outcome: "committed" | "noOutput" | "truncated" | "needsFullReingest";
+  decision: IngestDecision;
+  committedBatches: number;
+  malformedCount: number;
+  oversizedCount: number;
+  oversizedRecoveredCount: number;
+  oversizedLostUsageCount: number;
+}
+
+/**
+ * Drive one parse and commit its batches.
+ *
+ * The last batch is held back until either another batch arrives (proving the
+ * reader moved past it on a line boundary) or the parse finishes with its
+ * endOffset reaching the announced size. That keeps the pre-existing rule -
+ * never commit a parse that stopped short - while still checkpointing.
+ */
+async function runIngestPass(
+  decision: IngestDecision,
+  candidate: CandidateFile,
+  store: UsageStore,
+  pricing: PricingEngine,
+  cursor: FileCursor | undefined,
+  parseForDecision: (d: IngestDecision, onBatch: (batch: ParseOutput) => void) => Promise<void>,
+  options: IngestOptions,
+): Promise<IngestPassResult> {
+  const headHash = computeHeadHash(candidate.filePath, candidate.size);
+  let runningContribution: FileContribution = decision === "append" && cursor
+    ? cursor.contribution
+    : { daily: [], sessions: [], recordKeys: [], toolEventCount: 0 };
+
+  let commitDecision: IngestDecision = decision;
+  let committedBatches = 0;
+  /**
+   * Aggregate rows the checkpoint commits have invalidated.
+   *
+   * Rebuilding them per batch re-reads and re-prices the whole session each
+   * time, which is quadratic in the file's size; they are settled once by the
+   * final commit instead.
+   */
+  let pendingKeys: DerivedKeys | undefined;
+  let malformedCount = 0;
+  let oversizedCount = 0;
+  let oversizedRecoveredCount = 0;
+  let oversizedLostUsageCount = 0;
+  let sawBatch = false;
+  let needsFullReingest = false;
+  let stopped = false;
+  let held: ParseOutput | undefined;
+
+  // Days below this were pruned by retention and their aggregates are now the
+  // only record of them. Letting a re-read put a handful of raw rows back would
+  // make the next aggregate rebuild recompute those days from the fragment and
+  // silently shrink the totals.
+  const retainedFrom = store.retainedFromDay();
+  const isRetained = (day: string): boolean => retainedFrom === undefined || day >= retainedFrom;
+
+  const commit = (batch: ParseOutput, isFinal: boolean): void => {
+    const parsedRecords: UsageRecord[] = batch.rawTurns
+      .map(normalize)
+      .filter((r) => r.timestamp > 0 && isRetained(localDayFromMs(r.timestamp)));
+    const parsedToolEvents: ToolEvent[] = batch.toolEvents
+      .filter((e) => e.timestamp > 0 && isRetained(localDayFromMs(e.timestamp)));
+    const { records, toolEvents } = dedupeParsedRecords(parsedRecords, parsedToolEvents);
+
+    if (
+      committedBatches === 0 &&
+      decision === "append" &&
+      cursor &&
+      (
+        hasOverlappingRecordKeys(cursor.contribution, records) ||
+        shouldReingestForLongContextCrossing(cursor, batch, records, pricing)
+      )
+    ) {
+      // The append boundary is unreliable; the caller re-runs from offset 0.
+      needsFullReingest = true;
+      return;
     }
 
-    decision = "reingest";
-    parseOutput = reparseOutput;
-    parsedRecords = parseOutput.rawTurns
-      .map(normalize)
-      .filter((r) => r.timestamp > 0);
-    parsedToolEvents = parseOutput.toolEvents
-      .filter((e) => e.timestamp > 0);
-    ({ records, toolEvents } = dedupeParsedRecords(parsedRecords, parsedToolEvents));
+    const contribution = buildContribution(records, toolEvents, pricing);
+    const finalContribution = commitDecision === "append"
+      ? mergeContributions(runningContribution, contribution)
+      : contribution;
+
+    // A mid-file checkpoint records how far the file has been consumed, not the
+    // file's full size - otherwise the next scan would see size+mtime unchanged
+    // and skip the remainder forever.
+    const cursorSize = isFinal ? candidate.size : batch.endOffset;
+    const nextCursor: FileCursor = {
+      filePath: candidate.filePath,
+      fileId: candidate.fileId,
+      source: candidate.source,
+      size: cursorSize,
+      mtimeMs: candidate.mtimeMs,
+      lastByteOffset: batch.endOffset,
+      headHash,
+      tailAnchorHash: computeTailAnchorHash(candidate.filePath, batch.endOffset),
+      runningTotals: batch.endState.runningTotals,
+      recentRequestIds: batch.endState.recentRequestIds,
+      parseRevision: parseRevisionForSource(candidate.source),
+      contribution: finalContribution,
+    };
+
+    pendingKeys = store.commitFileResult(
+      candidate.fileId,
+      { records, toolEvents, contribution },
+      commitDecision,
+      pricing,
+      nextCursor,
+      cursor?.fileId,
+      { deferDerived: !isFinal || options.deferDerivedUntilEnd, ...(pendingKeys ? { pendingKeys } : {}) },
+    );
+    if (isFinal && !options.deferDerivedUntilEnd) { pendingKeys = undefined; }
+
+    runningContribution = finalContribution;
+    committedBatches++;
+    // Later batches extend what the first one wrote; never re-clear the file.
+    commitDecision = "append";
+    options.onCheckpoint?.();
+  };
+
+  try {
+    await parseForDecision(decision, (batch) => {
+      sawBatch = true;
+      malformedCount += batch.malformedCount;
+      oversizedCount += batch.oversizedCount;
+      oversizedRecoveredCount += batch.oversizedRecoveredCount;
+      oversizedLostUsageCount += batch.oversizedLostUsageCount;
+      if (needsFullReingest) { return; }
+      if (held) {
+        commit(held, false);
+        held = undefined;
+        if (needsFullReingest) { return; }
+      }
+      held = batch;
+      if (options.shouldStop?.()) {
+        // Commit what is in hand so the checkpoint is durable, then stop; the
+        // rest of the file resumes from this cursor on the next scan.
+        commit(held, false);
+        held = undefined;
+        stopped = true;
+      }
+    });
+  } catch (error) {
+    // Anything already committed is durable; say so rather than letting the
+    // caller assume the file left the database untouched.
+    throw committedBatches > 0 ? new PartialIngestError(committedBatches, error) : error;
   }
 
-  // Build contribution (daily + session aggregates)
-  const contribution = buildContribution(records, toolEvents, pricing);
-
-  // Merge contribution with existing cursor contribution on append
-  const finalContribution = decision === "append" && cursor
-    ? mergeContributions(cursor.contribution, contribution)
-    : contribution;
-
-  // Build StoreBatch
-  const batch: StoreBatch = { records, toolEvents, contribution };
-
-  // Hashes and cursor are finalized before the single targeted store transaction.
-  const headHash = computeHeadHash(candidate.filePath, candidate.size);
-  const tailAnchor = computeTailAnchorHash(candidate.filePath, parseOutput.endOffset);
-  const nextCursor: FileCursor = {
-    filePath: candidate.filePath,
-    fileId: candidate.fileId,
-    source: candidate.source,
-    size: candidate.size,
-    mtimeMs: candidate.mtimeMs,
-    lastByteOffset: parseOutput.endOffset,
-    headHash,
-    tailAnchorHash: tailAnchor,
-    runningTotals: parseOutput.endState.runningTotals,
-    recentRequestIds: parseOutput.endState.recentRequestIds,
-    parseRevision: parseRevisionForSource(candidate.source),
-    contribution: finalContribution,
-  };
-  store.commitFileResult(
-    candidate.fileId,
-    batch,
-    decision,
-    pricing,
-    nextCursor,
-    cursor?.fileId,
-  );
+  if (needsFullReingest) {
+    return { outcome: "needsFullReingest", decision, committedBatches, malformedCount, oversizedCount, oversizedRecoveredCount, oversizedLostUsageCount };
+  }
+  if (stopped) {
+    // Everything committed is durable and the cursor points part-way through
+    // the file; treat it exactly like a parse that stopped short.
+    return { outcome: "truncated", decision, committedBatches, malformedCount, oversizedCount, oversizedRecoveredCount, oversizedLostUsageCount };
+  }
+  if (!sawBatch) {
+    return { outcome: "noOutput", decision, committedBatches, malformedCount, oversizedCount, oversizedRecoveredCount, oversizedLostUsageCount };
+  }
+  if (held) {
+    if (held.endOffset < candidate.size) {
+      return { outcome: "truncated", decision, committedBatches, malformedCount, oversizedCount, oversizedRecoveredCount, oversizedLostUsageCount };
+    }
+    try {
+      commit(held, true);
+    } catch (error) {
+      throw committedBatches > 0 ? new PartialIngestError(committedBatches, error) : error;
+    }
+    if (needsFullReingest) {
+      return { outcome: "needsFullReingest", decision, committedBatches, malformedCount, oversizedCount, oversizedRecoveredCount, oversizedLostUsageCount };
+    }
+  }
 
   return {
+    outcome: committedBatches > 0 ? "committed" : "truncated",
     decision,
-    malformedCount: parseOutput.malformedCount,
-    oversizedCount: parseOutput.oversizedCount,
+    committedBatches,
+    malformedCount,
+    oversizedCount,
+    oversizedRecoveredCount,
+    oversizedLostUsageCount,
   };
 }
 
@@ -270,6 +490,8 @@ export async function ingestAll(
   pricing: PricingEngine,
   options: IngestOptions,
   onProgress?: (processed: number, total: number, fileResult: FileIngestResult) => void,
+  quarantine?: FileQuarantine,
+  onFileError?: (candidate: CandidateFile, error: unknown) => void,
 ): Promise<IngestResult> {
   const result: IngestResult = {
     processed: 0,
@@ -277,6 +499,12 @@ export async function ingestAll(
     appended: 0,
     reingested: 0,
     firstReads: 0,
+    failed: 0,
+    quarantined: 0,
+    oversizedRecovered: 0,
+    oversizedLostUsage: 0,
+    partialCommits: 0,
+    stoppedEarly: false,
   };
 
   const ranked = rankCandidatesForIngestion(candidates, store);
@@ -291,9 +519,49 @@ export async function ingestAll(
   let totalOversized = 0;
 
   for (let i = 0; i < total; i++) {
+    if (options.shouldStop?.()) {
+      // Everything committed so far stands and its cursors are persisted; the
+      // remaining candidates are picked up by the next scan.
+      result.stoppedEarly = true;
+      break;
+    }
     const candidate = ordered[i];
-    const fileResult = await ingestFile(candidate, store, pricing, options);
+
+    // A file inside its backoff window costs nothing to skip; the discovery
+    // stat already ran, and retrying it every 10s only repeats the same error.
+    if (quarantine?.shouldSkip(candidate.filePath)) {
+      result.processed++;
+      result.quarantined++;
+      result.skipped++;
+      onProgress?.(result.processed, total, EMPTY_FILE_RESULT);
+      continue;
+    }
+
+    let fileResult: FileIngestResult;
+    try {
+      fileResult = await ingestFile(candidate, store, pricing, options);
+    } catch (error) {
+      // Isolate the failure: a file that vanished mid-scan, or that the OS
+      // refuses to read, must not stop every candidate ranked behind it.
+      quarantine?.recordFailure(candidate.filePath, error);
+      onFileError?.(candidate, error);
+      result.processed++;
+      result.failed++;
+      if (isPartialIngestError(error) && error.committedBatches > 0) {
+        // Its rows are already in the database, so the scan really did change
+        // data even though this file did not finish.
+        result.partialCommits++;
+      }
+      onProgress?.(result.processed, total, EMPTY_FILE_RESULT);
+      if (result.processed % EVENT_LOOP_YIELD_INTERVAL === 0) {
+        await yieldToEventLoop();
+      }
+      continue;
+    }
+
+    quarantine?.recordSuccess(candidate.filePath);
     store.recordFileCatalogIngestResult(candidate, fileResult.decision);
+    options.onCheckpoint?.();
     result.processed++;
     switch (fileResult.decision) {
       case "skip": result.skipped++; break;
@@ -303,6 +571,8 @@ export async function ingestAll(
     }
     totalMalformed += fileResult.malformedCount;
     totalOversized += fileResult.oversizedCount;
+    result.oversizedRecovered += fileResult.oversizedRecoveredCount;
+    result.oversizedLostUsage += fileResult.oversizedLostUsageCount;
     onProgress?.(result.processed, total, fileResult);
     if (result.processed % EVENT_LOOP_YIELD_INTERVAL === 0) {
       await yieldToEventLoop();
@@ -311,10 +581,16 @@ export async function ingestAll(
 
   // Persist quality metrics — incremental appends only see new issues, so we
   // accumulate. forceFull rescans reset these counters beforehand.
-  store.updateMetaCounts(totalMalformed, totalOversized);
+  store.updateMetaCounts(
+    totalMalformed, totalOversized, result.oversizedLostUsage, result.oversizedRecovered,
+  );
 
   // Record last ingest run timestamp
   store.setMeta("last_ingest_run_utc", String(Date.now()));
+
+  if (options.deferDerivedUntilEnd && hasIngestedChanges(result)) {
+    rebuildAggregates(store.database, pricing);
+  }
 
   // Record unmapped models — evaluate against ALL models in the store, not just
   // those parsed this run, so a watch tick on one file doesn't clobber the set.
@@ -422,13 +698,16 @@ function hasOverlappingRecordKeys(contribution: FileContribution, records: Usage
   if (records.length === 0 || contribution.recordKeys.length === 0) {
     return false;
   }
+  // A cursor's keys are in stored form, so both sides are hashed before they
+  // are compared. The legacy shape is still built from the readable key first,
+  // which is why hashing happens here and not where keys are created.
   const existingKeys = new Set(contribution.recordKeys);
   return records.some((record) => {
-    if (existingKeys.has(record.dedupKey)) {
+    if (existingKeys.has(storageKey(record.dedupKey))) {
       return true;
     }
     const legacyKey = legacyClaudeRecordKey(record);
-    return legacyKey ? existingKeys.has(legacyKey) : false;
+    return legacyKey ? existingKeys.has(storageKey(legacyKey)) : false;
   });
 }
 
@@ -483,7 +762,12 @@ function dedupeParsedRecords(
 export interface FileIngestResult {
   decision: IngestDecision;
   malformedCount: number;
+  /** Oversized lines that carried no token data; nothing countable was lost. */
   oversizedCount: number;
+  /** Oversized lines parsed anyway because they carried token data. */
+  oversizedRecoveredCount: number;
+  /** Oversized lines too large to buffer that carried token data — real loss. */
+  oversizedLostUsageCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -548,7 +832,9 @@ function buildContribution(
   const recordKeys: string[] = [];
 
   for (const rec of records) {
-    recordKeys.push(rec.dedupKey);
+    // Stored, so stored form: this list is persisted inside the file cursor and
+    // is only ever compared for equality against what the database holds.
+    recordKeys.push(storageKey(rec.dedupKey));
 
     const tsDate = new Date(rec.timestamp);
     const day = localDay(tsDate);

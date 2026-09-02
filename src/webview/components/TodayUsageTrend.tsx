@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useStore } from "../store";
 import { useQuery } from "../hooks/useQuery";
-import { formatCost } from "../format";
+import { useCostFormat, type CostFormatter } from "../hooks/useCostFormat";
 import { fmtT, pRange } from "../lib/periodData";
 import type { ChartMode } from "../lib/periodData";
 import type { HourlyAggregate } from "../../shared/storeTypes";
@@ -44,6 +44,7 @@ export function TodayUsageTrend() {
 export function HourlyUsageTrendCard({ rows, day, title, subtitle, navigation, hideWhenEmpty, pending, error }: HourlyUsageTrendCardProps) {
   const [mode, setMode] = useState<ChartMode>("Tokens");
   const { locale, t } = useTranslation();
+  const money = useCostFormat();
   const buckets = hourlyBuckets(rows, day);
   const totalTokens = buckets.reduce((sum, bucket) => sum + bucket.tokens, 0);
   const totalTurns = buckets.reduce((sum, bucket) => sum + bucket.turns, 0);
@@ -88,17 +89,21 @@ export function HourlyUsageTrendCard({ rows, day, title, subtitle, navigation, h
       {(pending || totalTokens > 0 || totalTurns > 0) && (
       <div className="tw-flex tw-gap-2">
         <div className="tw-flex tw-h-24 tw-w-9 tw-shrink-0 tw-flex-col tw-justify-between tw-text-[8px] tw-tabular-nums tw-text-[var(--vscode-descriptionForeground)]">
-          <span>{formatValue(maxV, mode, locale)}</span>
-          <span>{formatValue(maxV / 2, mode, locale)}</span>
+          <span>{formatValue(maxV, mode, locale, money)}</span>
+          <span>{formatValue(maxV / 2, mode, locale, money)}</span>
           <span>0</span>
         </div>
         <div className="tw-min-w-0 tw-flex-1">
-          <div className="tw-flex tw-h-24 tw-items-end tw-gap-[3px]">
+          <div
+            role="img"
+            aria-label={`${title} — ${t("trend.totalValue", { value: formatValue(totalValue, mode, locale, money) })}`}
+            className="tw-flex tw-h-24 tw-items-end tw-gap-[3px]"
+          >
             {buckets.map((bucket) => {
               const value = getVal(bucket);
               const height = value > 0 ? Math.max((value / maxV) * 100, 2) : 0;
               return (
-                <div key={bucket.hour} className="tw-flex tw-h-full tw-flex-1 tw-items-end" title={hourTitle(bucket, locale, t)}>
+                <div key={bucket.hour} className="tw-flex tw-h-full tw-flex-1 tw-items-end" title={hourTitle(bucket, locale, t, money)}>
                   <div className="tw-w-full tw-rounded-t-sm tw-bg-chart-blue" style={{ height: `${height}%` }} />
                 </div>
               );
@@ -113,7 +118,7 @@ export function HourlyUsageTrendCard({ rows, day, title, subtitle, navigation, h
       </div>
       )}
       <div className="tw-mt-2 tw-flex tw-items-center tw-justify-between tw-gap-2 tw-text-[8px] tw-tabular-nums tw-text-[var(--vscode-descriptionForeground)]">
-        <span>{t("trend.totalValue", { value: formatValue(totalValue, mode, locale) })}</span>
+        <span>{t("trend.totalValue", { value: formatValue(totalValue, mode, locale, money) })}</span>
         <span>{t("trend.activeHours", { count: activeHours.toLocaleString(locale) })}</span>
       </div>
     </div>
@@ -152,8 +157,8 @@ function emptyHourBucket(hour: number): HourBucket {
   };
 }
 
-function formatValue(value: number, mode: ChartMode, locale = "en-US"): string {
-  if (mode === "Cost") { return formatCost(value); }
+function formatValue(value: number, mode: ChartMode, locale = "en-US", money?: CostFormatter): string {
+  if (mode === "Cost") { return money ? money.cost(value) : `$${value.toFixed(2)}`; }
   if (mode === "Turns") { return Math.round(value).toLocaleString(locale); }
   return fmtT(value);
 }
@@ -162,7 +167,7 @@ function hourShort(hour: number): string {
   return String(hour).padStart(2, "0");
 }
 
-function hourTitle(bucket: HourBucket, locale: string, t: ReturnType<typeof useTranslation>["t"]): string {
-  return `${bucket.label}: ${fmtT(bucket.tokens)} ${t("common.tokens")}, ${formatCost(bucket.cost)}, ${bucket.turns.toLocaleString(locale)} ${t("common.turns")}`
+function hourTitle(bucket: HourBucket, locale: string, t: ReturnType<typeof useTranslation>["t"], money: CostFormatter): string {
+  return `${bucket.label}: ${fmtT(bucket.tokens)} ${t("common.tokens")}, ${money.cost(bucket.cost)}, ${bucket.turns.toLocaleString(locale)} ${t("common.turns")}`
     + `\n${t("common.input")} ${fmtT(bucket.input)} - ${t("common.output")} ${fmtT(bucket.output)} - ${t("common.cache")} ${fmtT(bucket.cache)} - ${t("common.reasoning")} ${fmtT(bucket.reasoning)}`;
 }

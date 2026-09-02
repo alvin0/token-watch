@@ -1,4 +1,5 @@
 import * as assert from "node:assert";
+import { CODEX_PARSE_REVISION } from "../../worker/parsers/revision.js";
 import initSqlJs, { type Database } from "sql.js";
 
 import { UsageStore } from "../../worker/store/UsageStore.js";
@@ -119,7 +120,7 @@ function cursor(fileId: string, item: UsageRecord): FileCursor {
   return {
     filePath: `/${fileId}.jsonl`, fileId, source: item.source,
     size: 1, mtimeMs: 1, lastByteOffset: 1, headHash: "h", tailAnchorHash: "t",
-    runningTotals: {}, recentRequestIds: [], parseRevision: 1,
+    runningTotals: {}, recentRequestIds: [], parseRevision: CODEX_PARSE_REVISION,
     contribution: batch([item]).contribution,
   };
 }
@@ -128,7 +129,7 @@ function emptyCursor(fileId: string): FileCursor {
   return {
     filePath: `/${fileId}.jsonl`, fileId, source: "codex",
     size: 0, mtimeMs: 2, lastByteOffset: 0, headHash: "h", tailAnchorHash: "t",
-    runningTotals: {}, recentRequestIds: [], parseRevision: 1,
+    runningTotals: {}, recentRequestIds: [], parseRevision: CODEX_PARSE_REVISION,
     contribution: batch([]).contribution,
   };
 }

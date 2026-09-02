@@ -109,3 +109,64 @@ suite("Webview period windows", () => {
     });
   });
 });
+
+suite("Webview period windows across DST", () => {
+  // These dates put a DST boundary inside the rolling window. With fixed 24h
+  // arithmetic the boundaries land an hour short and report the previous day.
+  const dstCases = [
+    { label: "spring forward (northern)", now: new Date(2026, 2, 25, 12, 0, 0) },
+    { label: "fall back (northern)", now: new Date(2026, 10, 5, 12, 0, 0) },
+    { label: "spring forward (southern)", now: new Date(2026, 9, 8, 12, 0, 0) },
+  ];
+
+  for (const { label, now } of dstCases) {
+    test(`pRange keeps whole calendar days — ${label}`, () => {
+      const today = localDay(now);
+
+      const day = pRange("day", now);
+      assert.strictEqual(day.to, today);
+      assert.strictEqual(day.from, expectedShift(now, -6));
+      assert.strictEqual(day.prevFrom, expectedShift(now, -13));
+      assert.strictEqual(day.prevTo, expectedShift(now, -7));
+
+      const today0 = pRange("today", now);
+      assert.strictEqual(today0.prevFrom, expectedShift(now, -1));
+
+      const week = pRange("week", now);
+      // The window start is a Monday and prevTo is the day before it.
+      assert.strictEqual(weekdayOf(week.from), 1);
+      assert.strictEqual(weekdayOf(week.prevFrom), 1);
+      assert.strictEqual(week.prevTo, shiftDayString(week.from, -1));
+
+      const month = pRange("month", now);
+      assert.ok(month.from.endsWith("-01"));
+      assert.strictEqual(month.prevTo, shiftDayString(month.from, -1));
+    });
+  }
+
+  test("makeBuckets emits 7 distinct calendar days across a DST boundary", () => {
+    const buckets = makeBuckets([], "day", new Date(2026, 2, 25, 12, 0, 0));
+    assert.strictEqual(buckets.length, 7);
+    assert.strictEqual(new Set(buckets.map((bucket) => bucket.key)).size, 7);
+  });
+
+  test("previousPeriodAnchor lands on the same wall-clock day-of-week", () => {
+    const now = new Date(2026, 2, 25, 12, 0, 0);
+    assert.strictEqual(previousPeriodAnchor("day", now).getDay(), now.getDay());
+    assert.strictEqual(previousPeriodAnchor("week", now).getDay(), now.getDay());
+  });
+});
+
+function expectedShift(now: Date, days: number): string {
+  return localDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + days));
+}
+
+function shiftDayString(day: string, amount: number): string {
+  const [year, month, date] = day.split("-").map(Number);
+  return localDay(new Date(year, month - 1, date + amount));
+}
+
+function weekdayOf(day: string): number {
+  const [year, month, date] = day.split("-").map(Number);
+  return new Date(year, month - 1, date).getDay();
+}

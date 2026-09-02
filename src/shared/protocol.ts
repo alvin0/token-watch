@@ -31,6 +31,27 @@ export interface AnalyticsQuery {
   workspaces?: string[];
   rollupToBaseModel?: boolean;                  // Req 7.3, 11.9
   breakdownByVariant?: boolean;                 // Req 11.3
+  /**
+   * Sub-range for the dashboard's hourly series.
+   *
+   * The hourly rollup is only ever drawn for a day or two, while `range` also
+   * has to cover whatever trailing history the comparisons need. Tying the two
+   * together meant widening the window for a baseline silently returned no
+   * hourly data at all.
+   */
+  hourlyRange?: { fromUtc: number; toUtc: number };
+  /**
+   * The window the UI actually displays.
+   *
+   * `range` covers everything the worker must READ: the visible period, the
+   * period it is compared against, and the trailing history the cost-anomaly
+   * baseline needs. Results that the UI renders whole rather than filtering by
+   * day — the tool table and the session lists — must be scoped to what the
+   * reader is looking at, or the Today tab shows three weeks of tool calls.
+   *
+   * Defaults to `range` for callers that do not distinguish the two.
+   */
+  visibleRange?: { fromUtc: number; toUtc: number };
 }
 
 /** Per-source rollup for the Codex-vs-Claude comparison view (Req 11.12). */
@@ -50,7 +71,18 @@ export interface SourceComparison {
  * views. No `id` lives here — it is correlated on the message envelope.
  */
 export type AnalyticsResult =
-  | { view: "dashboard"; series: DailyAggregate[]; variants: VariantMetrics[]; sessions: SessionAggregate[]; tools: ToolUsageRow[]; toolCallsByDay: ToolCallsByDay[]; hourlySeries: HourlyAggregate[] }
+  | {
+      view: "dashboard";
+      series: DailyAggregate[];
+      variants: VariantMetrics[];
+      /** Top sessions by cost, truncated for display. */
+      sessions: SessionAggregate[];
+      /** Top sessions by peak context fill — the set the context warning reads. */
+      contextSessions: SessionAggregate[];
+      tools: ToolUsageRow[];
+      toolCallsByDay: ToolCallsByDay[];
+      hourlySeries: HourlyAggregate[];
+    }
   | { view: "hourly"; hourlySeries: HourlyAggregate[] }
   | { view: "series"; series: DailyAggregate[] }
   | { view: "variants"; variants: VariantMetrics[] }
@@ -65,11 +97,27 @@ export interface FreshnessInfo {
   lastIngestRunUtc?: number;
 }
 
+/** Ingestion worker health as the host sees it. */
+export interface WorkerHealthInfo {
+  status: "starting" | "ready" | "restarting" | "failed";
+  message?: string;
+  restarts: number;
+}
+
 /** Non-fatal ingestion warnings surfaced in the UI (Req 15.2, 15.3). */
 export interface WarningInfo {
   unmappedModels: string[];     // Req 15.2
   malformedLineCount: number;   // unparseable JSON lines skipped (Req 15.3a)
-  oversizedLineCount: number;   // lines skipped over maxLineBytes (Req 15.3b)
+  /**
+   * Lines skipped for exceeding `maxLineBytes` that carried NO token data
+   * (Req 15.3b). Informational only — nothing countable was in them.
+   */
+  oversizedLineCount: number;
+  /**
+   * Lines whose token data could not be read at all. The only counter that
+   * means tokens are missing from the totals.
+   */
+  lostUsageLineCount: number;
 }
 
 /** Latest Codex rate-limit percentages seen, informational (Req 14.4). */
@@ -120,6 +168,11 @@ export interface ClaudeRateLimitInfo {
 }
 
 export interface PricingDiagnostics {
+  /**
+   * Models seen in the logs with no rate. Their tokens are counted normally;
+   * only their cost reads low, which is why the panel does not raise it.
+   */
+  unmappedModels?: string[];
   overriddenBundledModels: string[];
   ignoredFallbackOverride: boolean;
   customModelOverrides: string[];
@@ -185,6 +238,58 @@ export interface DiagnosticsReport {
     checkedSessions: number;
     mismatches: ReconciliationMismatchDiagnostic[];
   };
+  /**
+   * What ingestion could and could not read. Only `malformedLineCount` and
+   * `lostUsageLineCount` mean tokens are absent from the totals;
+   * `oversizedLineCount` is long lines that held no token counts, which is why
+   * the panel does not mention it.
+   */
+  ingestion: {
+    malformedLineCount: number;
+    oversizedLineCount: number;
+    oversizedRecoveredCount: number;
+    lostUsageLineCount: number;
+  };
+  /**
+   * What the worker spent its time on, measured on the machine it ran on.
+   *
+   * `stalls` is the one to read first: it is how long the worker went without
+   * being able to answer anything, which is what an unresponsive panel is.
+   */
+  timing: {
+    upMs: number;
+    spans: Array<{ name: string; ms: number; atMs: number; detail?: string }>;
+    stalls: Array<{ ms: number; atMs: number }>;
+  };
+  /** What retention has pruned, what that costs, and who can still read it. */
+  retention: {
+    /**
+     * The schema number on the file. Raised only once retention has actually
+     * pruned, to keep builds that predate it from rebuilding the kept totals
+     * out of the deleted rows. The first thing to check when a window reports
+     * that it cannot open the database.
+     */
+    schemaVersion: number;
+    /**
+     * First local day that still has per-turn rows, or undefined when nothing
+     * has been pruned. Daily and session totals exist for every day either way.
+     */
+    retainedFromDay?: string;
+    rawRecordCount: number;
+  };
+}
+
+/**
+ * Analytics thresholds the WebView applies (Req 11.15, 14.3).
+ *
+ * These come straight from `tokenWatch.analytics.*`. They live on the status
+ * message so a settings change reaches the UI without a reload.
+ */
+export interface AnalyticsThresholds {
+  /** Day cost above k × trailing median is flagged as an anomaly. */
+  anomalyMultiplier: number;
+  /** Session peak context fill at or above this percent is highlighted. */
+  contextFillWarnPct: number;
 }
 
 /** Secondary display currency, so the WebView formats costs without round-trips (Req 6.5). */
@@ -255,4 +360,7 @@ export type HostMessage =
       codexPlan?: UsagePlanInfo;
       claudePlan?: UsagePlanInfo;
       currency?: DisplayCurrencyConfig;   // Req 6.5
+      analytics?: AnalyticsThresholds;    // Req 11.15, 14.3
+      /** Ingestion worker health, so the UI can say why data stopped updating. */
+      workerHealth?: WorkerHealthInfo;
     };

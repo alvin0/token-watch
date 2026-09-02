@@ -1,4 +1,31 @@
-export const SCHEMA_VERSION = 8;
+/**
+ * The schema this build creates and migrates to.
+ *
+ * 9 stores dedup keys in compact form. That one does have to lock older
+ * builds out: they compute the readable key, would not find the compact row it
+ * belongs to, and would insert a second copy of turns they re-read — double
+ * counting the tokens rather than replacing them.
+ *
+ * Dropping the two redundant indexes, by contrast, did NOT bump this. Nothing
+ * reads an index by name — SQLite chooses them — so that change cannot affect
+ * an older build and is applied as maintenance on every open instead.
+ */
+export const SCHEMA_VERSION = 9;
+
+/**
+ * The schema this build marks a database with once retention has pruned it.
+ *
+ * Structurally identical to 9. The number exists purely to stop a build that
+ * predates retention from opening it: those builds compare every raw row
+ * against every aggregate, conclude a pruned database is corrupt, and rebuild
+ * the aggregates from rows that no longer exist — deleting the history
+ * retention was designed to keep. A database only reaches this version if the
+ * user turns retention on, and a reset puts it back to SCHEMA_VERSION.
+ */
+export const PRUNED_SCHEMA_VERSION = 10;
+
+/** The highest schema this build can safely read. */
+export const MAX_READABLE_SCHEMA = PRUNED_SCHEMA_VERSION;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -34,8 +61,10 @@ CREATE TABLE IF NOT EXISTS usage_record (
 );
 CREATE INDEX IF NOT EXISTS idx_rec_ts ON usage_record(ts_utc);
 CREATE INDEX IF NOT EXISTS idx_rec_file ON usage_record(file_id);
-CREATE INDEX IF NOT EXISTS idx_rec_session ON usage_record(source, session_id);
-CREATE INDEX IF NOT EXISTS idx_rec_day ON usage_record(day_local);
+-- (source, session_id) and (day_local) are deliberately absent: each is a
+-- leading prefix of one of the indexes below, so SQLite answers those lookups
+-- from the wider index with the same access path. Carrying them cost 10.9 MB
+-- of index on a 122 MB database and bought nothing.
 CREATE INDEX IF NOT EXISTS idx_rec_session_model ON usage_record(source, session_id, model);
 CREATE INDEX IF NOT EXISTS idx_rec_daily_key ON usage_record(day_local, source, variant_id, workspace);
 

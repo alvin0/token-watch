@@ -1,10 +1,12 @@
-import { execFile } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { mkdir, readFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import type { UsageCacheInfo } from "../../shared/protocol";
-import { randomUsageRetryMs } from "../../shared/usageRetry";
+import { randomUsageRetryMs, rateLimitBackoffMs } from "../../shared/usageRetry";
+import { fileIdentityOf, writeFileAtomicSync, type FileIdentity } from "../atomicFile";
+import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout } from "../http";
 
 export const DEFAULT_CLAUDE_CREDENTIALS_FILE = "~/.claude/.credentials.json";
 export const DEFAULT_CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
@@ -14,13 +16,21 @@ export const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
 const CLAUDE_OAUTH_BETA = "oauth-2025-04-20";
 const REFRESH_SAFETY_MARGIN_MS = 30_000;
-const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
 const DEFAULT_FAILURE_RETRY_MS = 60 * 1000;
 const execFileAsync = promisify(execFile);
+/** Bound for `security`; it can block on a Keychain prompt indefinitely. */
+const KEYCHAIN_TIMEOUT_MS = 10_000;
 const refreshPromises = new Map<string, Promise<ClaudeAuthSnapshot>>();
 const usageInfoPromises = new Map<string, Promise<unknown>>();
 const usageCooldowns = new Map<string, number>();
 const usageInfoCache = new Map<string, { value: unknown; cachedAt: number; expiresAt: number }>();
+/**
+ * Refusals in a row, per endpoint, so the wait can widen.
+ *
+ * Cleared as soon as a call succeeds: the next refusal after a good response
+ * is a blip, not a pattern, and should not inherit the last one's wait.
+ */
+const usageRefusals = new Map<string, number>();
 
 interface ClaudeAiOauthCredentials {
   accessToken?: string;
@@ -44,6 +54,8 @@ export interface ClaudeAuthSnapshot {
   credentials: ClaudeCredentials;
   storage: "file" | "keychain";
   path?: string;
+  /** Identity of the credentials file when it was read, for the write-back guard. */
+  identity?: FileIdentity;
 }
 
 export interface ClaudeConnectionOptions {
@@ -57,6 +69,8 @@ export interface ClaudeConnectionOptions {
   now?: () => number;
   usageCacheTtlMs?: number;
   random?: () => number;
+  /** Per-request deadline; a hung socket must not pin the refresh forever. */
+  timeoutMs?: number;
 }
 
 export interface ClaudeUsageRequestOptions {
@@ -150,7 +164,9 @@ export class ClaudeConnection {
     const response = await this.usage();
     if (response.status === 429) {
       const now = (this.options.now ?? Date.now)();
-      const retryAt = retryAtFromHeader(response.headers.get("retry-after"), now);
+      const refusals = (usageRefusals.get(key) ?? 0) + 1;
+      usageRefusals.set(key, refusals);
+      const retryAt = retryAtFromHeader(response.headers.get("retry-after"), now, refusals);
       usageCooldowns.set(key, retryAt);
       const cached = usageInfoCache.get(key);
       if (cached) {
@@ -162,18 +178,20 @@ export class ClaudeConnection {
       throw new Error(`Claude usage request failed: ${response.status} ${await response.text()}`);
     }
     usageCooldowns.delete(key);
+    // A good response ends the run of refusals, so the next one starts short.
+    usageRefusals.delete(key);
     const value = (await response.json()) as T;
     const now = (this.options.now ?? Date.now)();
     usageInfoCache.set(key, {
       value,
       cachedAt: now,
-      expiresAt: now + (this.options.usageCacheTtlMs ?? randomUsageRetryMs(this.options.random)),
+      expiresAt: now + (this.options.usageCacheTtlMs ?? randomUsageRetryMs("claude", this.options.random)),
     });
     return value;
   }
 
   private fetchUsage(auth: ClaudeAuthSnapshot) {
-    return (this.options.fetch ?? fetch)(this.options.usageEndpoint ?? CLAUDE_USAGE_ENDPOINT, {
+    return fetchWithTimeout(this.options.fetch ?? fetch, this.options.usageEndpoint ?? CLAUDE_USAGE_ENDPOINT, {
       method: "GET",
       headers: {
         authorization: `Bearer ${auth.accessToken}`,
@@ -181,6 +199,7 @@ export class ClaudeConnection {
         "anthropic-beta": CLAUDE_OAUTH_BETA,
         "user-agent": "token-watch",
       },
+      timeoutMs: this.options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
     });
   }
 
@@ -211,20 +230,23 @@ export async function readClaudeAuthSnapshot(options: ClaudeConnectionOptions = 
         "-s",
         options.keychainService ?? DEFAULT_CLAUDE_KEYCHAIN_SERVICE,
         "-w",
-      ], { encoding: "utf8", maxBuffer: 1024 * 1024 });
+      ], { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: KEYCHAIN_TIMEOUT_MS });
       return authSnapshot(parseCredentials(stdout, "macOS Keychain"), "keychain");
     } catch {
       // Claude Code falls back to the credentials file when Keychain is unavailable.
     }
   }
 
+  // Captured before the read so a rotation by Claude Code itself is detected
+  // when we come to write the refreshed tokens back.
+  const identity = fileIdentityOf(resolvedFile);
   let raw: string;
   try {
     raw = await readFile(resolvedFile, "utf8");
   } catch (error) {
     throw new Error(`Failed to read Claude credentials ${resolvedFile}: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return authSnapshot(parseCredentials(raw, resolvedFile), "file", resolvedFile);
+  return authSnapshot(parseCredentials(raw, resolvedFile), "file", resolvedFile, identity);
 }
 
 export function resolveClaudeCredentialsPath(credentialsFile = DEFAULT_CLAUDE_CREDENTIALS_FILE): string {
@@ -253,6 +275,7 @@ function authSnapshot(
   credentials: ClaudeCredentials,
   storage: ClaudeAuthSnapshot["storage"],
   filePath?: string,
+  identity?: FileIdentity,
 ): ClaudeAuthSnapshot {
   const oauth = credentials.claudeAiOauth;
   const accessToken = cleanToken(oauth?.accessToken);
@@ -272,6 +295,7 @@ function authSnapshot(
     credentials,
     storage,
     ...(filePath ? { path: filePath } : {}),
+    ...(identity ? { identity } : {}),
   };
 }
 
@@ -284,25 +308,30 @@ async function refreshClaudeAuthSnapshot(
   current: ClaudeAuthSnapshot,
   options: ClaudeConnectionOptions,
 ): Promise<ClaudeAuthSnapshot> {
-  const response = await (options.fetch ?? fetch)(options.tokenEndpoint ?? CLAUDE_TOKEN_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json",
-      "anthropic-beta": CLAUDE_OAUTH_BETA,
+  const response = await fetchWithTimeout(
+    options.fetch ?? fetch,
+    options.tokenEndpoint ?? CLAUDE_TOKEN_ENDPOINT,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        "anthropic-beta": CLAUDE_OAUTH_BETA,
+      },
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        refresh_token: current.refreshToken,
+        client_id: options.clientId ?? CLAUDE_OAUTH_CLIENT_ID,
+      }),
+      timeoutMs: options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
     },
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      refresh_token: current.refreshToken,
-      client_id: options.clientId ?? CLAUDE_OAUTH_CLIENT_ID,
-    }),
-  });
+  );
 
   if (!response.ok) {
     throw new Error(`Claude token refresh failed: ${response.status} ${await response.text()}`);
   }
 
-  const tokens = await response.json().catch(() => undefined) as ClaudeTokenResponse | undefined;
+  const tokens = validateClaudeTokenResponse(await response.json().catch(() => undefined));
   const accessToken = cleanToken(tokens?.access_token);
   const refreshToken = cleanToken(tokens?.refresh_token) || current.refreshToken;
   if (!accessToken) {
@@ -324,41 +353,118 @@ async function refreshClaudeAuthSnapshot(
     },
   };
 
-  await persistClaudeCredentials(current, credentials, options);
-  return authSnapshot(credentials, current.storage, current.path);
+  const identity = await persistClaudeCredentials(current, credentials, options);
+  return authSnapshot(credentials, current.storage, current.path, identity);
+}
+
+/**
+ * Shape-check the token endpoint's reply before trusting it.
+ *
+ * The response contract belongs to another product and can change without
+ * notice; a silently-wrong shape here would be written straight into the user's
+ * credentials file.
+ */
+function validateClaudeTokenResponse(value: unknown): ClaudeTokenResponse | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  for (const key of ["access_token", "refresh_token"] as const) {
+    if (raw[key] !== undefined && typeof raw[key] !== "string") {
+      throw new Error(`Claude token refresh response field "${key}" is not a string`);
+    }
+  }
+  for (const key of ["expires_in", "refresh_token_expires_in"] as const) {
+    if (raw[key] !== undefined && (typeof raw[key] !== "number" || !Number.isFinite(raw[key]))) {
+      throw new Error(`Claude token refresh response field "${key}" is not a number`);
+    }
+  }
+  return raw as unknown as ClaudeTokenResponse;
 }
 
 async function persistClaudeCredentials(
   current: ClaudeAuthSnapshot,
   credentials: ClaudeCredentials,
   options: ClaudeConnectionOptions,
-): Promise<void> {
+): Promise<FileIdentity | undefined> {
   const serialized = JSON.stringify(credentials);
   if (current.storage === "keychain") {
     try {
-      await execFileAsync("security", [
-        "add-generic-password",
-        "-U",
-        "-a",
-        os.userInfo().username,
-        "-s",
+      await writeKeychainPassword(
         options.keychainService ?? DEFAULT_CLAUDE_KEYCHAIN_SERVICE,
-        "-w",
         serialized,
-      ], { encoding: "utf8", maxBuffer: 1024 * 1024 });
+      );
     } catch {
-      // Do not propagate execFile's command string because it contains the credential JSON.
-      throw new Error("Failed to update Claude credentials in macOS Keychain");
+      // Never propagate the underlying error: it can carry the command line,
+      // and therefore the credential JSON, into logs.
+      throw new Error(
+        "Failed to update Claude credentials in the macOS Keychain. " +
+        "Token Watch will not fall back to passing credentials on the command line, " +
+        "so Claude quota may show as unavailable until Claude Code refreshes its own token.",
+      );
     }
-    return;
+    return undefined;
   }
 
   if (!current.path) {
     throw new Error("Claude credentials file path is unavailable");
   }
   await mkdir(path.dirname(current.path), { recursive: true });
-  await writeFile(current.path, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600 });
+  return writeFileAtomicSync(current.path, `${JSON.stringify(credentials, null, 2)}\n`, {
+    mode: 0o600,
+    ...(current.identity ? { expectedIdentity: current.identity } : {}),
+  });
 }
+
+/**
+ * Store a password in the login Keychain, passing it on stdin.
+ *
+ * `security add-generic-password -w <value>` puts the secret in the process's
+ * argv, where any user on the machine can read it out of `ps`. Omitting the
+ * value asks `security` to read the password itself.
+ *
+ * There is deliberately NO argv fallback. If this mode is unavailable — Apple's
+ * SecurityTool reads through the controlling terminal on some releases — the
+ * refresh fails and the quota display goes unavailable. That is a visibly
+ * degraded feature; putting an access and refresh token into a process's
+ * command line, where any local process can read it, is a credential leak. The
+ * caller treats the failure as "cannot refresh" and leaves the stored
+ * credentials untouched, so the user's sign-in is never damaged either.
+ */
+function writeKeychainPassword(service: string, password: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("security", [
+      "add-generic-password",
+      "-U",
+      "-a",
+      os.userInfo().username,
+      "-s",
+      service,
+      "-w",
+    ], { stdio: ["pipe", "ignore", "ignore"] });
+
+    const timer = setTimeout(() => {
+      // A build that prompts on the terminal never reads our stdin; do not
+      // leave it waiting.
+      child.kill("SIGKILL");
+      reject(new Error("security did not accept the password on stdin"));
+    }, KEYCHAIN_TIMEOUT_MS);
+    timer.unref?.();
+
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) { resolve(); } else { reject(new Error(`security exited with code ${code}`)); }
+    });
+
+    child.stdin.on("error", () => { /* reported through the close/error handlers */ });
+    child.stdin.end(`${password}\n`);
+  });
+}
+
 
 function cleanToken(value?: string): string {
   return (value ?? "").trim().replace(/^['"]|['"]$/g, "").replace(/\s+/g, "");
@@ -384,7 +490,15 @@ function usageRequestKey(options: ClaudeConnectionOptions): string {
   return `${credentialStorageKey(options)}:${options.usageEndpoint ?? CLAUDE_USAGE_ENDPOINT}`;
 }
 
-function retryAtFromHeader(value: string | null, now: number): number {
+/**
+ * When to try again after a refusal.
+ *
+ * `Retry-After` is honoured when the service sends one. Claude's usage
+ * endpoint does not, so the wait has to be guessed; starting at the maximum,
+ * as this used to, meant a single transient refusal cost a quarter of an hour
+ * of stale figures.
+ */
+function retryAtFromHeader(value: string | null, now: number, refusals = 1): number {
   if (value) {
     const seconds = Number(value);
     if (Number.isFinite(seconds) && seconds >= 0) {
@@ -396,7 +510,7 @@ function retryAtFromHeader(value: string | null, now: number): number {
       return date;
     }
   }
-  return now + DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+  return now + rateLimitBackoffMs(refusals);
 }
 
 function setFailureCooldown(cooldowns: Map<string, number>, key: string, now: number): void {

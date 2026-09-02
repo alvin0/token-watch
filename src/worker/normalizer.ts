@@ -14,10 +14,17 @@ import { makeVariantId } from "../shared/variant";
 export function normalizeCodexTurn(raw: RawCodexTurn): UsageRecord {
   // Disjoint-bucket decomposition (Req 3.4):
   // Codex fields OVERLAP: cached ⊆ input, reasoning ⊆ output
-  const cacheReadTokens = raw.rawCachedInputTokens;
-  const inputTokens = Math.max(0, raw.rawInputTokens - raw.rawCachedInputTokens);
-  const reasoningTokens = raw.rawReasoningOutputTokens;
-  const outputTokens = Math.max(0, raw.rawOutputTokens - raw.rawReasoningOutputTokens);
+  //
+  // That containment is a promise the logs occasionally break: a per-component
+  // delta can report more cached than input. Clamping only the subtraction while
+  // keeping the whole cached figure made the five buckets add up to more than the
+  // turn used - 1,082,736 tokens too many across 45 turns in one real set of logs.
+  // Capping the contained bucket instead keeps the split exact: input and cache
+  // sum back to the raw input, output and reasoning to the raw output.
+  const cacheReadTokens = Math.min(raw.rawCachedInputTokens, raw.rawInputTokens);
+  const inputTokens = raw.rawInputTokens - cacheReadTokens;
+  const reasoningTokens = Math.min(raw.rawReasoningOutputTokens, raw.rawOutputTokens);
+  const outputTokens = raw.rawOutputTokens - reasoningTokens;
   const cacheCreationTokens = 0; // Codex has no separate cache-creation field
 
   return {

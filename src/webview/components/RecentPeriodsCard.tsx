@@ -1,19 +1,21 @@
 import { useState } from "react";
 import { useStore } from "../store";
 import { useQuery } from "../hooks/useQuery";
-import { formatCost } from "../format";
+import { useCostFormat } from "../hooks/useCostFormat";
 import { makeBuckets, fmtT } from "../lib/periodData";
 import type { Bkt, Period } from "../lib/periodData";
 import { useTranslation } from "../i18n";
+import { Chevron } from "./Chevron";
 
 export function RecentPeriodsCard() {
   const [expanded, setExpanded] = useState(false);
   const result = useQuery("dashboard");
   const period = useStore((state) => state.granularity) as Period;
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
+  const money = useCostFormat();
   if (!result || result.view !== "dashboard" || result.series.length === 0) { return null; }
 
-  const buckets = makeBuckets(result.series, period);
+  const buckets = makeBuckets(result.series, period, new Date(), locale);
   const total = sumBuckets(buckets);
 
   return (
@@ -26,7 +28,7 @@ export function RecentPeriodsCard() {
             <div className="tw-mt-2 tw-flex tw-items-baseline tw-justify-between tw-gap-3 tw-text-[9px]">
               <span className="tw-text-[var(--vscode-descriptionForeground)]">{t("common.total")}</span>
               <span className="tw-text-right tw-font-medium tw-tabular-nums">
-                {fmtT(total.tokens)} {t("common.tokens")} · {formatCost(total.cost)}
+                {fmtT(total.tokens)} {t("common.tokens")} · {money.cost(total.cost)}
               </span>
             </div>
             <div className="tw-mt-1 tw-text-[8px] tw-tabular-nums tw-text-[var(--vscode-descriptionForeground)]">
@@ -66,7 +68,7 @@ export function RecentPeriodsCard() {
                   <MetricCell value={bucket.cache} />
                   <MetricCell value={bucket.cacheWrite} />
                   <td className="tw-whitespace-nowrap tw-px-3 tw-py-1.5 tw-text-right tw-text-[var(--vscode-descriptionForeground)]">
-                    {bucket.cost > 0 ? formatCost(bucket.cost) : "–"}
+                    {bucket.cost > 0 ? money.cost(bucket.cost) : "–"}
                   </td>
                 </tr>
               ))}
@@ -86,7 +88,7 @@ export function RecentPeriodsCard() {
         </span>
         <span className="tw-flex tw-shrink-0 tw-items-center tw-gap-1.5 tw-text-[9px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)]">
           {expanded ? t("common.showLess") : t("common.showMore")}
-          <span aria-hidden="true">{expanded ? "⌃" : "⌄"}</span>
+          <Chevron up={expanded} />
         </span>
       </button>
     </section>

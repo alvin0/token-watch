@@ -19,16 +19,44 @@ export interface ParseInput {
   endOffset?: number;        // immutable snapshot boundary captured during discovery
   maxLineBytes: number;      // default 1 MB; skip larger lines unbuffered (Req 4.14)
   resumeState?: ResumeState; // running totals + recent requestIds (Req 4.11/4.12)
+  /**
+   * Emit a checkpoint batch once this many turns have accumulated, so a single
+   * huge session log does not hold every turn and tool event in memory at once.
+   * A checkpoint is only taken at a safe line boundary, and its `endOffset` is
+   * the start of the not-yet-consumed line, so the caller can commit it and
+   * resume exactly there. Undefined means one batch for the whole read.
+   */
+  checkpointTurns?: number;
 }
 
-/** Output batch yielded by a parser via the sink callback. */
+/**
+ * Output batch yielded by a parser via the sink callback.
+ *
+ * With `checkpointTurns` set, a parse yields several batches; each one is a
+ * complete, committable unit ending on a line boundary, and `endState` carries
+ * the running state the next batch continues from.
+ */
 export interface ParseOutput {
   rawTurns: RawTurn[];       // RAW per-turn output; normalizer decomposes → UsageRecord
   toolEvents: ToolEvent[];
   endOffset: number;         // new lastByteOffset
   endState: ResumeState;     // new running totals + recent requestIds
   malformedCount: number;    // unparseable JSON lines skipped (Req 1.8, 15.3a)
-  oversizedCount: number;    // lines skipped for exceeding maxLineBytes (Req 4.14, 15.3b)
+  /**
+   * Lines past `maxLineBytes` that carried no token data (Req 4.14, 15.3b).
+   * Skipping them loses nothing countable.
+   */
+  oversizedCount: number;
+  /**
+   * Lines past `maxLineBytes` that carried token data and were parsed anyway.
+   * Their numbers ARE included in the totals.
+   */
+  oversizedRecoveredCount: number;
+  /**
+   * Lines too large to buffer at all that carried token data. The only counter
+   * that means tokens are missing.
+   */
+  oversizedLostUsageCount: number;
   sessionMeta?: SessionMeta;
 }
 

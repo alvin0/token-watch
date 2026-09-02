@@ -31,15 +31,26 @@ export function summarizeTrend(buckets: Bkt[], mode: ChartMode): TrendSummary {
   };
 }
 
-export function formatTrendValue(value: number, mode: ChartMode): string {
-  if (mode === "Cost") { return formatCost(value); }
-  if (mode === "Turns") { return Math.round(value).toLocaleString(); }
+/**
+ * `formatMoney` and `locale` come from the caller so chart labels pick up the
+ * configured secondary currency and the UI locale's number grouping.
+ */
+export function formatTrendValue(
+  value: number,
+  mode: ChartMode,
+  formatMoney: (usd: number) => string = formatCost,
+  locale = "en-US",
+): string {
+  if (mode === "Cost") { return formatMoney(value); }
+  if (mode === "Turns") { return Math.round(value).toLocaleString(locale); }
   return fmtT(value);
 }
 
 export function readableChange(current: number, previous: number, previousLabel: string, language: AppLanguage = "en"): string | undefined {
   if (current === 0 && previous === 0) { return undefined; }
   if (previous === 0) { return translate(language, "trend.startedAfter", { period: previousLabel }); }
+  // Going to zero is a ratio of 0, and 1/0 printed as "Infinity× lower".
+  if (current === 0) { return translate(language, "trend.stoppedAfter", { period: previousLabel }); }
   if (current === previous) { return translate(language, "trend.sameAs", { period: previousLabel }); }
 
   const ratio = current / previous;

@@ -1,7 +1,8 @@
 import * as assert from "node:assert";
+import { usageRetryBounds } from "../../shared/usageRetry.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import {
   CLAUDE_TOKEN_ENDPOINT,
   CLAUDE_USAGE_ENDPOINT,
@@ -11,6 +12,10 @@ import {
   readClaudeSubscriptionType,
   resolveClaudeCredentialsPath,
 } from "../../provider/claude/index.js";
+
+/** What a 0.5 random lands on for this provider. */
+const { minMs, maxMs } = usageRetryBounds("claude");
+const midTtl = Math.floor(minMs + 0.5 * (maxMs - minMs + 1));
 
 suite("Claude provider connection", () => {
   let tmpDir: string;
@@ -24,7 +29,9 @@ suite("Claude provider connection", () => {
   });
 
   test("resolves the default Claude credentials path", () => {
-    assert.ok(resolveClaudeCredentialsPath().endsWith("/.claude/.credentials.json"));
+    // Built with path.join, so the separator is platform-native.
+    assert.ok(resolveClaudeCredentialsPath().endsWith(join(".claude", ".credentials.json")));
+    assert.ok(resolveClaudeCredentialsPath().includes(`${sep}.claude${sep}`));
   });
 
   test("reads Claude OAuth credentials from the fallback file", async () => {
@@ -85,7 +92,7 @@ suite("Claude provider connection", () => {
     assert.strictEqual(callCount, 1);
     assert.deepStrictEqual(new ClaudeConnection(options).usageCacheInfo(), {
       cachedAtUtc: now,
-      retryAtUtc: now + 105_000,
+      retryAtUtc: now + midTtl,
     });
   });
 

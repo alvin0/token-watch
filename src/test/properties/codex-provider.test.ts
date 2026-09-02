@@ -1,4 +1,5 @@
 import * as assert from "node:assert";
+import { usageRetryBounds } from "../../shared/usageRetry.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +15,10 @@ import {
   readCodexPlanType,
   resolveCodexAuthPath,
 } from "../../provider/codex/index.js";
+
+/** What a 0.5 random lands on for this provider. */
+const { minMs, maxMs } = usageRetryBounds("codex");
+const midTtl = Math.floor(minMs + 0.5 * (maxMs - minMs + 1));
 
 suite("Codex provider connection", () => {
   let tmpDir: string;
@@ -253,10 +258,10 @@ suite("Codex provider connection", () => {
     assert.strictEqual(callCount, 1);
     assert.deepStrictEqual(firstConnection.usageCacheInfo(), {
       cachedAtUtc: now,
-      retryAtUtc: now + 105_000,
+      retryAtUtc: now + midTtl,
     });
 
-    now += 105_000;
+    now += midTtl;
     await firstConnection.usageInfo();
     assert.strictEqual(callCount, 2);
   });

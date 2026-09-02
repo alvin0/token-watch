@@ -24,6 +24,8 @@ import {
 import { useChartPalette } from "../hooks/useChartPalette";
 import type { Period, ChartMode, Bkt } from "../lib/periodData";
 import { useTranslation } from "../i18n";
+import { useCostFormat } from "../hooks/useCostFormat";
+import { useRovingKeys } from "../hooks/useRovingKeys";
 
 type TokenView = "Total" | "Breakdown";
 
@@ -49,17 +51,19 @@ export function TrendChart() {
   const period = useStore((s) => s.granularity) as Period;
   const [mode, setMode] = useState<ChartMode>("Tokens");
   const [tokenView, setTokenView] = useState<TokenView>("Total");
-  const { language, t } = useTranslation();
+  const { language, locale, t } = useTranslation();
+  const money = useCostFormat();
+  const fmt = (value: number, valueMode: ChartMode) => formatTrendValue(value, valueMode, money.cost, locale);
 
   const buckets = useMemo(
-    () => result?.view === "dashboard" ? makeBuckets(result.series, period).reverse() : [],
-    [result, period],
+    () => result?.view === "dashboard" ? makeBuckets(result.series, period, new Date(), locale).reverse() : [],
+    [result, period, locale],
   );
   const previousBuckets = useMemo(
     () => result?.view === "dashboard"
-      ? makeBuckets(result.series, period, previousPeriodAnchor(period)).reverse()
+      ? makeBuckets(result.series, period, previousPeriodAnchor(period), locale).reverse()
       : [],
-    [result, period],
+    [result, period, locale],
   );
   const data = useMemo<TrendDatum[]>(() => buckets.map((bucket, index) => ({
     ...bucket,
@@ -81,33 +85,45 @@ export function TrendChart() {
     <section className="tw-rounded-lg tw-border tw-border-edge tw-bg-card tw-p-3">
       <div className="tw-flex tw-flex-wrap tw-items-center tw-justify-between tw-gap-2">
         <h2 className="tw-m-0 tw-text-[11px] tw-font-semibold tw-uppercase tw-tracking-wide">{t("trend.title")}</h2>
-        <SegmentedControl values={["Tokens", "Cost", "Turns"]} value={mode} onChange={(value) => setMode(value as ChartMode)} labelFor={(value) => value === "Tokens" ? t("common.tokens") : value === "Cost" ? t("common.cost") : t("common.turns")} />
+        <SegmentedControl label={t("trend.metric")} values={["Tokens", "Cost", "Turns"]} value={mode} onChange={(value) => setMode(value as ChartMode)} labelFor={(value) => value === "Tokens" ? t("common.tokens") : value === "Cost" ? t("common.cost") : t("common.turns")} />
       </div>
 
       {mode === "Tokens" && (
         <div className="tw-mt-2">
-          <SegmentedControl values={["Total", "Breakdown"]} value={tokenView} onChange={(value) => setTokenView(value as TokenView)} labelFor={(value) => value === "Total" ? t("trend.totalView") : t("trend.breakdown")} />
+          <SegmentedControl label={t("trend.tokenView")} values={["Total", "Breakdown"]} value={tokenView} onChange={(value) => setTokenView(value as TokenView)} labelFor={(value) => value === "Total" ? t("trend.totalView") : t("trend.breakdown")} />
         </div>
       )}
 
       <div className="tw-mt-3 tw-grid tw-grid-cols-3 tw-gap-x-3 tw-gap-y-1 tw-text-[8px] tw-tabular-nums max-[360px]:tw-grid-cols-1">
-        <Stat value={t("trend.totalValue", { value: formatTrendValue(summary.total, mode) })} />
-        <Stat value={`${formatTrendValue(summary.average, mode)} ${labels.average}`} />
+        <Stat value={t("trend.totalValue", { value: fmt(summary.total, mode) })} />
+        <Stat value={`${fmt(summary.average, mode)} ${labels.average}`} />
         <Stat value={t("trend.activeBuckets", { active: summary.activeCount, total: buckets.length, label: labels.active })} />
         <div className="tw-col-span-full tw-text-[var(--vscode-descriptionForeground)]">
-          <span className="tw-text-[var(--vscode-foreground)]">{t("trend.peak", { label: peak?.label ?? "-", value: formatTrendValue(summary.peakValue, mode), share: summary.peakShare.toFixed(1) })}</span>
+          <span className="tw-text-[var(--vscode-foreground)]">{t("trend.peak", { label: peak?.label ?? "-", value: fmt(summary.peakValue, mode), share: summary.peakShare.toFixed(1) })}</span>
         </div>
       </div>
 
-      <div className="tw-mt-2 tw-h-36 tw-w-full">
+      {/* Recharts renders an SVG with no accessible name; without this the
+          chart is an unlabeled graphic and the numbers below are the only
+          thing a screen reader can read. */}
+      <div
+        role="img"
+        aria-label={`${t("trend.title")} — ${t("trend.totalValue", { value: fmt(summary.total, mode) })}, ${t("trend.peak", { label: peak?.label ?? "-", value: fmt(summary.peakValue, mode), share: summary.peakShare.toFixed(1) })}`}
+        className="tw-mt-2 tw-h-36 tw-w-full"
+      >
         <ResponsiveContainer width="100%" height="100%">
           {breakdown ? (
             <BarChart data={data} margin={{ top: 12, right: 16, bottom: 0, left: -12 }}>
               <ChartAxes mode={mode} />
               <Tooltip content={<TrendTooltip mode={mode} total={summary.total} breakdown />} />
+              {/* All five components, in the same order as the composition
+                  card. Stacking only three drew a bar shorter than the total
+                  printed above it. */}
               <Bar dataKey="cache" stackId="tokens" fill={palette.cacheRead} radius={[2, 2, 0, 0]} />
+              <Bar dataKey="cacheWrite" stackId="tokens" fill={palette.cacheCreation} />
               <Bar dataKey="input" stackId="tokens" fill={palette.input} />
-              <Bar dataKey="output" stackId="tokens" fill={palette.output} radius={[2, 2, 0, 0]} />
+              <Bar dataKey="output" stackId="tokens" fill={palette.output} />
+              <Bar dataKey="reasoning" stackId="tokens" fill={palette.reasoning} radius={[2, 2, 0, 0]} />
             </BarChart>
           ) : (
             <LineChart data={data} margin={{ top: 18, right: 16, bottom: 0, left: -12 }}>
@@ -124,7 +140,7 @@ export function TrendChart() {
                   r={4}
                   fill={palette.reasoning}
                   stroke={palette.reasoning}
-                  label={{ value: formatTrendValue(summary.peakValue, mode), position: "top", fill: "var(--vscode-foreground)", fontSize: 8 }}
+                  label={{ value: fmt(summary.peakValue, mode), position: "top", fill: "var(--vscode-foreground)", fontSize: 8 }}
                 />
               )}
             </LineChart>
@@ -159,13 +175,23 @@ export function TrendChart() {
   );
 }
 
-function SegmentedControl({ values, value, onChange, labelFor }: { values: string[]; value: string; onChange: (value: string) => void; labelFor?: (value: string) => string }) {
+function SegmentedControl({ values, value, onChange, labelFor, label }: { values: string[]; value: string; onChange: (value: string) => void; labelFor?: (value: string) => string; label: string }) {
+  const onKeyDown = useRovingKeys(values, value, onChange);
   return (
-    <div className="tw-inline-flex tw-rounded tw-bg-track tw-p-[2px]">
+    // Radiogroup rather than a bare row of buttons: the selected option is part
+    // of the control's meaning, and only aria-checked conveys it.
+    <div role="radiogroup" aria-label={label} onKeyDown={onKeyDown} className="tw-inline-flex tw-rounded tw-bg-track tw-p-[2px]">
       {values.map((item) => (
-        <button key={item} onClick={() => onChange(item)} className={`tw-cursor-pointer tw-rounded tw-px-2 tw-py-[2px] tw-text-[8px] ${
-          value === item ? "tw-bg-[var(--vscode-button-background)] tw-text-[var(--vscode-button-foreground)]" : "tw-text-[var(--vscode-descriptionForeground)]"
-        }`}>{labelFor?.(item) ?? item}</button>
+        <button
+          key={item}
+          type="button"
+          role="radio"
+          aria-checked={value === item}
+          tabIndex={value === item ? 0 : -1}
+          onClick={() => onChange(item)}
+          className={`tw-cursor-pointer tw-rounded tw-px-2 tw-py-[2px] tw-text-[8px] ${
+            value === item ? "tw-bg-[var(--vscode-button-background)] tw-text-[var(--vscode-button-foreground)]" : "tw-text-[var(--vscode-descriptionForeground)]"
+          }`}>{labelFor?.(item) ?? item}</button>
       ))}
     </div>
   );
@@ -173,11 +199,13 @@ function SegmentedControl({ values, value, onChange, labelFor }: { values: strin
 
 function ChartAxes({ mode }: { mode: ChartMode }) {
   const palette = useChartPalette();
+  const money = useCostFormat();
+  const { locale } = useTranslation();
   return (
     <>
       <CartesianGrid vertical={false} stroke={palette.grid} strokeOpacity={0.35} />
       <XAxis dataKey="label" tick={false} tickLine={false} axisLine={false} height={4} />
-      <YAxis tickFormatter={(value: number) => formatTrendValue(value, mode)} tick={{ fill: "var(--vscode-descriptionForeground)", fontSize: 7 }} tickLine={false} axisLine={false} width={44} domain={[0, "auto"]} />
+      <YAxis tickFormatter={(value: number) => formatTrendValue(value, mode, money.cost, locale)} tick={{ fill: "var(--vscode-descriptionForeground)", fontSize: 7 }} tickLine={false} axisLine={false} width={44} domain={[0, "auto"]} />
     </>
   );
 }
@@ -196,7 +224,9 @@ function ActivityDot({ cx, cy, value }: { cx?: number; cy?: number; value?: numb
 }
 
 function TrendTooltip({ active, payload, mode, total, breakdown }: TooltipProps) {
-  const { language, t } = useTranslation();
+  const { language, locale, t } = useTranslation();
+  const money = useCostFormat();
+  const fmt = (value: number, valueMode: ChartMode) => formatTrendValue(value, valueMode, money.cost, locale);
   const point = payload?.[0]?.payload;
   if (!active || !point) { return null; }
   const current = trendValue(point, mode);
@@ -205,16 +235,16 @@ function TrendTooltip({ active, payload, mode, total, breakdown }: TooltipProps)
   return (
     <div className="tw-min-w-40 tw-rounded tw-border tw-border-edge tw-bg-[var(--vscode-editorHoverWidget-background)] tw-p-2 tw-text-[8px] tw-shadow-widget">
       <div className="tw-mb-1 tw-font-semibold">{point.label}</div>
-      <TooltipRow label={t("common.cost")} value={formatTrendValue(point.cost, "Cost")} />
-      <TooltipRow label={t("common.tokens")} value={formatTrendValue(point.tokens, "Tokens")} />
-      <TooltipRow label={t("common.turns")} value={formatTrendValue(point.turns, "Turns")} />
+      <TooltipRow label={t("common.cost")} value={fmt(point.cost, "Cost")} />
+      <TooltipRow label={t("common.tokens")} value={fmt(point.tokens, "Tokens")} />
+      <TooltipRow label={t("common.turns")} value={fmt(point.turns, "Turns")} />
       {breakdown && (
         <div className="tw-mt-1 tw-border-t tw-border-edge tw-pt-1">
-          <TooltipRow label={t("common.cacheRead")} value={formatTrendValue(point.cache, "Tokens")} />
-          <TooltipRow label={t("common.input")} value={formatTrendValue(point.input, "Tokens")} />
-          <TooltipRow label={t("common.output")} value={formatTrendValue(point.output, "Tokens")} />
-          {point.reasoning > 0 && <TooltipRow label={t("common.reasoning")} value={formatTrendValue(point.reasoning, "Tokens")} />}
-          {point.cacheWrite > 0 && <TooltipRow label={t("common.cacheWrite")} value={formatTrendValue(point.cacheWrite, "Tokens")} />}
+          <TooltipRow label={t("common.cacheRead")} value={fmt(point.cache, "Tokens")} />
+          <TooltipRow label={t("common.input")} value={fmt(point.input, "Tokens")} />
+          <TooltipRow label={t("common.output")} value={fmt(point.output, "Tokens")} />
+          {point.reasoning > 0 && <TooltipRow label={t("common.reasoning")} value={fmt(point.reasoning, "Tokens")} />}
+          {point.cacheWrite > 0 && <TooltipRow label={t("common.cacheWrite")} value={fmt(point.cacheWrite, "Tokens")} />}
         </div>
       )}
       <div className="tw-mt-1 tw-text-[var(--vscode-descriptionForeground)]">

@@ -4,6 +4,9 @@ import initSqlJs from "sql.js";
 import { UsageStore } from "../out/worker/store/UsageStore.js";
 import { AnalyticsService } from "../out/worker/analytics.js";
 import { scan } from "../out/worker/discovery.js";
+import { ingestAll } from "../out/worker/ingest.js";
+import { CodexParser } from "../out/worker/parsers/codex.js";
+import { ClaudeParser } from "../out/worker/parsers/claude.js";
 import { aggregateIntegrity, rebuildAggregates } from "../out/worker/store/queries.js";
 import { PricingEngine } from "../out/worker/pricing.js";
 import { SCHEMA_SQL, SCHEMA_VERSION } from "../out/worker/store/schema.js";
@@ -11,11 +14,21 @@ import { mergePricingConfig } from "../out/shared/pricingMerge.js";
 
 const args = parseArgs(process.argv.slice(2));
 const SQL = await initSqlJs();
+const merged = mergePricingConfig({});
+const pricing = new PricingEngine(merged.table, merged.fallbackRate);
+
+if (args.fullIngest) {
+  await benchmarkFullIngest(SQL, pricing, args);
+  process.exit(0);
+}
+if (args.parseOnly) {
+  await benchmarkParseOnly(args);
+  process.exit(0);
+}
+
 const db = args.db
   ? new SQL.Database(readFileSync(args.db))
   : syntheticDatabase(SQL, 10_000);
-const merged = mergePricingConfig({});
-const pricing = new PricingEngine(merged.table, merged.fallbackRate);
 const store = new UsageStore();
 store.db = db;
 await store.migrateOrRebuild();
@@ -125,13 +138,126 @@ function median(values) {
 
 function parseArgs(values) {
   const result = {};
-  for (let index = 0; index < values.length; index += 2) {
+  for (let index = 0; index < values.length; index++) {
     const key = values[index];
+    if (key === "--full-ingest") {
+      result.fullIngest = true;
+      continue;
+    }
+    if (key === "--parse-only") {
+      result.parseOnly = true;
+      continue;
+    }
     const value = values[index + 1];
     if (!value) { continue; }
     if (key === "--db" && existsSync(value)) { result.db = value; }
     if (key === "--codex-root" && existsSync(value)) { result.codexRoot = value; }
     if (key === "--claude-root" && existsSync(value)) { result.claudeRoot = value; }
+    if (key === "--max-ms" && Number.isFinite(Number(value))) { result.maxMs = Number(value); }
+    if (key === "--max-line-bytes" && Number.isFinite(Number(value))) { result.maxLineBytes = Number(value); }
+    index++;
   }
   return result;
+}
+
+async function benchmarkParseOnly(options) {
+  const candidates = scan({
+    codex: options.codexRoot ? { enabled: true, path: options.codexRoot } : undefined,
+    claude: options.claudeRoot ? { enabled: true, path: options.claudeRoot } : undefined,
+  });
+  const parsers = { codex: new CodexParser(), claude: new ClaudeParser() };
+  let rows = 0;
+  let batches = 0;
+  const started = performance.now();
+  for (const candidate of candidates) {
+    await parsers[candidate.source].parse({
+      filePath: candidate.filePath,
+      fileId: candidate.fileId,
+      startOffset: 0,
+      endOffset: candidate.size,
+      maxLineBytes: 1_048_576,
+      checkpointTurns: 5_000,
+    }, (batch) => {
+      rows += batch.rawTurns.length;
+      batches++;
+    });
+  }
+  console.log(JSON.stringify({
+    source: "parse-only",
+    candidates: candidates.length,
+    sourceBytes: candidates.reduce((sum, candidate) => sum + candidate.size, 0),
+    rows,
+    batches,
+    parseMs: Number((performance.now() - started).toFixed(3)),
+  }, null, 2));
+}
+
+async function benchmarkFullIngest(Sql, pricingEngine, options) {
+  const config = {
+    codex: options.codexRoot ? { enabled: true, path: options.codexRoot } : undefined,
+    claude: options.claudeRoot ? { enabled: true, path: options.claudeRoot } : undefined,
+  };
+
+  let candidates = [];
+  const discoveryMs = elapsed(() => { candidates = scan(config); });
+  const database = new Sql.Database();
+  database.exec(SCHEMA_SQL);
+  database.run("INSERT INTO meta (key, value) VALUES ('schema_version', ?)", [String(SCHEMA_VERSION)]);
+  const benchmarkStore = new UsageStore();
+  benchmarkStore.db = database;
+  const realCommitFileResult = benchmarkStore.commitFileResult.bind(benchmarkStore);
+  let commitMs = 0;
+  let commitCalls = 0;
+  benchmarkStore.commitFileResult = (...values) => {
+    const started = performance.now();
+    try {
+      return realCommitFileResult(...values);
+    } finally {
+      commitMs += performance.now() - started;
+      commitCalls++;
+    }
+  };
+
+  const catalogMs = elapsed(() => benchmarkStore.recordDiscoveredFiles(candidates));
+  const ingestStarted = performance.now();
+  const result = await ingestAll(
+    candidates,
+    benchmarkStore,
+    pricingEngine,
+    { maxLineBytes: options.maxLineBytes ?? 1_048_576, backfillMonths: 0, deferDerivedUntilEnd: true },
+  );
+  const ingestMs = Number((performance.now() - ingestStarted).toFixed(3));
+  let exportedBytes = 0;
+  const exportMs = elapsed(() => { exportedBytes = database.export().byteLength; });
+  const integrityStarted = performance.now();
+  const integrity = aggregateIntegrity(database);
+  const integrityMs = Number((performance.now() - integrityStarted).toFixed(3));
+
+  const totalMs = Number((discoveryMs + catalogMs + ingestMs + exportMs).toFixed(3));
+  console.log(JSON.stringify({
+    source: "full-ingest",
+    candidates: candidates.length,
+    sourceBytes: candidates.reduce((sum, candidate) => sum + candidate.size, 0),
+    rows: benchmarkStore.usageRecordCount(),
+    discoveryMs,
+    catalogMs,
+    ingestMs,
+    commitMs: Number(commitMs.toFixed(3)),
+    commitCalls,
+    transformAndParseMs: Number((ingestMs - commitMs).toFixed(3)),
+    exportMs,
+    totalMs,
+    exportedBytes,
+    result,
+    integrity,
+    integrityMs,
+    warnings: new AnalyticsService(database, pricingEngine).warnings(),
+  }, null, 2));
+  database.close();
+  if (!integrity.valid) {
+    throw new Error("Full ingestion produced non-canonical aggregate totals");
+  }
+  if (options.maxMs !== undefined && totalMs > options.maxMs) {
+    throw new Error(`Full ingestion took ${totalMs} ms, exceeding the ${options.maxMs} ms limit`);
+  }
 }

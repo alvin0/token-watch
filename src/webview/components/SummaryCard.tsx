@@ -1,7 +1,7 @@
 import { useStore } from "../store";
 import { useQuery } from "../hooks/useQuery";
-import { formatCost, formatCostPerTurn } from "../format";
-import { computePeriods, fmtT, pRange } from "../lib/periodData";
+import { useCostFormat } from "../hooks/useCostFormat";
+import { computePeriods, pRange } from "../lib/periodData";
 import { UsageOverviewCard } from "./UsageOverviewCard";
 import type { Period } from "../lib/periodData";
 import { useTranslation } from "../i18n";
@@ -11,20 +11,15 @@ export function SummaryCard() {
   const g = useStore((s) => s.granularity) as Period;
   const sources = useStore((s) => s.sources);
   const { locale, t } = useTranslation();
+  const money = useCostFormat();
   if (!result || result.view !== "dashboard") { return null; }
-  const { cur, prev } = computePeriods(result.series, g);
+  const { cur, prev } = computePeriods(result.series, g, locale);
   const range = pRange(g);
-  const cachingTokens = result.series.reduce((sum, row) => {
-    if (row.day < range.from || row.day > range.to) { return sum; }
-    return sum + row.cacheReadTokens + row.cacheCreationTokens;
-  }, 0);
   const toolCalls = result.toolCallsByDay.reduce((sum, row) => {
     if (row.day < range.from || row.day > range.to) { return sum; }
     return sum + row.count;
   }, 0);
   const delta = prev.cost > 0 ? ((cur.cost - prev.cost) / prev.cost) * 100 : cur.cost > 0 ? 100 : 0;
-  const cacheInputBase = cachingTokens + cur.input;
-  const cacheHitPct = cacheInputBase > 0 ? (cachingTokens / cacheInputBase) * 100 : 0;
   const costPerTurn = cur.turns > 0 ? cur.cost / cur.turns : 0;
   const sourceLabel = !sources ? "" : sources.length === 1 ? ` (${sources[0]})` : "";
   const labels: Record<Period, string> = {
@@ -43,19 +38,15 @@ export function SummaryCard() {
   return (
     <UsageOverviewCard
       title={labels[g]}
-      cost={formatCost(cur.cost)}
-      comparisonCost={formatCost(prev.cost)}
+      cost={money.cost(cur.cost)}
+      comparisonCost={money.cost(prev.cost)}
       delta={delta}
       comparisonLabel={vs[g]}
-      totalTokens={fmtT(cur.tokens)}
-      cachedTokens={fmtT(cachingTokens)}
-      inputTokens={fmtT(cur.input)}
-      outputTokens={fmtT(cur.output)}
-      cacheHitPct={cacheHitPct}
+      metrics={cur.metrics}
       turns={cur.turns.toLocaleString(locale)}
       toolCalls={toolCalls.toLocaleString(locale)}
       models={cur.models.toLocaleString(locale)}
-      costPerTurn={formatCostPerTurn(costPerTurn)}
+      costPerTurn={money.perTurn(costPerTurn)}
     />
   );
 }

@@ -1,6 +1,6 @@
 import { useStore } from "../store";
 import { useQuery } from "../hooks/useQuery";
-import { formatCost } from "../format";
+import { useCostFormat } from "../hooks/useCostFormat";
 import { computePeriods, fmtT } from "../lib/periodData";
 import type { Period } from "../lib/periodData";
 import { useTranslation } from "../i18n";
@@ -9,15 +9,16 @@ export function InsightCards() {
   const result = useQuery("dashboard");
   const g = useStore((s) => s.granularity) as Period;
   const { locale, t } = useTranslation();
+  const money = useCostFormat();
   if (!result || result.view !== "dashboard") { return null; }
-  const { cur, peakLabel } = computePeriods(result.series, g);
+  const { cur, peakLabel } = computePeriods(result.series, g, locale);
 
   if (g === "today") {
-    const inputBase = cur.input + cur.cache;
-    const tokenParts = cur.input + cur.output + cur.cache + cur.reasoning;
-    const cacheHit = inputBase > 0 ? (cur.cache / inputBase) * 100 : 0;
-    const tokensPerTurn = cur.turns > 0 ? cur.tokens / cur.turns : 0;
-    const reasoningMix = tokenParts > 0 ? (cur.reasoning / tokenParts) * 100 : 0;
+    const cacheHit = cur.metrics.cacheHitPct;
+    const tokensPerTurn = cur.turns > 0 ? cur.metrics.total / cur.turns : 0;
+    const reasoningMix = cur.metrics.breakdownTotal > 0
+      ? (cur.metrics.reasoning / cur.metrics.breakdownTotal) * 100
+      : 0;
 
     return (
       <div className="tw-grid tw-grid-cols-2 tw-gap-1.5">
@@ -40,16 +41,16 @@ export function InsightCards() {
     const totalTokens = result.variants.reduce((s, v) => s + v.totalTokens, 0);
     const avgRatePer1K = totalTokens > 0 ? (totalCost / totalTokens) * 1000 : 0.005;
     // Cache savings ≈ cacheReadTokens * avgRatePer1K * 0.5 (cache is ~50% cheaper)
-    cacheSaved = (cur.cache / 1000) * avgRatePer1K * 0.5;
+    cacheSaved = (cur.metrics.cacheRead / 1000) * avgRatePer1K * 0.5;
   } else {
-    cacheSaved = (cur.cache / 1000) * (0.005 - 0.0025);
+    cacheSaved = (cur.metrics.cacheRead / 1000) * (0.005 - 0.0025);
   }
   const avgTurn = cur.turns > 0 ? cur.cost / cur.turns : 0;
 
   return (
     <div className="tw-grid tw-grid-cols-2 tw-gap-1.5">
-      <MiniCard icon="" label={t("insights.cacheSaved")} value={formatCost(cacheSaved)} />
-      <MiniCard icon="" label={t("insights.avgPerTurn")} value={formatCost(avgTurn)} />
+      <MiniCard icon="" label={t("insights.cacheSaved")} value={money.cost(cacheSaved)} />
+      <MiniCard icon="" label={t("insights.avgPerTurn")} value={money.cost(avgTurn)} />
       <MiniCard icon="" label={t("insights.activeModels")} value={String(cur.models)} />
       <MiniCard icon="" label={t("insights.peak")} value={peakLabel} />
     </div>

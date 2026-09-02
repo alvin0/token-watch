@@ -77,7 +77,11 @@ suite("Parser robustness property tests", () => {
 
       assert.ok(partialOutput, "Parser should emit output for metadata prefix");
       assert.strictEqual(partialOutput.rawTurns.length, 0);
-      assert.strictEqual(partialOutput.malformedCount, 1);
+      assert.strictEqual(
+        partialOutput.malformedCount,
+        0,
+        "A half-written trailing line is unfinished, not malformed: it is re-read next scan",
+      );
       assert.strictEqual(partialOutput.endOffset, Buffer.byteLength(prefixContent, "utf8"));
 
       writeFileSync(tmpFile, prefixContent + completeTokenLine, "utf8");
@@ -417,7 +421,7 @@ suite("Parser robustness property tests", () => {
 
           // Write to temp file
           const tmpFile = join(tmpdir(), `pbt-robustness-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
-          writeFileSync(tmpFile, combined.join("\n"), "utf8");
+          writeFileSync(tmpFile, `${combined.join("\n")}\n`, "utf8");
 
           try {
             // Parse with noise
@@ -430,7 +434,7 @@ suite("Parser robustness property tests", () => {
 
             // Parse without noise (baseline)
             const cleanFile = join(tmpdir(), `pbt-robustness-clean-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
-            writeFileSync(cleanFile, validLines.join("\n"), "utf8");
+            writeFileSync(cleanFile, `${validLines.join("\n")}\n`, "utf8");
 
             let cleanOutput: ParseOutput | undefined;
             await parser.parse(

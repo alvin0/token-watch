@@ -1,12 +1,17 @@
 .vscode/**
 .vscode-test/**
 .vscode-test.mjs
+.mocharc.json
+.github/**
 src/**
 out/**
 node_modules/**
+scripts/**
+.codegraph/**
 .gitignore
 .eslintrc.json
 esbuild.js
+eslint.config.js
 tsconfig.json
 tailwind.config.js
 postcss.config.js
@@ -17,6 +22,9 @@ skills-lock.json
 resources/Untitled*
 .kiro/**
 AGENTS.md
+CONTRIBUTING.md
+issue.md
+pricing.config.jsonc
 **/*.vsix
 resources/_*.html
 resources/*-src.png

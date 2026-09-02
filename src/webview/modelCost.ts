@@ -1,12 +1,18 @@
 import type { DisplayCurrencyConfig } from "../shared/protocol";
 import { formatCost } from "./format";
-import { translate, type AppLanguage } from "../shared/i18n";
+import { localeTag, translate, type AppLanguage } from "../shared/i18n";
 
-export function formatModelCost(costUsd: number, unknownCostTurns: number, turns: number): string {
+export function formatModelCost(
+  costUsd: number,
+  unknownCostTurns: number,
+  turns: number,
+  currency?: DisplayCurrencyConfig,
+  locale?: string,
+): string {
   if (turns > 0 && unknownCostTurns >= turns) {
     return "—";
   }
-  const cost = formatCost(costUsd);
+  const cost = formatCost(costUsd, currency, locale);
   return unknownCostTurns > 0 ? `${cost}+` : cost;
 }
 
@@ -20,7 +26,7 @@ export function modelCostTitle(
   if (turns > 0 && unknownCostTurns >= turns) {
     return translate(language, "models.costUnavailable");
   }
-  const cost = formatCost(costUsd, currency);
+  const cost = formatCost(costUsd, currency, localeTag(language));
   return unknownCostTurns > 0
     ? translate(language, "models.costPartial", { cost, turns: unknownCostTurns })
     : translate(language, "models.costTotal", { cost });

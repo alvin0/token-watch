@@ -18,6 +18,14 @@ import { createHash } from "node:crypto";
 const MAX_RECENT_IDS = 10;
 const RECENT_REQUEST_SEPARATOR = "\u0000";
 
+/**
+ * Substrings that mark a Claude line as carrying token counts.
+ *
+ * An assistant turn that writes a large file is a single very long line that
+ * still carries `message.usage`; dropping it on length alone lost those tokens.
+ */
+const CLAUDE_USAGE_MARKERS = ['"usage"'] as const;
+
 interface ClaudeLogLine {
   type?: string;
   message?: {
@@ -48,7 +56,7 @@ interface ClaudeLogLine {
 
 export class ClaudeParser implements SourceParser {
   async parse(input: ParseInput, sink: (batch: ParseOutput) => void): Promise<void> {
-    const { filePath, fileId, startOffset, endOffset, maxLineBytes, resumeState } = input;
+    const { filePath, fileId, startOffset, endOffset, maxLineBytes, resumeState, checkpointTurns } = input;
     const fileScope = scopedFileId(fileId ?? filePath);
 
     const rawTurns: RawClaudeTurn[] = [];
@@ -61,6 +69,12 @@ export class ClaudeParser implements SourceParser {
     let currentGroupKey: string | null = null;
     let bufferedTurn: RawClaudeTurn | null = null;
     let bufferedTools: ToolEvent[] = [];
+    /**
+     * Byte offset of the first line of the group currently buffered. A
+     * checkpoint may only claim bytes up to here: the buffered group is still
+     * open (last-wins dedup can still replace it), so resuming must re-read it.
+     */
+    let bufferedGroupStartOffset = 0;
 
     const recentRequests = (resumeState?.recentRequestIds ?? []).map(decodeRecentRequest);
     const resumeLastRequest = recentRequests[recentRequests.length - 1];
@@ -85,7 +99,38 @@ export class ClaudeParser implements SourceParser {
       }
     }
 
-    const stats = await readLines({ filePath, startOffset, endOffset, maxLineBytes }, (line, byteOffset, isCompleteLine) => {
+    const currentResumeState = (): ResumeState => ({
+      runningTotals: resumeState?.runningTotals ?? {},
+      recentRequestIds: recentRequests.slice(-MAX_RECENT_IDS).map(encodeRecentRequest),
+    });
+
+    /**
+     * Hand off everything accumulated so far and start a fresh batch.
+     * `boundaryOffset` is the first byte NOT covered by the batch.
+     */
+    const emitCheckpoint = (boundaryOffset: number): void => {
+      sink({
+        rawTurns: rawTurns.splice(0),
+        toolEvents: toolEvents.splice(0),
+        endOffset: boundaryOffset,
+        endState: currentResumeState(),
+        malformedCount,
+        oversizedCount: 0,
+        oversizedRecoveredCount: 0,
+        oversizedLostUsageCount: 0,
+        sessionMeta,
+      });
+      malformedCount = 0;
+    };
+
+    const stats = await readLines({ filePath, startOffset, endOffset, maxLineBytes, usageMarkers: CLAUDE_USAGE_MARKERS }, (line, byteOffset, isCompleteLine) => {
+      // Checkpoint at the start of the open group, not at this line: the
+      // buffered group can still be replaced by a later line with the same
+      // requestId, so it is not yet a committable boundary.
+      if (checkpointTurns && rawTurns.length >= checkpointTurns) {
+        emitCheckpoint(bufferedTurn ? bufferedGroupStartOffset : byteOffset);
+      }
+
       // Fast substring check: only parse lines with both "assistant" and "usage"
       if (!line.includes('"assistant"') || !line.includes('"usage"')) {
         return;
@@ -96,7 +141,10 @@ export class ClaudeParser implements SourceParser {
         parsed = JSON.parse(line) as ClaudeLogLine;
       } catch {
         if (!isCompleteLine) {
-          malformedCount++;
+          // The last line of a session that is being written right now. It is
+          // not malformed, it is unfinished: returning false leaves the cursor
+          // before it, so the next scan reads it whole. Counting it made any
+          // active session permanently report lines it "could not parse".
           return false;
         }
         malformedCount++;
@@ -195,6 +243,7 @@ export class ClaudeParser implements SourceParser {
           currentGroupKey = groupKey;
           bufferedTurn = turn;
           bufferedTools = turnTools;
+          bufferedGroupStartOffset = byteOffset;
         } else {
           // Genuinely new group — flush previous
           flushBuffered();
@@ -202,6 +251,7 @@ export class ClaudeParser implements SourceParser {
           currentGroupKey = groupKey;
           bufferedTurn = turn;
           bufferedTools = turnTools;
+          bufferedGroupStartOffset = byteOffset;
         }
       }
 
@@ -211,18 +261,15 @@ export class ClaudeParser implements SourceParser {
     // Flush last buffered group
     flushBuffered();
 
-    const endState: ResumeState = {
-      runningTotals: resumeState?.runningTotals ?? {},
-      recentRequestIds: recentRequests.slice(-MAX_RECENT_IDS).map(encodeRecentRequest),
-    };
-
     sink({
       rawTurns,
       toolEvents,
       endOffset: stats.endOffset,
-      endState,
+      endState: currentResumeState(),
       malformedCount,
-      oversizedCount: stats.oversizedCount,
+      oversizedCount: stats.oversizedSkippedCount,
+      oversizedRecoveredCount: stats.oversizedRecoveredCount,
+      oversizedLostUsageCount: stats.oversizedLostUsageCount,
       sessionMeta,
     });
   }
