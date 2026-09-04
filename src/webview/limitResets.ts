@@ -23,3 +23,11 @@ export function soonestExpiry(limitResets: UsageLimitResetsInfo | undefined): nu
   }
   return soonest;
 }
+
+/** Day then time, composed separately so every locale reads date-first. */
+export function formatLimitResetExpiry(expiresAtUtc: number, locale: string): string {
+  const expiry = new Date(expiresAtUtc);
+  const day = new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }).format(expiry);
+  const time = new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", hour12: false }).format(expiry);
+  return `${day}, ${time}`;
+}

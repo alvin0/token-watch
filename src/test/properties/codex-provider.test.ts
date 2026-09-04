@@ -9,6 +9,8 @@ import {
   CodexConnection,
   CodexUsageRateLimitError,
   WHAM_ENVIRONMENTS_ENDPOINT,
+  WHAM_LIMIT_RESETS_ENDPOINT,
+  WHAM_LIMIT_RESET_CONSUME_ENDPOINT,
   WHAM_USAGE_ENDPOINT,
   readCodexAuthMode,
   readCodexAuthSnapshot,
@@ -417,7 +419,149 @@ suite("Codex provider connection", () => {
     assert.strictEqual(updated.tokens.refresh_token, newRefreshToken);
     assert.strictEqual(updated.tokens.account_id, "account-123");
   });
+
+  suite("spending a usage limit reset", () => {
+    /**
+     * Activating a reset is the one call this extension makes that changes the
+     * account rather than reading it, so what goes on the wire is asserted
+     * exactly: wrong endpoint or wrong field names and a person's scarce,
+     * expiring reset silently does nothing.
+     */
+    test("POSTs the credit id and an idempotency key to the consume endpoint", async () => {
+      const authFile = writeChatgptAuth(tmpDir);
+      const calls: Array<{ url: string; method: string; body: string; contentType: string | null; authorization: string | null }> = [];
+
+      const connection = new CodexConnection({
+        authFile,
+        fetch: async (input, init) => {
+          calls.push({
+            url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+            method: init?.method ?? "GET",
+            body: String(init?.body ?? ""),
+            contentType: new Headers(init?.headers).get("content-type"),
+            authorization: new Headers(init?.headers).get("authorization"),
+          });
+          return new Response(JSON.stringify({ result: "windows_reset" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        },
+      });
+
+      await connection.consumeLimitReset("credit-abc");
+
+      assert.strictEqual(calls.length, 1);
+      assert.strictEqual(calls[0].url, WHAM_LIMIT_RESET_CONSUME_ENDPOINT);
+      assert.strictEqual(calls[0].method, "POST");
+      assert.strictEqual(calls[0].contentType, "application/json");
+      assert.strictEqual(calls[0].authorization, "Bearer access-token");
+      const body = JSON.parse(calls[0].body) as { credit_id: string; redeem_request_id: string };
+      assert.strictEqual(body.credit_id, "credit-abc");
+      assert.match(body.redeem_request_id, /^[0-9a-f-]{36}$/);
+    });
+
+    test("reports the provider's status and body when the reset is refused", async () => {
+      const authFile = writeChatgptAuth(tmpDir);
+      const connection = new CodexConnection({
+        authFile,
+        fetch: async () => new Response("credit already consumed", { status: 409 }),
+      });
+
+      await assert.rejects(
+        connection.consumeLimitReset("credit-abc"),
+        /activation failed: 409 credit already consumed/,
+      );
+    });
+
+    /**
+     * A replay after a token refresh must not cost a second reset, so the
+     * idempotency key is built once and reused rather than per attempt.
+     */
+    test("replays the same idempotency key after a token refresh", async () => {
+      const authFile = writeChatgptAuth(tmpDir);
+      const consumeBodies: string[] = [];
+      let consumeCalls = 0;
+
+      const connection = new CodexConnection({
+        authFile,
+        fetch: async (input, init) => {
+          const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+          if (url.includes("/oauth/token")) {
+            return new Response(
+              JSON.stringify({ access_token: "access-token-new", refresh_token: "refresh-token", expires_in: 3600 }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            );
+          }
+          consumeCalls++;
+          consumeBodies.push(String(init?.body ?? ""));
+          return consumeCalls === 1
+            ? new Response("token expired", { status: 401 })
+            : new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+        },
+      });
+
+      await connection.consumeLimitReset("credit-abc");
+
+      assert.strictEqual(consumeCalls, 2);
+      assert.strictEqual(consumeBodies[0], consumeBodies[1]);
+    });
+
+    /**
+     * Both cached payloads describe the account before the reset was spent.
+     * Left in place, the card keeps offering a reset that is already gone.
+     */
+    test("drops the cached usage and reset list so the next read is fresh", async () => {
+      const authFile = writeChatgptAuth(tmpDir);
+      const gets: string[] = [];
+
+      const connection = new CodexConnection({
+        authFile,
+        fetch: async (input, init) => {
+          const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+          if ((init?.method ?? "GET") === "GET") { gets.push(url); }
+          return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+        },
+      });
+
+      await connection.usageInfo();
+      await connection.limitResetsInfo();
+      assert.deepStrictEqual(gets, [WHAM_USAGE_ENDPOINT, WHAM_LIMIT_RESETS_ENDPOINT]);
+
+      // Served from cache while it stands.
+      await connection.usageInfo();
+      await connection.limitResetsInfo();
+      assert.strictEqual(gets.length, 2);
+
+      await connection.consumeLimitReset("credit-abc");
+      await connection.usageInfo();
+      await connection.limitResetsInfo();
+
+      assert.deepStrictEqual(gets, [
+        WHAM_USAGE_ENDPOINT,
+        WHAM_LIMIT_RESETS_ENDPOINT,
+        WHAM_USAGE_ENDPOINT,
+        WHAM_LIMIT_RESETS_ENDPOINT,
+      ]);
+    });
+  });
 });
+
+/** A minimal signed-in ChatGPT auth file, the state every consume test starts from. */
+function writeChatgptAuth(dir: string): string {
+  const authFile = join(dir, "auth.json");
+  writeFileSync(
+    authFile,
+    JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "access-token",
+        refresh_token: "refresh-token",
+        account_id: "account-123",
+      },
+    }, null, 2),
+  );
+  return authFile;
+}
 
 function makeJwt(claims: Record<string, unknown>) {
   const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");

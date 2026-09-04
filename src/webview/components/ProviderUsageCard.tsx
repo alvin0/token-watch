@@ -15,8 +15,9 @@ import {
 import { vscodeApi } from "../store";
 import { formatUsageTime } from "../usageCacheDisplay";
 import { useTranslation } from "../i18n";
-import { soonestExpiry } from "../limitResets";
+import { formatLimitResetExpiry as formatExpiry, soonestExpiry } from "../limitResets";
 import { Chevron } from "./Chevron";
+import { LimitResetConfirmDialog } from "./LimitResetConfirmDialog";
 
 const TWO_COLUMN_GRID = { gridTemplateColumns: "repeat(2, minmax(0, 1fr))" };
 
@@ -150,7 +151,7 @@ export function ProviderUsageCard({
         )}
       </div>
 
-      {expanded && <LimitResetDetails limitResets={limitResets} locale={locale} />}
+      {expanded && <LimitResetDetails provider={provider} limitResets={limitResets} locale={locale} />}
 
       {expanded && layout.additionalGroups.map((group) => (
         <div key={group.id} className="tw-border-t tw-border-edge tw-p-3">
@@ -217,29 +218,52 @@ function LimitResets({ limitResets, locale }: { limitResets?: UsageLimitResetsIn
   );
 }
 
-/** The itemised resets, shown once the card is expanded. */
+/**
+ * The itemised resets, shown once the card is expanded.
+ *
+ * Only Codex grants these, and only Codex can spend one, so the activation
+ * button is gated on the provider rather than on the list being non-empty.
+ */
 function LimitResetDetails({
+  provider,
   limitResets,
   locale,
 }: {
+  provider: QuotaProvider;
   limitResets?: UsageLimitResetsInfo;
   locale: string;
 }) {
   const { t } = useTranslation();
+  const [confirming, setConfirming] = useState<UsageLimitReset>();
   const resets = limitResets?.resets ?? [];
   if (resets.length === 0) {
     return null;
   }
+  const availableCount = limitResets?.availableCount ?? resets.length;
   return (
     <div className="tw-border-t tw-border-edge tw-p-3" title={t("quota.limitResetsTitle")}>
       <div className="tw-truncate tw-text-[9px] tw-font-medium tw-uppercase tw-text-[var(--vscode-foreground)]">
-        {t("quota.limitResetsHeading", { count: limitResets?.availableCount ?? resets.length })}
+        {t("quota.limitResetsHeading", { count: availableCount })}
       </div>
-      <ol className="tw-mt-2 tw-min-w-0 tw-list-none tw-space-y-0.5 tw-p-0">
+      <ol className="tw-mt-2 tw-min-w-0 tw-list-none tw-space-y-1 tw-p-0">
         {resets.map((reset, index) => (
-          <LimitResetItem key={reset.id} reset={reset} position={index + 1} locale={locale} />
+          <LimitResetItem
+            key={reset.id}
+            reset={reset}
+            position={index + 1}
+            locale={locale}
+            {...(provider === "codex" ? { onActivate: () => setConfirming(reset) } : {})}
+          />
         ))}
       </ol>
+      {confirming && (
+        <LimitResetConfirmDialog
+          reset={confirming}
+          availableCount={availableCount}
+          locale={locale}
+          onClose={() => setConfirming(undefined)}
+        />
+      )}
     </div>
   );
 }
@@ -248,10 +272,12 @@ function LimitResetItem({
   reset,
   position,
   locale,
+  onActivate,
 }: {
   reset: UsageLimitReset;
   position: number;
   locale: string;
+  onActivate?: () => void;
 }) {
   const { t } = useTranslation();
   const expiringSoon = isFiniteNumber(reset.expiresAtUtc)
@@ -259,23 +285,27 @@ function LimitResetItem({
   const title = reset.title ?? t("quota.limitResetFallbackTitle");
   const expiry = isFiniteNumber(reset.expiresAtUtc) ? formatExpiry(reset.expiresAtUtc, locale) : undefined;
   return (
-    <li
-      className={`tw-truncate tw-text-[9px] tw-tabular-nums ${
-        expiringSoon ? "tw-text-chart-yellow" : "tw-text-[var(--vscode-descriptionForeground)]"
-      }`}
-    >
-      {expiry ? t("quota.limitResetItem", { position, title, date: expiry }) : `${position}. ${title}`}
-      {expiringSoon && ` (${t("quota.limitResetUseSoon")})`}
+    <li className="tw-flex tw-min-w-0 tw-items-center tw-justify-between tw-gap-2">
+      <span
+        className={`tw-min-w-0 tw-truncate tw-text-[9px] tw-tabular-nums ${
+          expiringSoon ? "tw-text-chart-yellow" : "tw-text-[var(--vscode-descriptionForeground)]"
+        }`}
+      >
+        {expiry ? t("quota.limitResetItem", { position, title, date: expiry }) : `${position}. ${title}`}
+        {expiringSoon && ` (${t("quota.limitResetUseSoon")})`}
+      </span>
+      {onActivate && (
+        <button
+          type="button"
+          aria-label={t("quota.limitResetActivateLabel", { title })}
+          onClick={onActivate}
+          className="tw-shrink-0 tw-cursor-pointer tw-rounded tw-border tw-border-control tw-px-2 tw-py-0.5 tw-text-[8px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-bg-hover"
+        >
+          {t("quota.limitResetActivate")}
+        </button>
+      )}
     </li>
   );
-}
-
-/** Day then time, composed separately so every locale reads date-first. */
-function formatExpiry(expiresAtUtc: number, locale: string): string {
-  const expiry = new Date(expiresAtUtc);
-  const day = new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }).format(expiry);
-  const time = new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", hour12: false }).format(expiry);
-  return `${day}, ${time}`;
 }
 
 /** Subscription plan of the signed-in account for this provider, e.g. "(Pro Lite)". */

@@ -130,6 +130,8 @@ interface Actions {
   clearDailyHourly: () => void;
   saveCostAlertRules: (rules: CostAlertRule[]) => Promise<void>;
   savePricingTable: (table: PricingTable) => Promise<void>;
+  /** Spend one Codex usage limit reset. Resolves once the quota has been re-read. */
+  consumeLimitReset: (resetId: string) => Promise<void>;
   setLanguage: (language: AppLanguage) => void;
   dismissWarnings: (signature: string) => void;
 }
@@ -251,8 +253,10 @@ let dailyHourlyFilterGeneration = 0;
 let refreshQueued = false;
 let costAlertSaveCounter = 0;
 let pricingSaveCounter = 0;
+let limitResetCounter = 0;
 const pendingCostAlertSaves = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 const pendingPricingSaves = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+const pendingLimitResets = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 function nextId(): string {
   return `q-${++queryCounter}`;
 }
@@ -551,6 +555,18 @@ export const useStore = create<Store>((set, get) => ({
     });
   },
 
+  consumeLimitReset(resetId) {
+    const requestId = `limit-reset-${++limitResetCounter}`;
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingLimitResets.delete(requestId);
+        reject(new Error("The extension host did not answer in time."));
+      }, REQUEST_TIMEOUT_MS);
+      pendingLimitResets.set(requestId, { resolve, reject, timer });
+      vscodeApi.postMessage({ type: "consumeLimitReset", requestId, resetId } satisfies WebviewRequest);
+    });
+  },
+
   setLanguage(language) {
     const msg: WebviewRequest = { type: "setLanguage", language };
     vscodeApi.postMessage(msg);
@@ -661,6 +677,20 @@ window.addEventListener("message", (event: MessageEvent<HostMessage>) => {
     case "pricingSettingsError": {
       const pending = pendingPricingSaves.get(msg.requestId);
       pendingPricingSaves.delete(msg.requestId);
+      if (pending) { clearTimeout(pending.timer); }
+      pending?.reject(new Error(msg.message));
+      break;
+    }
+    case "limitResetConsumed": {
+      const pending = pendingLimitResets.get(msg.requestId);
+      pendingLimitResets.delete(msg.requestId);
+      if (pending) { clearTimeout(pending.timer); }
+      pending?.resolve();
+      break;
+    }
+    case "limitResetError": {
+      const pending = pendingLimitResets.get(msg.requestId);
+      pendingLimitResets.delete(msg.requestId);
       if (pending) { clearTimeout(pending.timer); }
       pending?.reject(new Error(msg.message));
       break;

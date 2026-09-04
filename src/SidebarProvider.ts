@@ -215,6 +215,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
       case "refreshUsage":
         void this.usageStatus.refresh(message.provider, { force: true, bypassCache: true });
         break;
+      case "consumeLimitReset":
+        if (typeof message.requestId !== "string" || !message.requestId
+          || typeof message.resetId !== "string" || !message.resetId) {
+          console.warn("[TokenWatch] ignored a usage limit reset activation with an invalid payload");
+          break;
+        }
+        this.usageStatus.consumeCodexLimitReset(message.resetId).then(
+          () => this.postMessage({ type: "limitResetConsumed", requestId: message.requestId }),
+          (error) => {
+            console.warn("[TokenWatch] usage limit reset activation failed:", error);
+            const errorMessage = error instanceof Error ? error.message : "Unable to activate the usage limit reset.";
+            this.postMessage({ type: "limitResetError", requestId: message.requestId, message: errorMessage });
+          },
+        );
+        break;
       case "openSetting":
         vscode.commands.executeCommand(
           "workbench.action.openSettings",

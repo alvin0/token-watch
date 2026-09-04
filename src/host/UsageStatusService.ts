@@ -237,6 +237,25 @@ export class UsageStatusService implements vscode.Disposable {
     return work;
   }
 
+  /**
+   * Spend one Codex usage limit reset, then re-read the quota.
+   *
+   * The re-read is forced past both the spacing floor and the response cache:
+   * the whole point of activating a reset is that the numbers on screen have
+   * just changed. Rejects with the provider's own message so the WebView can
+   * show why it failed.
+   */
+  async consumeCodexLimitReset(resetId: string): Promise<void> {
+    if (this.disposed) {
+      throw new Error("Token Watch is shutting down.");
+    }
+    if (!providerRequestsEnabled()) {
+      throw new Error("Usage limit resets cannot be activated in test mode.");
+    }
+    await this.codexConnection.consumeLimitReset(resetId);
+    await this.refresh("codex", { force: true, bypassCache: true });
+  }
+
   dispose(): void {
     if (this.disposed) { return; }
     this.disposed = true;

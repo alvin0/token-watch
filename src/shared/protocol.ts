@@ -331,6 +331,11 @@ export type WebviewRequest =
   | { type: "rescan" }
   | { type: "updatePricing"; table: PricingTable }
   | { type: "refreshUsage"; provider: UsageProvider }
+  /**
+   * Spend one Codex usage limit reset. Codex-only: no other provider grants
+   * them. State-changing, so it carries a request ID and is answered.
+   */
+  | { type: "consumeLimitReset"; requestId: string; resetId: string }
   | { type: "openSetting"; key: string }
   | { type: "setLanguage"; language: AppLanguage }
   | { type: "savePricingSettings"; requestId: string; table: PricingTable }
@@ -348,6 +353,8 @@ export type HostMessage =
   | { type: "pricingSettings"; table: PricingTable }
   | { type: "pricingSettingsSaved"; requestId: string; table: PricingTable }
   | { type: "pricingSettingsError"; requestId: string; message: string }
+  | { type: "limitResetConsumed"; requestId: string }
+  | { type: "limitResetError"; requestId: string; message: string }
   | { type: "language"; language: AppLanguage }
   | {
       type: "status";

@@ -50,9 +50,11 @@ export function isValidHostMessage(value: unknown): value is HostMessage {
       return Array.isArray(value.rules);
     case "costAlertSettingsSaved":
     case "pricingSettingsSaved":
+    case "limitResetConsumed":
       return typeof value.requestId === "string";
     case "costAlertSettingsError":
     case "pricingSettingsError":
+    case "limitResetError":
       return typeof value.requestId === "string" && typeof value.message === "string";
     case "pricingSettings":
       return isObject(value.table);

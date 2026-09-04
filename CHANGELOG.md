@@ -2,6 +2,17 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.2.2]
+
+### Added
+
+- Activate a Codex usage limit reset from the panel. Expand the Codex card and
+  each reset under "Usage limit resets" has an **Activate** button.
+- A confirmation dialog first: it shows which reset, its expiry, and how many
+  you have left, and the button stays disabled until you tick that you
+  understand it cannot be undone.
+- The card refreshes right after, so you see what the reset restored.
+
 ## [0.2.1]
 
 ### Changed

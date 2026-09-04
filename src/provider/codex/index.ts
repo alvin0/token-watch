@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,6 +11,7 @@ export const DEFAULT_CODEX_AUTH_FILE = "~/.codex/auth.json";
 export const WHAM_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
 export const WHAM_ENVIRONMENTS_ENDPOINT = "https://chatgpt.com/backend-api/wham/environments";
 export const WHAM_LIMIT_RESETS_ENDPOINT = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
+export const WHAM_LIMIT_RESET_CONSUME_ENDPOINT = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume";
 export const DEFAULT_CODEX_ISSUER = "https://auth.openai.com";
 export const DEFAULT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
@@ -71,6 +73,12 @@ export interface CodexRequestOptions {
   force?: boolean;
 }
 
+/** A request that is not a plain GET. Internal: only the consume call needs it. */
+interface CodexWriteOptions extends CodexRequestOptions {
+  method: string;
+  body: string;
+}
+
 export class CodexUsageRateLimitError extends Error {
   constructor(
     public readonly retryAt: number,
@@ -105,6 +113,32 @@ export class CodexConnection {
   /** Usage limit resets granted to the account, each with its own expiry. */
   limitResetsInfo<T = unknown>(options: CodexRequestOptions = {}): Promise<T> {
     return this.cachedGet<T>(WHAM_LIMIT_RESETS_ENDPOINT, options);
+  }
+
+  /**
+   * Spend one usage limit reset on the account.
+   *
+   * Never cached and never coalesced with anything: it changes state upstream,
+   * and a reset spent twice is a reset gone. `redeem_request_id` is built once
+   * and reused if the call has to be replayed after a token refresh, so that
+   * replay cannot cost a second reset.
+   */
+  async consumeLimitReset(creditId: string, options: CodexRequestOptions = {}): Promise<void> {
+    const body = JSON.stringify({ credit_id: creditId, redeem_request_id: randomUUID() });
+    const response = await this.requestWithRefresh(WHAM_LIMIT_RESET_CONSUME_ENDPOINT, {
+      ...options,
+      method: "POST",
+      body,
+      headers: { ...headersToRecord(options.headers), "content-type": "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(`Codex usage limit reset activation failed: ${response.status} ${await response.text()}`);
+    }
+    // The cached usage and reset list both describe the account as it was
+    // before this call. Left in place, the card would keep offering a reset
+    // that is already spent.
+    usageInfoCache.delete(requestKey(this.options, this.options.endpoint ?? WHAM_USAGE_ENDPOINT));
+    usageInfoCache.delete(requestKey(this.options, WHAM_LIMIT_RESETS_ENDPOINT));
   }
 
   private cachedGet<T>(url: string, options: CodexRequestOptions): Promise<T> {
@@ -195,7 +229,7 @@ export class CodexConnection {
     return (await response.json()) as T;
   }
 
-  private async requestWithRefresh(url: string, options?: CodexRequestOptions): Promise<Response> {
+  private async requestWithRefresh(url: string, options?: CodexRequestOptions | CodexWriteOptions): Promise<Response> {
     let auth = await readCodexAuthSnapshot(this.options.authFile);
     if (isTokenExpiringSoon(auth.expiresAt)) {
       auth = await this.refreshAuth(auth);
@@ -208,10 +242,12 @@ export class CodexConnection {
     return this.fetchWithAuth(url, auth, options);
   }
 
-  private async fetchWithAuth(url: string, auth: CodexAuthSnapshot, options?: CodexRequestOptions) {
+  private async fetchWithAuth(url: string, auth: CodexAuthSnapshot, options?: CodexRequestOptions | CodexWriteOptions) {
+    const write = options && "method" in options ? options : undefined;
     return fetchWithTimeout(this.options.fetch ?? fetch, url, {
-      method: "GET",
+      method: write?.method ?? "GET",
       headers: buildUsageHeaders(auth, options?.headers, this.options),
+      ...(write ? { body: write.body } : {}),
       ...(options?.signal ? { signal: options.signal } : {}),
       timeoutMs: this.options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
     });
@@ -433,6 +469,13 @@ function buildUsageHeaders(
   headers.set("user-agent", options?.userAgent ?? DEFAULT_USER_AGENT);
   if (auth.accountId) {headers.set("ChatGPT-Account-Id", auth.accountId);}
   return headers;
+}
+
+/** Flatten a `HeadersInit` so a caller's headers survive being extended. */
+function headersToRecord(input?: HeadersInit): Record<string, string> {
+  const record: Record<string, string> = {};
+  new Headers(input).forEach((value, key) => { record[key] = value; });
+  return record;
 }
 
 function cleanToken(value?: string) {
