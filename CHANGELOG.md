@@ -2,6 +2,20 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.2.1]
+
+### Changed
+
+- The status bar now shows your 5h limit, which is the one you actually run into
+  while you work. It used to show whichever of the 5h and weekly limits had less
+  left, so a roomy weekly number could sit where you expect to read how much of
+  this session is left. If your weekly limit drops to 20% or below, it appears
+  next to it, like `90%(W-15%)`. Hover for the full breakdown as before.
+- The Codex and Claude Code icons in the status bar are 30% smaller, so they no
+  longer dwarf the numbers beside them.
+- The Marketplace icon is white on black, so it stays visible on dark
+  backgrounds instead of disappearing into them.
+
 ## [0.2.0]
 
 ### Added

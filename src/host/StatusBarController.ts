@@ -191,9 +191,17 @@ export function summarizeDailySeries(series: DailyAggregate[]): StatusBarUsageSu
   });
 }
 
-const CODEX_PRIMARY_WINDOW_IDS = ['codex:primary', 'codex:secondary'];
+const CODEX_SESSION_WINDOW_ID = 'codex:primary';
+const CODEX_WEEKLY_WINDOW_ID = 'codex:secondary';
+const CLAUDE_SESSION_WINDOW_ID = 'session';
+const CLAUDE_WEEKLY_WINDOW_ID = 'weekly';
 
-const CLAUDE_PRIMARY_WINDOW_IDS = ['session', 'weekly'];
+const CODEX_PRIMARY_WINDOW_IDS = [CODEX_SESSION_WINDOW_ID, CODEX_WEEKLY_WINDOW_ID];
+
+const CLAUDE_PRIMARY_WINDOW_IDS = [CLAUDE_SESSION_WINDOW_ID, CLAUDE_WEEKLY_WINDOW_ID];
+
+/** Weekly headroom at or under this earns a spot next to the 5h figure. */
+const WEEKLY_WARNING_PERCENT = 20;
 
 /**
  * The status bar label: today's tokens and cost, plus how much subscription
@@ -206,27 +214,50 @@ export function buildStatusBarText(
 ): string {
   const parts = [`$(token-watch) ${formatTokens(usage.tokens)}`, `$${formatCost(usage.cost)}`];
 
-  const codexLeft = tightestRemainingPercent(rateLimit?.windows, CODEX_PRIMARY_WINDOW_IDS);
+  const codexLeft = quotaLabel(rateLimit?.windows, CODEX_SESSION_WINDOW_ID, CODEX_WEEKLY_WINDOW_ID);
   if (codexLeft !== undefined) {
-    parts.push(`$(token-watch-codex) ${formatPercent(codexLeft)}`);
+    parts.push(`$(token-watch-codex) ${codexLeft}`);
   }
-  const claudeLeft = tightestRemainingPercent(claudeRateLimit?.windows, CLAUDE_PRIMARY_WINDOW_IDS);
+  const claudeLeft = quotaLabel(claudeRateLimit?.windows, CLAUDE_SESSION_WINDOW_ID, CLAUDE_WEEKLY_WINDOW_ID);
   if (claudeLeft !== undefined) {
-    parts.push(`$(token-watch-claude) ${formatPercent(claudeLeft)}`);
+    parts.push(`$(token-watch-claude) ${claudeLeft}`);
   }
 
   return parts.join(' | ');
 }
 
-/** Least headroom across a provider's primary quotas — the one that runs out first. */
-function tightestRemainingPercent(windows: UsageQuotaWindow[] | undefined, primaryIds: string[]): number | undefined {
-  const remaining = (windows ?? [])
-    .filter((window) => primaryIds.includes(window.id))
-    .map((window) => window.usedPct)
-    .filter((usedPct): usedPct is number => typeof usedPct === 'number' && Number.isFinite(usedPct))
-    .map((usedPct) => Math.max(0, 100 - usedPct));
+/**
+ * One provider's headroom, led by the 5h window.
+ *
+ * The 5h limit is the one a working session actually runs into; weekly is a
+ * far larger budget that is almost never the tighter of the two, so showing
+ * whichever number was lower used to put a comfortable weekly figure in the
+ * slot people read as "how much of this session is left". Weekly only earns
+ * space once it is nearly gone, and then it is marked so the two cannot be
+ * confused. With no 5h figure at all, weekly stands in rather than the
+ * provider vanishing — still marked, for the same reason.
+ */
+function quotaLabel(
+  windows: UsageQuotaWindow[] | undefined,
+  sessionId: string,
+  weeklyId: string,
+): string | undefined {
+  const session = windowRemainingPercent(windows, sessionId);
+  const weekly = windowRemainingPercent(windows, weeklyId);
 
-  return remaining.length > 0 ? Math.min(...remaining) : undefined;
+  if (session === undefined) {
+    return weekly === undefined ? undefined : `W-${formatPercent(weekly)}`;
+  }
+
+  return weekly !== undefined && weekly <= WEEKLY_WARNING_PERCENT
+    ? `${formatPercent(session)}(W-${formatPercent(weekly)})`
+    : formatPercent(session);
+}
+
+/** Headroom left on one named quota window, or undefined when it has no figure. */
+function windowRemainingPercent(windows: UsageQuotaWindow[] | undefined, id: string): number | undefined {
+  const usedPct = windows?.find((window) => window.id === id)?.usedPct;
+  return typeof usedPct === 'number' && Number.isFinite(usedPct) ? Math.max(0, 100 - usedPct) : undefined;
 }
 
 export function buildStatusBarTooltip(

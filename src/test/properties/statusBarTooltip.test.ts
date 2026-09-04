@@ -80,8 +80,56 @@ suite('Status bar tooltip', () => {
       },
     );
 
-    // 58% is the 5h window: the tightest quota is the one that runs out first.
+    // 58% is the 5h window: the limit a working session actually runs into.
     assert.strictEqual(text, '$(token-watch) 12.3K | $1.23 | $(token-watch-codex) 100% | $(token-watch-claude) 58%');
+  });
+
+  test('leads with the 5h window even when weekly has less headroom', () => {
+    const text = buildStatusBarText(summary, {
+      windows: [
+        { id: 'codex:primary', label: '5h limit', usedPct: 10 },
+        { id: 'codex:secondary', label: 'Weekly', usedPct: 65 },
+      ],
+    });
+
+    // Weekly's 35% is lower but nowhere near gone, so it stays out of the slot
+    // people read as "how much of this session is left".
+    assert.strictEqual(text, '$(token-watch) 12.3K | $1.23 | $(token-watch-codex) 90%');
+  });
+
+  test('appends weekly once it is nearly gone', () => {
+    const text = buildStatusBarText(
+      summary,
+      {
+        windows: [
+          { id: 'codex:primary', label: '5h limit', usedPct: 10 },
+          { id: 'codex:secondary', label: 'Weekly', usedPct: 85 },
+        ],
+      },
+      {
+        windows: [
+          { id: 'session', label: '5h limit', usedPct: 40 },
+          { id: 'weekly', label: 'Weekly', usedPct: 80 },
+        ],
+      },
+    );
+
+    // Claude's weekly sits exactly on the 20% threshold, so it shows too.
+    assert.strictEqual(
+      text,
+      '$(token-watch) 12.3K | $1.23 | $(token-watch-codex) 90%(W-15%) | $(token-watch-claude) 60%(W-20%)',
+    );
+  });
+
+  test('falls back to a marked weekly figure when the 5h window has no number', () => {
+    const text = buildStatusBarText(summary, {
+      windows: [
+        { id: 'codex:primary', label: '5h limit' },
+        { id: 'codex:secondary', label: 'Weekly', usedPct: 38 },
+      ],
+    });
+
+    assert.strictEqual(text, '$(token-watch) 12.3K | $1.23 | $(token-watch-codex) W-62%');
   });
 
   test('leaves out a provider whose quota has not loaded', () => {
