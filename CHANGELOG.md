@@ -2,6 +2,15 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.2.3]
+
+### Added
+
+- Pricing for OpenAI's GPT-6 Astra (`gpt-6-astra`), so Codex sessions on it are
+  costed instead of falling back to the GPT-5 rate.
+- A `gpt-6-astra-long-context` entry for prompts over 272K tokens, which bill
+  input and cache at 2x and output at 1.5x for the whole request.
+
 ## [0.2.2]
 
 ### Added

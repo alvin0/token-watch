@@ -56,6 +56,10 @@ export const DEFAULT_PRICING: PricingTable = {
   "gpt-5.6-sol": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, cacheCreationPer1K: 0.00625, outputPer1K: 0.03 },
   "gpt-5.6-terra": { inputPer1K: 0.002, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.0025, outputPer1K: 0.012 },
   "gpt-5.6-luna": { inputPer1K: 0.0002, cachedInputPer1K: 0.00002, cacheCreationPer1K: 0.00025, outputPer1K: 0.0012 },
+  // GPT-6 (long-context: prompts over 272K tokens bill input/cache at 2x and
+  // output at 1.5x for the whole request)
+  "gpt-6-astra": { inputPer1K: 0.01, cachedInputPer1K: 0.001, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
+  "gpt-6-astra-long-context": { inputPer1K: 0.02, cachedInputPer1K: 0.002, cacheCreationPer1K: 0.025, outputPer1K: 0.075 },
   // GPT-4 / o-series
   "gpt-4.1": { inputPer1K: 0.002, cachedInputPer1K: 0.0005, outputPer1K: 0.008 },
   "gpt-4.1-mini": { inputPer1K: 0.0004, cachedInputPer1K: 0.0001, outputPer1K: 0.0016 },
