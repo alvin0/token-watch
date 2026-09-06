@@ -38,9 +38,15 @@ export interface FileIdentity {
   inode: number;
 }
 
+/**
+ * The store changed under us between the read and the write.
+ *
+ * `location` is a file path for file-backed credentials and the service name
+ * for Keychain-backed ones; both are stores another tool also writes.
+ */
 export class ConcurrentCredentialWriteError extends Error {
   constructor(public readonly path: string) {
-    super(`${path} changed on disk since it was read; refusing to overwrite it`);
+    super(`${path} changed since it was read; refusing to overwrite it`);
     this.name = "ConcurrentCredentialWriteError";
   }
 }

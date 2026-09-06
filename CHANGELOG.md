@@ -2,6 +2,21 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.2.4]
+
+### Fixed
+
+- Stopped Token Watch from occasionally signing Claude Code out. Anthropic's
+  refresh tokens are single-use with no overlap window, so refreshing on our
+  own schedule could rotate a grant Claude Code was about to present itself,
+  forcing a re-login. Token Watch now leaves a token that expired less than
+  two minutes ago for Claude Code to refresh on its own, re-reads the stored
+  credentials immediately before refreshing so an already-rotated pair is
+  reused instead of resubmitted, recovers by re-reading the store if the
+  refresh call is refused as an expired grant, and takes a machine-wide lock
+  before refreshing so two VS Code windows can't race each other for the same
+  account.
+
 ## [0.2.3]
 
 ### Added

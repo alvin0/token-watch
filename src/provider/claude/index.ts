@@ -5,7 +5,8 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import type { UsageCacheInfo } from "../../shared/protocol";
 import { randomUsageRetryMs, rateLimitBackoffMs } from "../../shared/usageRetry";
-import { fileIdentityOf, writeFileAtomicSync, type FileIdentity } from "../atomicFile";
+import { ConcurrentCredentialWriteError, fileIdentityOf, writeFileAtomicSync, type FileIdentity } from "../atomicFile";
+import { withCredentialRefreshLock, type RefreshLockOptions } from "../credentialRefreshLock";
 import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout } from "../http";
 
 export const DEFAULT_CLAUDE_CREDENTIALS_FILE = "~/.claude/.credentials.json";
@@ -15,7 +16,18 @@ export const CLAUDE_TOKEN_ENDPOINT = "https://platform.claude.com/v1/oauth/token
 export const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
 const CLAUDE_OAUTH_BETA = "oauth-2025-04-20";
-const REFRESH_SAFETY_MARGIN_MS = 30_000;
+/**
+ * How long a token must sit expired before this process refreshes it itself.
+ *
+ * Claude Code CLI refreshes the same credentials whenever it is actually in
+ * use, rotating the refresh_token in the process. Refreshing here on our own
+ * schedule (e.g. shortly before expiry) races that: whichever side presents
+ * the refresh_token second gets `invalid_grant` and is signed out. Waiting
+ * out a stale grace period first lets an active CLI session refresh on its
+ * own — this only steps in once it is clear nothing else is keeping the
+ * token current (CLI idle or not running).
+ */
+const STALE_REFRESH_THRESHOLD_MS = 2 * 60 * 1000;
 const DEFAULT_FAILURE_RETRY_MS = 60 * 1000;
 const execFileAsync = promisify(execFile);
 /** Bound for `security`; it can block on a Keychain prompt indefinitely. */
@@ -56,6 +68,8 @@ export interface ClaudeAuthSnapshot {
   path?: string;
   /** Identity of the credentials file when it was read, for the write-back guard. */
   identity?: FileIdentity;
+  /** Exact Keychain blob as read, for the same guard where there is no file identity. */
+  storedValue?: string;
 }
 
 export interface ClaudeConnectionOptions {
@@ -71,6 +85,8 @@ export interface ClaudeConnectionOptions {
   random?: () => number;
   /** Per-request deadline; a hung socket must not pin the refresh forever. */
   timeoutMs?: number;
+  /** Overridable for tests; the machine-wide single-flight guard for refreshes. */
+  refreshLock?: RefreshLockOptions;
 }
 
 export interface ClaudeUsageRequestOptions {
@@ -91,12 +107,40 @@ export function isClaudeUsageRateLimitError(error: unknown): error is ClaudeUsag
   return error instanceof ClaudeUsageRateLimitError;
 }
 
+/**
+ * The token endpoint refused the refresh.
+ *
+ * Carries the status and body so the caller can tell a rotated-away grant
+ * (`invalid_grant`, recoverable by re-reading what the CLI wrote) from a
+ * genuine outage.
+ */
+export class ClaudeTokenRefreshError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly body: string,
+  ) {
+    super(`Claude token refresh failed: ${status} ${body}`);
+    this.name = "ClaudeTokenRefreshError";
+  }
+
+  /**
+   * Whether the grant itself was rejected, rather than the service failing.
+   *
+   * Anthropic's refresh tokens are single-use and rotate with no overlap
+   * window, so the usual cause is that Claude Code refreshed first and the
+   * token we presented had already been spent.
+   */
+  get isInvalidGrant(): boolean {
+    return (this.status === 400 || this.status === 401) && /invalid_grant/i.test(this.body);
+  }
+}
+
 export class ClaudeConnection {
   constructor(private readonly options: ClaudeConnectionOptions = {}) {}
 
   async usage(): Promise<Response> {
     let auth = await readClaudeAuthSnapshot(this.options);
-    if (isTokenExpiringSoon(auth.expiresAt)) {
+    if (isTokenStale(auth.expiresAt)) {
       auth = await this.refreshAuth(auth);
     }
 
@@ -210,12 +254,79 @@ export class ClaudeConnection {
       return inFlight;
     }
 
-    const promise = refreshClaudeAuthSnapshot(current, this.options)
+    const promise = this.refreshAuthOnce(current)
       .finally(() => {
         refreshPromises.delete(key);
       });
     refreshPromises.set(key, promise);
     return promise;
+  }
+
+  /**
+   * Refresh, but only if Claude Code has not already done it for us.
+   *
+   * The snapshot handed in was read before the request that failed, which can
+   * be seconds old — long enough for Claude Code to have rotated the tokens in
+   * the meantime. Presenting the superseded refresh token would earn an
+   * `invalid_grant` here and, worse, spend a grant the CLI still expects to
+   * own. So the credentials are read again at the last possible moment, and a
+   * refusal is checked against the store once more before it is reported.
+   */
+  private async refreshAuthOnce(current: ClaudeAuthSnapshot): Promise<ClaudeAuthSnapshot> {
+    const latest = await this.rereadAuth(current);
+    if (supersedes(latest, current) && !isTokenStale(latest?.expiresAt)) {
+      // Claude Code refreshed while we were queued; its tokens are the live
+      // ones and ours would be rejected.
+      return latest;
+    }
+
+    const base = latest ?? current;
+    // Every VS Code window runs its own extension host, so the in-process map
+    // above does not stop two of them refreshing the same account at once.
+    const outcome = await withCredentialRefreshLock(
+      credentialStorageKey(this.options),
+      () => this.performRefresh(base),
+      this.options.refreshLock,
+    );
+    if (outcome.ran) {
+      return outcome.value;
+    }
+
+    // Another window is refreshing this very account. Spending a second grant
+    // would invalidate whichever one it ends up not writing; take its result.
+    const written = await this.rereadAuth(base);
+    return supersedes(written, base) ? written : base;
+  }
+
+  private async performRefresh(base: ClaudeAuthSnapshot): Promise<ClaudeAuthSnapshot> {
+    try {
+      return await refreshClaudeAuthSnapshot(base, this.options);
+    } catch (error) {
+      if (!isRotatedGrantError(error)) {
+        throw error;
+      }
+      // The grant was spent between the read above and the request. Whoever
+      // spent it wrote the replacement to the store; take that rather than
+      // reporting the account as broken. Claude Code recovers the same way
+      // (its own `tengu_oauth_401_recovered_from_disk` path).
+      const rotated = await this.rereadAuth(base);
+      if (supersedes(rotated, base)) {
+        return rotated;
+      }
+      throw error;
+    }
+  }
+
+  /** Re-read the credential store, treating a read failure as "nothing newer". */
+  private async rereadAuth(fallbackFor: ClaudeAuthSnapshot): Promise<ClaudeAuthSnapshot | undefined> {
+    try {
+      const snapshot = await readClaudeAuthSnapshot(this.options);
+      return snapshot.storage === fallbackFor.storage ? snapshot : undefined;
+    } catch {
+      // A vanished or malformed store is the caller's problem to report, not a
+      // reason to abandon the refresh we were asked for.
+      return undefined;
+    }
   }
 }
 
@@ -224,17 +335,14 @@ export async function readClaudeAuthSnapshot(options: ClaudeConnectionOptions = 
   const platform = options.platform ?? process.platform;
 
   if (platform === "darwin" && !options.credentialsFile) {
-    try {
-      const { stdout } = await execFileAsync("security", [
-        "find-generic-password",
-        "-s",
-        options.keychainService ?? DEFAULT_CLAUDE_KEYCHAIN_SERVICE,
-        "-w",
-      ], { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: KEYCHAIN_TIMEOUT_MS });
-      return authSnapshot(parseCredentials(stdout, "macOS Keychain"), "keychain");
-    } catch {
-      // Claude Code falls back to the credentials file when Keychain is unavailable.
+    const stored = await readKeychainPassword(options.keychainService ?? DEFAULT_CLAUDE_KEYCHAIN_SERVICE);
+    if (stored !== undefined) {
+      // The exact stored text is kept so the write-back can check the entry has
+      // not been replaced meanwhile; a Keychain item has no inode or mtime to
+      // pin the way a file does.
+      return authSnapshot(parseCredentials(stored, "macOS Keychain"), "keychain", undefined, undefined, stored);
     }
+    // Claude Code falls back to the credentials file when Keychain is unavailable.
   }
 
   // Captured before the read so a rotation by Claude Code itself is detected
@@ -271,11 +379,27 @@ function parseCredentials(raw: string, source: string): ClaudeCredentials {
   }
 }
 
+/** Read the stored credential blob, or undefined when the entry is unreadable. */
+async function readKeychainPassword(service: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync("security", [
+      "find-generic-password",
+      "-s",
+      service,
+      "-w",
+    ], { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: KEYCHAIN_TIMEOUT_MS });
+    return stdout;
+  } catch {
+    return undefined;
+  }
+}
+
 function authSnapshot(
   credentials: ClaudeCredentials,
   storage: ClaudeAuthSnapshot["storage"],
   filePath?: string,
   identity?: FileIdentity,
+  storedValue?: string,
 ): ClaudeAuthSnapshot {
   const oauth = credentials.claudeAiOauth;
   const accessToken = cleanToken(oauth?.accessToken);
@@ -296,6 +420,7 @@ function authSnapshot(
     storage,
     ...(filePath ? { path: filePath } : {}),
     ...(identity ? { identity } : {}),
+    ...(storedValue !== undefined ? { storedValue } : {}),
   };
 }
 
@@ -328,7 +453,7 @@ async function refreshClaudeAuthSnapshot(
   );
 
   if (!response.ok) {
-    throw new Error(`Claude token refresh failed: ${response.status} ${await response.text()}`);
+    throw new ClaudeTokenRefreshError(response.status, await response.text().catch(() => ""));
   }
 
   const tokens = validateClaudeTokenResponse(await response.json().catch(() => undefined));
@@ -389,6 +514,16 @@ async function persistClaudeCredentials(
 ): Promise<FileIdentity | undefined> {
   const serialized = JSON.stringify(credentials);
   if (current.storage === "keychain") {
+    const service = options.keychainService ?? DEFAULT_CLAUDE_KEYCHAIN_SERVICE;
+    // `security` has no compare-and-swap, so this is a check, not a lock: it
+    // catches a rotation Claude Code has already committed rather than one
+    // landing in the microseconds around the write.
+    if (current.storedValue !== undefined) {
+      const stored = await readKeychainPassword(service);
+      if (stored !== undefined && stored.trim() !== current.storedValue.trim()) {
+        throw new ConcurrentCredentialWriteError(`Keychain item "${service}"`);
+      }
+    }
     try {
       await writeKeychainPassword(
         options.keychainService ?? DEFAULT_CLAUDE_KEYCHAIN_SERVICE,
@@ -474,8 +609,20 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-function isTokenExpiringSoon(expiresAt?: number): boolean {
-  return Boolean(expiresAt && expiresAt - REFRESH_SAFETY_MARGIN_MS <= Date.now());
+/** Whether the store now holds a different token pair from the one we hold. */
+function supersedes(
+  next: ClaudeAuthSnapshot | undefined,
+  previous: ClaudeAuthSnapshot,
+): next is ClaudeAuthSnapshot {
+  return Boolean(next && (next.accessToken !== previous.accessToken || next.refreshToken !== previous.refreshToken));
+}
+
+function isRotatedGrantError(error: unknown): boolean {
+  return error instanceof ClaudeTokenRefreshError && error.isInvalidGrant;
+}
+
+function isTokenStale(expiresAt?: number): boolean {
+  return Boolean(expiresAt && Date.now() - expiresAt > STALE_REFRESH_THRESHOLD_MS);
 }
 
 function credentialStorageKey(options: ClaudeConnectionOptions): string {
