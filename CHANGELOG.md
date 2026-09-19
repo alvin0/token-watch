@@ -2,6 +2,15 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.2.5]
+
+### Fixed
+
+- Activating a Codex usage limit reset now always fetches fresh usage after the
+  reset completes. If another usage refresh was already in progress, Token
+  Watch waits for it to finish and then starts a new uncached request instead
+  of leaving the panel with the pre-reset quota.
+
 ## [0.2.4]
 
 ### Fixed

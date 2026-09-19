@@ -1,7 +1,8 @@
 # Token Watch
 
 A VS Code extension that tracks your AI coding token usage and cost across
-Codex and Claude sessions, surfaced in a sidebar dashboard and the status bar.
+Codex and Claude Code sessions, surfaced in a sidebar dashboard and the status
+bar.
 
 It reads the JSONL session logs those tools already write to disk, aggregates
 them locally into an embedded SQLite store (sql.js), and shows usage, cost, and
@@ -23,6 +24,11 @@ the file's existing permissions, and are refused if the other tool rotated the
 credentials first. Turn the panels off with `tokenWatch.statusBar.enabled` and
 by closing the sidebar if you would rather it never touched them.
 
+Claude credential refreshes are coordinated with Claude Code and across VS Code
+windows: Token Watch re-reads credentials before refreshing, waits briefly for
+Claude Code to rotate a newly expired token itself, and uses a machine-wide
+lock so two windows cannot spend the same refresh grant.
+
 <p align="center">
   <img src="resources/today-image.png" alt="Token Watch today usage view" width="32%">
   <img src="resources/week-image.png" alt="Token Watch weekly usage view" width="32%">
@@ -31,28 +37,48 @@ by closing the sidebar if you would rather it never touched them.
 
 ## Features
 
-- Sidebar dashboard: daily series, per-variant breakdown, top models, session
-  leaderboard, composition, and trend charts, filterable by source/period.
-- Status bar item showing today's tokens and cost.
-- Local pricing engine with bundled defaults and user overrides; unknown models
-  fall back to a bundled fallback rate and are flagged in the UI so you can add
-  a real price for them.
+- Sidebar dashboard with Today, Day, Week, Month, and Year views: usage and cost
+  trends, token composition, top models, sessions, tool calls, cache activity,
+  and comparisons with the previous period, filterable by source.
+- Live Codex and Claude Code subscription quota cards, including account plan,
+  5-hour and weekly windows, reset times, and model- or feature-specific limits.
+- Codex usage limit resets: see the remaining count and expiry, get warned before
+  one expires, and activate one from the expanded Codex card after an explicit
+  confirmation. Usage is fetched again without cache after activation.
+- Status bar summary for today's tokens and cost plus each provider's 5-hour
+  quota; a low weekly quota is surfaced alongside it, with the full breakdown
+  in the tooltip.
+- Cost threshold alerts for daily, weekly, or monthly USD budgets, scoped to all
+  usage, Codex, or Claude Code. Notifications fire at 80%, 95%, and 100%.
+- Local pricing engine with bundled model and long-context rates. Add or override
+  model prices from the panel or settings; unknown models use the bundled
+  fallback rate and remain clearly flagged.
+- English, Vietnamese, and Japanese UI, selectable from the panel.
 - Incremental ingestion: a background worker thread watches the log directories
   and only parses new bytes, with a full "Rescan Logs" command for a rebuild.
-- Quality/freshness signals: malformed and oversized line counts, unmapped
-  models, and last-ingest/most-recent-record timestamps.
+- Optional raw-record retention that reduces database growth without deleting
+  daily or per-session totals.
+- Quality and freshness reporting for malformed or unreadable usage lines,
+  unmapped models, ingestion timestamps, pricing coverage, and database health.
 
 ## Commands
 
 - `Token Watch: Open Panel` (`token-watch.openPanel`)
-- `Token Watch: Rescan Logs` (`token-watch.rescan`) — wipes and rebuilds the store.
+- `Token Watch: Rescan Logs` (`token-watch.rescan`) — rebuild usage from the
+  configured log sources.
+- `Token Watch: Reset Database` (`token-watch:resetdb`) — clear the persisted
+  database and rebuild it from the available logs.
+- `Token Watch: Show Diagnostics` (`token-watch.showDiagnostics`) — open a
+  Markdown report covering ingestion, pricing, reconciliation, retention, and
+  database checks.
 
 ## Configuration
 
 All settings live under the `tokenWatch.*` namespace (see the Settings UI):
 
 - `sources.codex.enabled` / `sources.claude.enabled` and `*.path` overrides.
-- `pricing.overrides` — per-model rate overrides merged over bundled defaults.
+- `pricing.overrides` — per-model USD rate additions and overrides merged over
+  bundled defaults.
 - `currency.secondary` / `currency.secondaryRate` — optional secondary display currency.
 - `ingestion.watchDebounceMs`, `ingestion.maxLineBytes`, `ingestion.backfillMonths`
   (`0` = unlimited backfill).
@@ -68,15 +94,17 @@ All settings live under the `tokenWatch.*` namespace (see the Settings UI):
 - `analytics.anomalyMultiplier`, `analytics.contextFillWarnPct`.
 - `statusBar.enabled`.
 
-Pricing can also be edited in `pricing.config.jsonc` inside the extension's
-global storage directory (JSONC with comments). Only real model ids are
-accepted — `$`-prefixed keys, including `$fallback`, are ignored, and the
-bundled fallback rate is always used for unpriced models. Rates must be finite
-and non-negative; anything else is dropped with a warning rather than producing
-a negative or NaN cost. The file lives in global storage, not the workspace,
-because the usage database is shared by every VS Code window — workspace-scoped
-prices would make the same tokens cost different amounts depending on which
-window ingested them. A file left in a workspace root is copied across once.
+Custom pricing can be edited from the `$` button in the panel or directly in
+`pricing.config.jsonc` inside the extension's global storage directory (JSONC
+with comments). File entries win over settings entries with the same model id.
+Only real model ids are accepted — `$`-prefixed keys, including `$fallback`, are
+ignored, and the bundled fallback rate is always used for unpriced models.
+Rates must be finite and non-negative; anything else is dropped with a warning
+rather than producing a negative or NaN cost. The file lives in global storage,
+not the workspace, because the usage database is shared by every VS Code window
+— workspace-scoped prices would make the same tokens cost different amounts
+depending on which window ingested them. A file left in a workspace root is
+copied across once.
 
 ## Architecture
 

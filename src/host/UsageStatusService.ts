@@ -253,6 +253,10 @@ export class UsageStatusService implements vscode.Disposable {
       throw new Error("Usage limit resets cannot be activated in test mode.");
     }
     await this.codexConnection.consumeLimitReset(resetId);
+    // A refresh that started before the reset only describes the old quota.
+    // Let it finish, then start the forced read below instead of letting
+    // refresh() coalesce this request into that stale in-flight work.
+    await this.runtime.codex.inFlight?.catch(() => undefined);
     await this.refresh("codex", { force: true, bypassCache: true });
   }
 
