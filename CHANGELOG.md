@@ -2,6 +2,29 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.2.6]
+
+### Added
+
+- Pricing for Claude Opus 5.5 (`claude-opus-5.5` / `claude-opus-5-5`). Its cache
+  reads are billed at 0.05x input ($0.20/MTok) instead of the usual 0.1x.
+- Pricing for OpenAI's GPT-6 Sol (`gpt-6-sol`) and GPT-6 Luna (`gpt-6-luna`),
+  each with a `-long-context` entry for prompts over 272K tokens.
+- `-long-context` entries for GPT-5.6 Sol, Terra and Luna, so prompts over 272K
+  tokens are no longer costed at the short-context rate.
+
+### Changed
+
+- Claude Sonnet 5 is now priced at $2/$10 per million input/output tokens, down
+  from $3/$15. Anthropic made the launch price permanent.
+- Claude Mythos 5.1 cache reads are now priced at $0.25/MTok, matching Fable 5.1,
+  now that Anthropic has published the rate.
+- GPT-5.6 Sol is now priced at $4/$20 per million input/output tokens, down from
+  $5/$30. This is OpenAI's promotional price, which runs through at least
+  November 21, 2026.
+- Bundled prices are not versioned by date, so costs that Token Watch
+  recalculates for earlier usage also use the new rates.
+
 ## [0.2.5]
 
 ### Fixed

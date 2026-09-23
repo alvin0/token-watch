@@ -52,14 +52,22 @@ export const DEFAULT_PRICING: PricingTable = {
   "gpt-5.5-pro-2026-04-23": { inputPer1K: 0.03, cachedInputPer1K: 0, outputPer1K: 0.18 },
   "gpt-5.5-pro-long-context": { inputPer1K: 0.06, cachedInputPer1K: 0, outputPer1K: 0.27 },
   "gpt-5.5-pro-2026-04-23-long-context": { inputPer1K: 0.06, cachedInputPer1K: 0, outputPer1K: 0.27 },
-  // GPT-5.6
-  "gpt-5.6-sol": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, cacheCreationPer1K: 0.00625, outputPer1K: 0.03 },
+  // GPT-5.6 (Sol is on promotional pricing through at least 2026-11-21; OpenAI
+  // has not published the rate after that)
+  "gpt-5.6-sol": { inputPer1K: 0.004, cachedInputPer1K: 0.0004, cacheCreationPer1K: 0.005, outputPer1K: 0.02 },
+  "gpt-5.6-sol-long-context": { inputPer1K: 0.008, cachedInputPer1K: 0.0008, cacheCreationPer1K: 0.01, outputPer1K: 0.03 },
   "gpt-5.6-terra": { inputPer1K: 0.002, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.0025, outputPer1K: 0.012 },
+  "gpt-5.6-terra-long-context": { inputPer1K: 0.004, cachedInputPer1K: 0.0004, cacheCreationPer1K: 0.005, outputPer1K: 0.018 },
   "gpt-5.6-luna": { inputPer1K: 0.0002, cachedInputPer1K: 0.00002, cacheCreationPer1K: 0.00025, outputPer1K: 0.0012 },
+  "gpt-5.6-luna-long-context": { inputPer1K: 0.0004, cachedInputPer1K: 0.00004, cacheCreationPer1K: 0.0005, outputPer1K: 0.0018 },
   // GPT-6 (long-context: prompts over 272K tokens bill input/cache at 2x and
   // output at 1.5x for the whole request)
   "gpt-6-astra": { inputPer1K: 0.01, cachedInputPer1K: 0.001, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
   "gpt-6-astra-long-context": { inputPer1K: 0.02, cachedInputPer1K: 0.002, cacheCreationPer1K: 0.025, outputPer1K: 0.075 },
+  "gpt-6-sol": { inputPer1K: 0.002, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.0025, outputPer1K: 0.01 },
+  "gpt-6-sol-long-context": { inputPer1K: 0.004, cachedInputPer1K: 0.0004, cacheCreationPer1K: 0.005, outputPer1K: 0.015 },
+  "gpt-6-luna": { inputPer1K: 0.0001, cachedInputPer1K: 0.00001, cacheCreationPer1K: 0.000125, outputPer1K: 0.0005 },
+  "gpt-6-luna-long-context": { inputPer1K: 0.0002, cachedInputPer1K: 0.00002, cacheCreationPer1K: 0.00025, outputPer1K: 0.00075 },
   // GPT-4 / o-series
   "gpt-4.1": { inputPer1K: 0.002, cachedInputPer1K: 0.0005, outputPer1K: 0.008 },
   "gpt-4.1-mini": { inputPer1K: 0.0004, cachedInputPer1K: 0.0001, outputPer1K: 0.0016 },
@@ -72,6 +80,9 @@ export const DEFAULT_PRICING: PricingTable = {
   "codex-mini-latest": { inputPer1K: 0.0015, cachedInputPer1K: 0.000375, outputPer1K: 0.006 },
   "codex-auto-review": { inputPer1K: 0.0025, cachedInputPer1K: 0.00025, outputPer1K: 0.015 },
   // Claude (cacheCreationPer1K uses Anthropic's 5m cache write price)
+  // Opus 5.5 reads cache at 0.05x input ($0.20/MTok) instead of the usual 0.1x.
+  "claude-opus-5.5": { inputPer1K: 0.004, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.005, outputPer1K: 0.02 },
+  "claude-opus-5-5": { inputPer1K: 0.004, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.005, outputPer1K: 0.02 },
   "claude-opus-5": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, cacheCreationPer1K: 0.00625, outputPer1K: 0.025 },
   "claude-opus-4.8": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, cacheCreationPer1K: 0.00625, outputPer1K: 0.025 },
   "claude-opus-4-8": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, cacheCreationPer1K: 0.00625, outputPer1K: 0.025 },
@@ -90,13 +101,11 @@ export const DEFAULT_PRICING: PricingTable = {
   "claude-fable-5.1": { inputPer1K: 0.01, cachedInputPer1K: 0.00025, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
   "claude-fable-5-1": { inputPer1K: 0.01, cachedInputPer1K: 0.00025, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
   "claude-fable-5": { inputPer1K: 0.01, cachedInputPer1K: 0.001, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
-  // Mythos 5.1 (Project Glasswing) matches Fable 5.1 on every published rate.
-  // Whether it shares Fable 5.1's cheaper cache reads was not settled at launch,
-  // so cache hits are priced at the usual 0.1x: guessing the discount would
-  // under-report a real bill, which is the wrong way round for a cost tracker.
-  "claude-mythos-5.1": { inputPer1K: 0.01, cachedInputPer1K: 0.001, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
-  "claude-mythos-5-1": { inputPer1K: 0.01, cachedInputPer1K: 0.001, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
-  "claude-sonnet-5": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
+  // Mythos 5.1 (Project Glasswing) matches Fable 5.1 on every rate, including
+  // the 0.025x cache reads.
+  "claude-mythos-5.1": { inputPer1K: 0.01, cachedInputPer1K: 0.00025, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
+  "claude-mythos-5-1": { inputPer1K: 0.01, cachedInputPer1K: 0.00025, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
+  "claude-sonnet-5": { inputPer1K: 0.002, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.0025, outputPer1K: 0.01 },
   "claude-sonnet-4.6": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
   "claude-sonnet-4-6": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
   "claude-sonnet-4.5": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },

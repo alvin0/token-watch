@@ -2,7 +2,7 @@
   "name": "token-watch",
   "displayName": "Token Watch",
   "description": "Track AI coding token usage and cost across Codex and Claude sessions, in a sidebar dashboard and the status bar.",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "publisher": "alvin0-dinhai",
   "license": "MIT",
   "repository": {
@@ -216,33 +216,33 @@
     "verify": "npm run check-types && npm run lint && npm run test:unit && npm run test:integration && npm audit --omit=dev --audit-level=high"
   },
   "dependencies": {
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
-    "recharts": "2.15.0",
-    "sql.js": "1.11.0",
-    "zustand": "5.0.3"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.15.4",
+    "sql.js": "^1.14.2",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
-    "@types/mocha": "^10.0.7",
-    "@types/node": "^20.14.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.19.43",
     "@types/react": "18.3.3",
     "@types/react-dom": "18.3.0",
     "@types/sql.js": "^1.4.11",
     "@types/vscode": "1.90.0",
     "@vscode/test-cli": "^0.0.9",
     "@vscode/test-electron": "^3.1.0",
-    "@vscode/vsce": "^3.9.2",
-    "autoprefixer": "^10.5.4",
+    "@vscode/vsce": "^4.0.0",
+    "autoprefixer": "^10.6.1",
     "esbuild": "^0.25.12",
     "eslint": "^9.39.5",
     "fast-check": "4.8.0",
     "mocha": "^11.8.0",
     "npm-run-all": "^4.1.5",
-    "postcss": "^8.5.26",
+    "postcss": "^8.5.28",
     "postcss-cli": "^11.0.1",
     "tailwindcss": "3.4.4",
-    "typescript": "^5.5.0",
-    "typescript-eslint": "^8.68.0"
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.1"
   }
 }

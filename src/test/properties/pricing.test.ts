@@ -71,8 +71,16 @@ suite("PricingEngine property tests", () => {
       ["gpt-5.5-long-context", { inputPer1K: 0.01, cachedInputPer1K: 0.001, outputPer1K: 0.045 }],
       ["gpt-5.5-pro", { inputPer1K: 0.03, cachedInputPer1K: 0, outputPer1K: 0.18 }],
       ["gpt-5.5-pro-long-context", { inputPer1K: 0.06, cachedInputPer1K: 0, outputPer1K: 0.27 }],
+      ["gpt-5.6-sol", { inputPer1K: 0.004, cachedInputPer1K: 0.0004, cacheCreationPer1K: 0.005, outputPer1K: 0.02 }],
+      ["gpt-5.6-sol-long-context", { inputPer1K: 0.008, cachedInputPer1K: 0.0008, cacheCreationPer1K: 0.01, outputPer1K: 0.03 }],
+      ["gpt-5.6-terra-long-context", { inputPer1K: 0.004, cachedInputPer1K: 0.0004, cacheCreationPer1K: 0.005, outputPer1K: 0.018 }],
+      ["gpt-5.6-luna-long-context", { inputPer1K: 0.0004, cachedInputPer1K: 0.00004, cacheCreationPer1K: 0.0005, outputPer1K: 0.0018 }],
       ["gpt-5.6-terra", { inputPer1K: 0.002, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.0025, outputPer1K: 0.012 }],
       ["gpt-5.6-luna", { inputPer1K: 0.0002, cachedInputPer1K: 0.00002, cacheCreationPer1K: 0.00025, outputPer1K: 0.0012 }],
+      ["gpt-6-sol", { inputPer1K: 0.002, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.0025, outputPer1K: 0.01 }],
+      ["gpt-6-sol-long-context", { inputPer1K: 0.004, cachedInputPer1K: 0.0004, cacheCreationPer1K: 0.005, outputPer1K: 0.015 }],
+      ["gpt-6-luna", { inputPer1K: 0.0001, cachedInputPer1K: 0.00001, cacheCreationPer1K: 0.000125, outputPer1K: 0.0005 }],
+      ["gpt-6-luna-long-context", { inputPer1K: 0.0002, cachedInputPer1K: 0.00002, cacheCreationPer1K: 0.00025, outputPer1K: 0.00075 }],
       ["gpt-4.1", { inputPer1K: 0.002, cachedInputPer1K: 0.0005, outputPer1K: 0.008 }],
       ["gpt-4.1-mini", { inputPer1K: 0.0004, cachedInputPer1K: 0.0001, outputPer1K: 0.0016 }],
       ["gpt-4.1-nano", { inputPer1K: 0.0001, cachedInputPer1K: 0.000025, outputPer1K: 0.0004 }],
@@ -87,6 +95,12 @@ suite("PricingEngine property tests", () => {
   });
 
   test("Bundled Claude pricing matches current Anthropic MTok rates", () => {
+    assert.deepStrictEqual(DEFAULT_PRICING["claude-opus-5.5"], {
+      inputPer1K: 0.004,
+      cachedInputPer1K: 0.0002,
+      cacheCreationPer1K: 0.005,
+      outputPer1K: 0.02,
+    });
     assert.deepStrictEqual(DEFAULT_PRICING["claude-opus-5"], {
       inputPer1K: 0.005,
       cachedInputPer1K: 0.0005,
@@ -139,12 +153,9 @@ suite("PricingEngine property tests", () => {
       cacheCreationPer1K: 0.0125,
       outputPer1K: 0.05,
     });
-    // Mythos 5.1 matches Fable 5.1 except on cache reads, which were not
-    // published as discounted; pricing them at the usual 0.1x keeps a real bill
-    // from being under-reported.
     assert.deepStrictEqual(DEFAULT_PRICING["claude-mythos-5.1"], {
       inputPer1K: 0.01,
-      cachedInputPer1K: 0.001,
+      cachedInputPer1K: 0.00025,
       cacheCreationPer1K: 0.0125,
       outputPer1K: 0.05,
     });
@@ -152,6 +163,12 @@ suite("PricingEngine property tests", () => {
       DEFAULT_PRICING["claude-mythos-5-1"],
       DEFAULT_PRICING["claude-mythos-5.1"],
     );
+    assert.deepStrictEqual(DEFAULT_PRICING["claude-sonnet-5"], {
+      inputPer1K: 0.002,
+      cachedInputPer1K: 0.0002,
+      cacheCreationPer1K: 0.0025,
+      outputPer1K: 0.01,
+    });
     assert.deepStrictEqual(DEFAULT_PRICING["claude-sonnet-4.6"], {
       inputPer1K: 0.003,
       cachedInputPer1K: 0.0003,
