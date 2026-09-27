@@ -13,6 +13,7 @@ import {
   resolveClaudeCredentialsPath,
 } from "../../provider/claude/index.js";
 import { refreshLockPath } from "../../provider/credentialRefreshLock.js";
+import { readSharedUsage, sharedUsagePath, writeSharedUsage } from "../../provider/sharedUsageCache.js";
 
 /** What a 0.5 random lands on for this provider. */
 const { minMs, maxMs } = usageRetryBounds("claude");
@@ -81,7 +82,7 @@ suite("Claude provider connection", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
       return new Response(JSON.stringify({ five_hour: { utilization: 10 } }), { status: 200 });
     };
-    const options = { credentialsFile, platform: "linux" as const, fetch: fetchUsage, now: () => now, random: () => 0.5 };
+    const options = { credentialsFile, platform: "linux" as const, fetch: fetchUsage, now: () => now, random: () => 0.5, refreshLock: { dir: tmpDir } };
 
     const [first, second] = await Promise.all([
       new ClaudeConnection(options).usageInfo(),
@@ -96,6 +97,217 @@ suite("Claude provider connection", () => {
       cachedAtUtc: now,
       retryAtUtc: now + midTtl,
     });
+  });
+
+  test("uses a response another window fetched instead of fetching again", async () => {
+    const credentialsFile = writeCredentials(tmpDir, Date.now() + 60_000);
+    const now = 1_000_000;
+    writeSharedUsage(sharedUsagePath(usageKey(credentialsFile), tmpDir), {
+      writtenAt: now - 1_000,
+      value: { five_hour: { utilization: 42 } },
+      cachedAt: now - 1_000,
+      expiresAt: now + 60_000,
+    });
+    let callCount = 0;
+    const connection = new ClaudeConnection({
+      credentialsFile,
+      platform: "linux",
+      refreshLock: { dir: tmpDir },
+      now: () => now,
+      fetch: async () => {
+        callCount += 1;
+        return new Response(JSON.stringify({ five_hour: { utilization: 10 } }), { status: 200 });
+      },
+    });
+
+    assert.deepStrictEqual(await connection.usageInfo(), { five_hour: { utilization: 42 } });
+    assert.strictEqual(callCount, 0);
+    assert.deepStrictEqual(connection.usageCacheInfo(), { cachedAtUtc: now - 1_000, retryAtUtc: now + 60_000 });
+  });
+
+  test("backs off on a rate limit another window was handed", async () => {
+    const credentialsFile = writeCredentials(tmpDir, Date.now() + 60_000);
+    const now = 1_000_000;
+    writeSharedUsage(sharedUsagePath(usageKey(credentialsFile), tmpDir), {
+      writtenAt: now - 1_000,
+      retryAt: now + 180_000,
+      refusals: 1,
+    });
+    let callCount = 0;
+    const connection = new ClaudeConnection({
+      credentialsFile,
+      platform: "linux",
+      refreshLock: { dir: tmpDir },
+      now: () => now,
+      fetch: async () => {
+        callCount += 1;
+        return new Response(JSON.stringify({}), { status: 200 });
+      },
+    });
+
+    await assert.rejects(
+      connection.usageInfo(),
+      (error: unknown) => error instanceof ClaudeUsageRateLimitError && error.retryAt === now + 180_000,
+    );
+    assert.strictEqual(callCount, 0);
+  });
+
+  test("shares its own response with other windows", async () => {
+    const credentialsFile = writeCredentials(tmpDir, Date.now() + 60_000);
+    const now = 1_000_000;
+    const connection = new ClaudeConnection({
+      credentialsFile,
+      platform: "linux",
+      refreshLock: { dir: tmpDir },
+      now: () => now,
+      random: () => 0.5,
+      fetch: async () => new Response(JSON.stringify({ five_hour: { utilization: 10 } }), { status: 200 }),
+    });
+
+    await connection.usageInfo();
+
+    assert.deepStrictEqual(readSharedUsage(sharedUsagePath(usageKey(credentialsFile), tmpDir)), {
+      writtenAt: now,
+      value: { five_hour: { utilization: 10 } },
+      cachedAt: now,
+      expiresAt: now + midTtl,
+    });
+  });
+
+  test("a forced refresh takes a newer response another window fetched", async () => {
+    const credentialsFile = writeCredentials(tmpDir, Date.now() + 60_000);
+    let now = 1_000_000;
+    let callCount = 0;
+    const connection = new ClaudeConnection({
+      credentialsFile,
+      platform: "linux",
+      refreshLock: { dir: tmpDir },
+      now: () => now,
+      random: () => 0.5,
+      fetch: async () => {
+        callCount += 1;
+        return new Response(JSON.stringify({ five_hour: { utilization: 10 } }), { status: 200 });
+      },
+    });
+    await connection.usageInfo();
+    // This window's copy goes stale, so its Retry button is enabled...
+    now += midTtl + 1;
+    // ...and meanwhile another window fetched.
+    writeSharedUsage(sharedUsagePath(usageKey(credentialsFile), tmpDir), {
+      writtenAt: now - 1_000,
+      value: { five_hour: { utilization: 99 } },
+      cachedAt: now - 1_000,
+      expiresAt: now + 60_000,
+    });
+
+    assert.deepStrictEqual(await connection.usageInfo({ force: true }), { five_hour: { utilization: 99 } });
+    assert.strictEqual(callCount, 1);
+  });
+
+  test("a forced refresh still fetches when no other window has anything newer", async () => {
+    const credentialsFile = writeCredentials(tmpDir, Date.now() + 60_000);
+    const now = 1_000_000;
+    let callCount = 0;
+    const connection = new ClaudeConnection({
+      credentialsFile,
+      platform: "linux",
+      refreshLock: { dir: tmpDir },
+      now: () => now,
+      fetch: async () => {
+        callCount += 1;
+        return new Response(JSON.stringify({ five_hour: { utilization: callCount } }), { status: 200 });
+      },
+    });
+    await connection.usageInfo();
+
+    assert.deepStrictEqual(await connection.usageInfo({ force: true }), { five_hour: { utilization: 2 } });
+    assert.strictEqual(callCount, 2);
+  });
+
+  test("reports a response another window shares, ready to read without a request", async () => {
+    const credentialsFile = writeCredentials(tmpDir, Date.now() + 60_000);
+    let callCount = 0;
+    const connection = new ClaudeConnection({
+      credentialsFile,
+      platform: "linux",
+      refreshLock: { dir: tmpDir },
+      sharedUsagePollMs: 5,
+      fetch: async () => {
+        callCount += 1;
+        return new Response(JSON.stringify({}), { status: 200 });
+      },
+    });
+    let changes = 0;
+    const stop = connection.watchSharedUsage(() => { changes += 1; });
+    try {
+      const sharedAt = Date.now();
+      writeSharedUsage(sharedUsagePath(usageKey(credentialsFile), tmpDir), {
+        writtenAt: sharedAt,
+        value: { five_hour: { utilization: 55 } },
+        cachedAt: sharedAt,
+        expiresAt: sharedAt + 180_000,
+      });
+      await waitFor(() => changes > 0);
+
+      assert.strictEqual(changes, 1);
+      assert.deepStrictEqual(await connection.usageInfo(), { five_hour: { utilization: 55 } });
+      assert.strictEqual(callCount, 0);
+    } finally {
+      stop();
+    }
+  });
+
+  test("does not report its own shared response back to itself", async () => {
+    const credentialsFile = writeCredentials(tmpDir, Date.now() + 60_000);
+    const connection = new ClaudeConnection({
+      credentialsFile,
+      platform: "linux",
+      refreshLock: { dir: tmpDir },
+      sharedUsagePollMs: 5,
+      fetch: async () => new Response(JSON.stringify({ five_hour: { utilization: 10 } }), { status: 200 }),
+    });
+    let changes = 0;
+    const stop = connection.watchSharedUsage(() => { changes += 1; });
+    try {
+      await connection.usageInfo();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      assert.strictEqual(changes, 0);
+    } finally {
+      stop();
+    }
+  });
+
+  test("waits for the window already fetching and reuses its response", async () => {
+    const credentialsFile = writeCredentials(tmpDir, Date.now() + 60_000);
+    const key = usageKey(credentialsFile);
+    const lockPath = refreshLockPath(`usage:${key}`, tmpDir);
+    writeFileSync(lockPath, "");
+    let callCount = 0;
+    const connection = new ClaudeConnection({
+      credentialsFile,
+      platform: "linux",
+      refreshLock: { dir: tmpDir, pollMs: 5, waitMs: 2_000 },
+      fetch: async () => {
+        callCount += 1;
+        return new Response(JSON.stringify({ five_hour: { utilization: 10 } }), { status: 200 });
+      },
+    });
+
+    const pending = connection.usageInfo();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // The other window finishes: it publishes its response and lets go of the lock.
+    const finishedAt = Date.now();
+    writeSharedUsage(sharedUsagePath(key, tmpDir), {
+      writtenAt: finishedAt,
+      value: { five_hour: { utilization: 77 } },
+      cachedAt: finishedAt,
+      expiresAt: finishedAt + 180_000,
+    });
+    rmSync(lockPath);
+
+    assert.deepStrictEqual(await pending, { five_hour: { utilization: 77 } });
+    assert.strictEqual(callCount, 0);
   });
 
   test("honors Retry-After and skips requests during the rate-limit cooldown", async () => {
@@ -350,6 +562,21 @@ suite("Claude provider connection", () => {
     });
   });
 });
+
+async function waitFor(condition: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) {
+      throw new Error("condition not met in time");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/** The provider's cache key for a file-backed account on the default endpoint. */
+function usageKey(credentialsFile: string): string {
+  return `file:${credentialsFile}:${CLAUDE_USAGE_ENDPOINT}`;
+}
 
 function writeCredentials(dir: string, expiresAt: number): string {
   const file = join(dir, ".credentials.json");

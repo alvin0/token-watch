@@ -34,6 +34,7 @@ suite("Usage limit reset refresh", () => {
     const claude = {
       usageInfo: async () => ({}),
       usageCacheInfo: () => ({}),
+      watchSharedUsage: () => () => undefined,
     } as unknown as ClaudeConnection;
     const accounts: UsageAccountLookups = {
       codexAuthMode: async () => "chatgpt",

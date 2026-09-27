@@ -102,6 +102,7 @@ suite("Usage status service gating", () => {
       claude: {
         usageInfo: async () => ({}),
         usageCacheInfo: () => ({}),
+        watchSharedUsage: () => () => undefined,
       } as unknown as ClaudeConnection,
       accounts,
     });

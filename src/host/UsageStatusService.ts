@@ -128,6 +128,7 @@ export class UsageStatusService implements vscode.Disposable {
   private state: UsageStatusState = { codexUnavailable: false, claudeUnavailable: false };
   private disposed = false;
   private readonly runtime: Record<UsageProvider, ProviderRuntime>;
+  private stopWatchingSharedClaude: (() => void) | undefined;
 
   /**
    * `deps` exists so a test can watch what each provider is actually asked for.
@@ -185,9 +186,17 @@ export class UsageStatusService implements vscode.Disposable {
     if (!this.isActive()) {
       this.runtime.codex.timer.clear();
       this.runtime.claude.timer.clear();
+      this.stopWatchingSharedClaude?.();
+      this.stopWatchingSharedClaude = undefined;
       return;
     }
     if (!wasActive) {
+      // Another window's Claude response shows here as soon as it lands. The
+      // refresh is forced only past the spacing floor: the cache already holds
+      // what was shared, so it is answered without a request.
+      this.stopWatchingSharedClaude ??= this.claudeConnection.watchSharedUsage(() => {
+        void this.refresh("claude", { force: true });
+      });
       // Deliberately not forced. The first time round there is nothing cached
       // and both refresh anyway; after that, reopening the panel is not a reason
       // to ask a provider again inside its own spacing. Forcing here meant
@@ -266,6 +275,8 @@ export class UsageStatusService implements vscode.Disposable {
     this.activeConsumers.clear();
     this.runtime.codex.timer.clear();
     this.runtime.claude.timer.clear();
+    this.stopWatchingSharedClaude?.();
+    this.stopWatchingSharedClaude = undefined;
     this._onDidChange.dispose();
   }
 

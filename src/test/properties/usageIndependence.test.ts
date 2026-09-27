@@ -26,6 +26,7 @@ suite("Codex and Claude refresh independently", () => {
     const claude = {
       usageInfo: async () => { calls.claude += 1; return {}; },
       usageCacheInfo: () => ({}),
+      watchSharedUsage: () => () => undefined,
     } as unknown as ClaudeConnection;
     return { calls, codex, claude };
   }
