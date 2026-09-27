@@ -21,6 +21,7 @@ import { scan, scanChanged } from "./discovery.js";
 import { hasIngestedChanges, ingestAll } from "./ingest.js";
 import { FileQuarantine } from "./quarantine.js";
 import { WriterLease } from "./writerLease.js";
+import { watchOwnerSnapshot } from "./ownerSnapshotWatch.js";
 import { buildDiagnosticsReport } from "./diagnostics.js";
 import { dedupMigrationCanRebuild, storedFilesCanRebuild } from "./migration.js";
 import { localTimezoneIdentity, timezoneIdentityChanged } from "../shared/time.js";
@@ -67,6 +68,7 @@ const quarantine = new FileQuarantine();
  * the owner's snapshot, instead of racing it and discarding their own work.
  */
 let writerLease: WriterLease | undefined;
+let stopWatchingOwnerSnapshot: (() => void) | undefined;
 let pricingAudit: PricingMergeAudit = {
   overriddenBundledModels: [],
   ignoredFallbackOverride: false,
@@ -846,6 +848,16 @@ async function handleInit(req: Extract<WorkerRequest, { type: "init" }>): Promis
   // good enough to draw in the meantime — so it happens after, and the panel is
   // told to refetch when it lands.
   post({ type: "ready", schema });
+  // A follower picks up each snapshot the owner flushes, not only the ones
+  // that happen to follow a log change it saw itself. Queued as a scan so the
+  // reload never lands mid-scan; a scan without the lease is exactly "reload
+  // the owner's snapshot", and one that finds the lease free takes it over.
+  stopWatchingOwnerSnapshot?.();
+  stopWatchingOwnerSnapshot = watchOwnerSnapshot(req.dbPath, () => {
+    if (!ownsDatabase()) {
+      enqueueScan({ type: "scanAndIngest", reason: "watch" });
+    }
+  });
   void finishInit({
     owner,
     timezoneIdentity,
