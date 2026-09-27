@@ -259,6 +259,25 @@ const en = {
   "pricing.duplicate": "This model ID is already listed.",
   "pricing.invalidRate": "Input and output prices are required and all prices must be 0 or greater.",
   "pricing.saveError": "Unable to save custom pricing.",
+  "layout.open": "Customize layout",
+  "layout.title": "Customize the {{tab}} tab",
+  "layout.description": "Show, hide and reorder this tab's cards. Each tab keeps its own layout; alerts always stay on top.",
+  "layout.moveUp": "Move {{card}} up",
+  "layout.moveDown": "Move {{card}} down",
+  "layout.reset": "Reset to default",
+  "layout.close": "Close layout settings",
+  "layout.saveError": "Unable to save the layout.",
+  "layout.card.periodCost": "Period cost",
+  "layout.card.tokenUsage": "Token usage",
+  "layout.card.topModels": "Top models",
+  "layout.card.codexUsage": "Codex usage",
+  "layout.card.claudeUsage": "Claude Code usage",
+  "layout.card.toolCalls": "Tool calls",
+  "layout.card.usageTrend": "Hourly usage trend",
+  "layout.card.insights": "Today insights",
+  "layout.card.trendChart": "Usage trend",
+  "layout.card.dayTrend": "Hourly detail by day",
+  "layout.card.recentPeriods": "Recent periods",
 } as const;
 
 export type TranslationKey = keyof typeof en;
@@ -285,6 +304,7 @@ const vi: Dictionary = {
   "recent.title": "Các kỳ gần đây", "recent.date": "Ngày", "recent.last7Days": "7 ngày qua", "recent.last7Weeks": "7 tuần qua", "recent.last6Months": "6 tháng qua", "recent.last2Years": "2 năm qua",
   "alerts.description": "Nhận cảnh báo khi chi phí đạt ngân sách USD của bạn.", "alerts.close": "Đóng cảnh báo ngưỡng chi phí", "alerts.explanation": "Mỗi ngân sách cảnh báo ở mức 80%, 95% và 100%. Các mức đã xác nhận sẽ đặt lại khi sang kỳ mới.", "alerts.loading": "Đang tải cài đặt…", "alerts.empty": "Chưa cấu hình cảnh báo chi phí.", "alerts.item": "Cảnh báo {{number}}", "alerts.delete": "Xóa cảnh báo {{number}}", "alerts.period": "Chu kỳ", "alerts.source": "Nguồn", "alerts.sourceAll": "Tất cả", "alerts.sourceCodex": "Codex", "alerts.sourceClaude": "Claude Code", "alerts.daily": "Hàng ngày", "alerts.weekly": "Hàng tuần", "alerts.monthly": "Hàng tháng", "alerts.budget": "Ngân sách (USD)", "alerts.add": "+ Thêm cảnh báo", "alerts.invalidBudget": "Nhập ngân sách lớn hơn $0.", "alerts.duplicate": "Nguồn, chu kỳ và ngân sách này đã tồn tại.", "alerts.saveError": "Không thể lưu cảnh báo chi phí.", "alerts.notification": "Token Watch: {{source}} · Chi phí {{period}} đã đạt {{level}}% — {{cost}} / {{budget}}.", "alerts.unknownPrice": " Một số lượt sử dụng chưa có giá.",
   "pricing.title": "Giá model tùy chỉnh", "pricing.description": "Thêm hoặc ghi đè giá model trong Token Watch.", "pricing.close": "Đóng bảng giá model tùy chỉnh", "pricing.explanation": "Giá tính bằng USD trên 1M token. Chỉ các mục tùy chỉnh được hiển thị; ID trùng model tích hợp sẽ ghi đè giá mặc định.", "pricing.loading": "Đang tải bảng giá…", "pricing.empty": "Chưa cấu hình giá model tùy chỉnh.", "pricing.modelId": "ID model", "pricing.modelPlaceholder": "custom-model-id", "pricing.input": "Đầu vào / 1M", "pricing.cacheRead": "Đọc cache / 1M", "pricing.cacheWrite": "Ghi cache / 1M", "pricing.output": "Đầu ra / 1M", "pricing.add": "+ Thêm model tùy chỉnh", "pricing.delete": "Xóa model tùy chỉnh {{number}}", "pricing.invalidModel": "Nhập ID model hợp lệ.", "pricing.duplicate": "ID model này đã có trong danh sách.", "pricing.invalidRate": "Bắt buộc nhập giá đầu vào và đầu ra; mọi mức giá phải từ 0 trở lên.", "pricing.saveError": "Không thể lưu bảng giá tùy chỉnh.",
+  "layout.open": "Tùy chỉnh bố cục", "layout.title": "Tùy chỉnh tab {{tab}}", "layout.description": "Ẩn, hiện và sắp xếp các card của tab này. Mỗi tab có bố cục riêng; cảnh báo luôn ở trên cùng.", "layout.moveUp": "Đưa {{card}} lên", "layout.moveDown": "Đưa {{card}} xuống", "layout.reset": "Khôi phục mặc định", "layout.close": "Đóng tùy chỉnh bố cục", "layout.saveError": "Không thể lưu bố cục.", "layout.card.periodCost": "Chi phí kỳ", "layout.card.tokenUsage": "Sử dụng token", "layout.card.topModels": "Mô hình hàng đầu", "layout.card.codexUsage": "Mức dùng Codex", "layout.card.claudeUsage": "Mức dùng Claude Code", "layout.card.toolCalls": "Lệnh gọi công cụ", "layout.card.usageTrend": "Xu hướng theo giờ", "layout.card.insights": "Thông tin hôm nay", "layout.card.trendChart": "Xu hướng sử dụng", "layout.card.dayTrend": "Chi tiết theo giờ trong ngày", "layout.card.recentPeriods": "Các kỳ gần đây",
 };
 
 const ja: Dictionary = {
@@ -308,6 +328,7 @@ const ja: Dictionary = {
   "recent.title": "最近の期間", "recent.date": "日付", "recent.last7Days": "過去7日", "recent.last7Weeks": "過去7週", "recent.last6Months": "過去6か月", "recent.last2Years": "過去2年",
   "alerts.description": "支出が USD 予算に達したときに警告します。", "alerts.close": "コストしきい値アラートを閉じる", "alerts.explanation": "各予算は 80%、95%、100% で警告します。確認済みレベルは新しい期間にリセットされます。", "alerts.loading": "設定を読み込み中…", "alerts.empty": "コストアラートは未設定です。", "alerts.item": "アラート {{number}}", "alerts.delete": "アラート {{number}} を削除", "alerts.period": "期間", "alerts.source": "ソース", "alerts.sourceAll": "すべて", "alerts.sourceCodex": "Codex", "alerts.sourceClaude": "Claude Code", "alerts.daily": "毎日", "alerts.weekly": "毎週", "alerts.monthly": "毎月", "alerts.budget": "予算 (USD)", "alerts.add": "+ アラートを追加", "alerts.invalidBudget": "$0 より大きい予算を入力してください。", "alerts.duplicate": "同じソース、期間、予算が既にあります。", "alerts.saveError": "コストアラートを保存できません。", "alerts.notification": "Token Watch: {{source}} · {{period}}コストが {{level}}% に到達 — {{cost}} / {{budget}}。", "alerts.unknownPrice": " 価格未設定の使用があります。",
   "pricing.title": "カスタムモデル料金", "pricing.description": "Token Watch のモデル料金を追加または上書きします。", "pricing.close": "カスタムモデル料金を閉じる", "pricing.explanation": "料金は 1M トークンあたりの USD です。カスタム項目のみ表示され、組み込みモデルと同じ ID は標準料金を上書きします。", "pricing.loading": "料金を読み込み中…", "pricing.empty": "カスタムモデル料金は未設定です。", "pricing.modelId": "モデル ID", "pricing.modelPlaceholder": "custom-model-id", "pricing.input": "入力 / 1M", "pricing.cacheRead": "キャッシュ読取 / 1M", "pricing.cacheWrite": "キャッシュ書込 / 1M", "pricing.output": "出力 / 1M", "pricing.add": "+ カスタムモデルを追加", "pricing.delete": "カスタムモデル {{number}} を削除", "pricing.invalidModel": "有効なモデル ID を入力してください。", "pricing.duplicate": "このモデル ID は既にあります。", "pricing.invalidRate": "入力と出力の料金は必須で、すべての料金は 0 以上にしてください。", "pricing.saveError": "カスタム料金を保存できません。",
+  "layout.open": "レイアウトをカスタマイズ", "layout.title": "{{tab}} タブをカスタマイズ", "layout.description": "このタブのカードの表示と並び順を変更します。タブごとに別のレイアウトで、アラートは常に先頭に表示されます。", "layout.moveUp": "{{card}} を上へ", "layout.moveDown": "{{card}} を下へ", "layout.reset": "既定に戻す", "layout.close": "レイアウト設定を閉じる", "layout.saveError": "レイアウトを保存できません。", "layout.card.periodCost": "期間のコスト", "layout.card.tokenUsage": "トークン使用量", "layout.card.topModels": "上位モデル", "layout.card.codexUsage": "Codex 使用量", "layout.card.claudeUsage": "Claude Code 使用量", "layout.card.toolCalls": "ツール呼び出し", "layout.card.usageTrend": "時間別の推移", "layout.card.insights": "今日の分析", "layout.card.trendChart": "使用量の推移", "layout.card.dayTrend": "日別の時間推移", "layout.card.recentPeriods": "最近の期間",
 };
 
 const dictionaries: Record<AppLanguage, Dictionary> = { en, vi, ja };

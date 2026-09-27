@@ -11,6 +11,7 @@ import type { LimitResetReminder } from "./host/LimitResetReminder";
 import { effectivePricingOverrides, getConfig } from "./host/config";
 import type { PricingTable } from "./shared/types";
 import { validatePricingTableStrict } from "./shared/pricingValidation";
+import { resolveCardLayout, showsUsageCards, type CardLayout } from "./shared/cardLayout";
 import type {
   WebviewRequest,
   HostMessage,
@@ -39,6 +40,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     unmappedModels: [], malformedLineCount: 0, oversizedLineCount: 0, lostUsageLineCount: 0,
   };
   private latestWorkerHealth: CoordinatorHealthState;
+  private cardLayout: CardLayout = getConfig().layout.cards;
   private disposed = false;
 
   constructor(
@@ -99,7 +101,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     };
 
     webviewView.webview.html = this._getHtml(webviewView.webview);
-    this.usageStatus.setConsumerActive(CONSUMER_ID, webviewView.visible);
+    this.updateUsageConsumer();
 
     // WebView → host message relay
     webviewView.webview.onDidReceiveMessage(
@@ -115,7 +117,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
         if (this.view !== webviewView) {
           return;
         }
-        this.usageStatus.setConsumerActive(CONSUMER_ID, webviewView.visible);
+        this.updateUsageConsumer();
       }),
       webviewView.onDidDispose(() => {
         if (this.view === webviewView) {
@@ -144,6 +146,25 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
   pushCurrency(currency: DisplayCurrencyConfig): void {
     this.currency = currency;
     this.pushStatus();
+  }
+
+  /** Push the card layout to the WebView (called on config change, from any window). */
+  pushCardLayout(layout: CardLayout): void {
+    this.cardLayout = layout;
+    this.updateUsageConsumer();
+    this.postMessage({ type: "cardLayout", layout });
+  }
+
+  /**
+   * The panel asks for provider usage only while it can show it: visible, with
+   * at least one usage card left on the Today tab. The status bar is a consumer
+   * of its own, so hiding the cards here does not stop what it shows.
+   */
+  private updateUsageConsumer(): void {
+    this.usageStatus.setConsumerActive(
+      CONSUMER_ID,
+      this.view?.visible === true && showsUsageCards(this.cardLayout),
+    );
   }
 
   /** Push updated analytics thresholds to the WebView (called on config change). */
@@ -185,6 +206,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
         this.pushCostAlertSettings();
         this.pushPricingSettings();
         this.pushLanguage();
+        this.postMessage({ type: "cardLayout", layout: this.cardLayout });
         void this.usageStatus.refresh("codex");
         void this.usageStatus.refresh("claude");
         break;
@@ -264,6 +286,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
           },
         );
         break;
+      case "saveCardLayout":
+        if (typeof message.requestId !== "string" || !message.requestId) {
+          console.warn("[TokenWatch] ignored a card layout with an invalid request ID");
+          break;
+        }
+        this.saveCardLayout(message.layout).then(
+          (layout) => this.postMessage({ type: "cardLayoutSaved", requestId: message.requestId, layout }),
+          (error) => {
+            const errorMessage = error instanceof Error ? error.message : "Unable to save the layout.";
+            this.postMessage({ type: "cardLayoutError", requestId: message.requestId, message: errorMessage });
+          },
+        );
+        break;
       case "setLanguage":
         this.language.setLanguage(message.language).then(
           (language) => this.postMessage({ type: "language", language }),
@@ -295,6 +330,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     );
     await this.coordinator.updatePricing(effectivePricingOverrides(validated, this.globalStoragePath));
     return validated;
+  }
+
+  private async saveCardLayout(layout: unknown): Promise<CardLayout> {
+    const resolved = resolveCardLayout(layout);
+    // Global, like pricing: a layout is how this person reads the panel, not a
+    // property of whichever folder happens to be open.
+    await vscode.workspace
+      .getConfiguration("tokenWatch")
+      .update("layout.cards", resolved, vscode.ConfigurationTarget.Global);
+    return resolved;
   }
 
   private pushLanguage(): void {

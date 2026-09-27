@@ -52,8 +52,14 @@ export function isValidHostMessage(value: unknown): value is HostMessage {
     case "pricingSettingsSaved":
     case "limitResetConsumed":
       return typeof value.requestId === "string";
+    case "cardLayoutSaved":
+      return typeof value.requestId === "string" && isObject(value.layout);
+    case "cardLayout":
+      // Shape only; the store resolves it card by card.
+      return isObject(value.layout);
     case "costAlertSettingsError":
     case "pricingSettingsError":
+    case "cardLayoutError":
     case "limitResetError":
       return typeof value.requestId === "string" && typeof value.message === "string";
     case "pricingSettings":

@@ -62,7 +62,12 @@ const vscodeStub = {
   StatusBarAlignment: { Left: 1, Right: 2 },
   ViewColumn: { Active: -1, Beside: -2, One: 1 },
   Uri: {
-    file: (fsPath) => ({ fsPath, scheme: "file", path: fsPath, toString: () => fsPath }),
+    file: (fsPath) => {
+      const uri = { fsPath, scheme: "file", path: fsPath, toString: () => fsPath };
+      // Query and fragment changes do not matter to anything a unit test reads.
+      uri.with = () => uri;
+      return uri;
+    },
     joinPath: (base, ...parts) => vscodeStub.Uri.file([base.fsPath, ...parts].join("/")),
   },
   env: { language: "en" },

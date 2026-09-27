@@ -19,6 +19,7 @@ import {
   HeatmapCell,
 } from "./storeTypes";
 import type { AppLanguage } from "./i18n";
+import type { CardLayout } from "./cardLayout";
 
 /** A single analytics request describing a view + filters + range (Req 5.5, 8.4). */
 export interface AnalyticsQuery {
@@ -339,7 +340,8 @@ export type WebviewRequest =
   | { type: "openSetting"; key: string }
   | { type: "setLanguage"; language: AppLanguage }
   | { type: "savePricingSettings"; requestId: string; table: PricingTable }
-  | { type: "saveCostAlertSettings"; requestId: string; rules: CostAlertRule[] };
+  | { type: "saveCostAlertSettings"; requestId: string; rules: CostAlertRule[] }
+  | { type: "saveCardLayout"; requestId: string; layout: CardLayout };
 
 /** Host → WebView messages. */
 export type HostMessage =
@@ -356,6 +358,9 @@ export type HostMessage =
   | { type: "limitResetConsumed"; requestId: string }
   | { type: "limitResetError"; requestId: string; message: string }
   | { type: "language"; language: AppLanguage }
+  | { type: "cardLayout"; layout: CardLayout }
+  | { type: "cardLayoutSaved"; requestId: string; layout: CardLayout }
+  | { type: "cardLayoutError"; requestId: string; message: string }
   | {
       type: "status";
       freshness: FreshnessInfo;

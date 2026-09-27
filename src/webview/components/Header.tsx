@@ -2,12 +2,16 @@ import { useRef, useState } from "react";
 import { useStore, vscodeApi } from "../store";
 import { CostAlertSettingsDialog } from "./CostAlertSettingsDialog";
 import { PricingSettingsDialog } from "./PricingSettingsDialog";
+import { CardLayoutDialog } from "./CardLayoutDialog";
 import { useTranslation } from "../i18n";
 import type { AppLanguage } from "../../shared/i18n";
 
 export function Header() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pricingOpen, setPricingOpen] = useState(false);
+  const [layoutOpen, setLayoutOpen] = useState(false);
+  const layoutButtonRef = useRef<HTMLButtonElement>(null);
+  const granularity = useStore((state) => state.granularity);
   const alertButtonRef = useRef<HTMLButtonElement>(null);
   const pricingButtonRef = useRef<HTMLButtonElement>(null);
   const setLanguage = useStore((state) => state.setLanguage);
@@ -42,6 +46,20 @@ export function Header() {
             <option value="ja">JA</option>
           </select>
           <button
+            ref={layoutButtonRef}
+            type="button"
+            title={t("layout.open")}
+            aria-label={t("layout.open")}
+            aria-haspopup="dialog"
+            onClick={() => setLayoutOpen(true)}
+            className="tw-flex tw-h-6 tw-w-6 tw-cursor-pointer tw-items-center tw-justify-center tw-rounded tw-text-[var(--vscode-descriptionForeground)] hover:tw-bg-hover hover:tw-text-[var(--vscode-foreground)]"
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24" className="tw-h-3.5 tw-w-3.5 tw-fill-none tw-stroke-current" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="4" y="4" width="16" height="6" rx="1.5" />
+              <rect x="4" y="14" width="16" height="6" rx="1.5" />
+            </svg>
+          </button>
+          <button
             ref={pricingButtonRef}
             type="button"
             title={t("pricing.title")}
@@ -71,6 +89,10 @@ export function Header() {
         </div>
       </div>
       {settingsOpen && <CostAlertSettingsDialog onClose={closeSettings} />}
+      {layoutOpen && <CardLayoutDialog tab={granularity} onClose={() => {
+        setLayoutOpen(false);
+        requestAnimationFrame(() => layoutButtonRef.current?.focus());
+      }} />}
       {pricingOpen && <PricingSettingsDialog onClose={() => {
         setPricingOpen(false);
         requestAnimationFrame(() => pricingButtonRef.current?.focus());

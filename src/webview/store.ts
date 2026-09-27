@@ -17,6 +17,7 @@ import type {
 } from "../shared/protocol";
 import type { Source, Effort, PricingTable } from "../shared/types";
 import type { AppLanguage } from "../shared/i18n";
+import { resolveCardLayout, type CardLayout } from "../shared/cardLayout";
 import type { HourlyAggregate } from "../shared/storeTypes";
 import { queryRangeForPeriod, visibleRangeForPeriod } from "./lib/periodData";
 import type { Period } from "./lib/periodData";
@@ -117,6 +118,8 @@ export interface StatusSlice {
   pricingTable: PricingTable;
   pricingSettingsLoaded: boolean;
   language: AppLanguage;
+  /** Card order and visibility per period tab, as the host last reported it. */
+  cardLayout: CardLayout;
 }
 
 interface Actions {
@@ -130,6 +133,7 @@ interface Actions {
   clearDailyHourly: () => void;
   saveCostAlertRules: (rules: CostAlertRule[]) => Promise<void>;
   savePricingTable: (table: PricingTable) => Promise<void>;
+  saveCardLayout: (layout: CardLayout) => Promise<void>;
   /** Spend one Codex usage limit reset. Resolves once the quota has been re-read. */
   consumeLimitReset: (resetId: string) => Promise<void>;
   setLanguage: (language: AppLanguage) => void;
@@ -253,9 +257,11 @@ let dailyHourlyFilterGeneration = 0;
 let refreshQueued = false;
 let costAlertSaveCounter = 0;
 let pricingSaveCounter = 0;
+let cardLayoutSaveCounter = 0;
 let limitResetCounter = 0;
 const pendingCostAlertSaves = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 const pendingPricingSaves = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+const pendingCardLayoutSaves = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 const pendingLimitResets = new Map<string, { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 function nextId(): string {
   return `q-${++queryCounter}`;
@@ -324,6 +330,7 @@ export const useStore = create<Store>((set, get) => ({
   pricingTable: {},
   pricingSettingsLoaded: false,
   language: persisted.language ?? "en",
+  cardLayout: resolveCardLayout(undefined),
 
   // Actions
   setFilter(partial) {
@@ -555,6 +562,18 @@ export const useStore = create<Store>((set, get) => ({
     });
   },
 
+  saveCardLayout(layout) {
+    const requestId = `card-layout-save-${++cardLayoutSaveCounter}`;
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingCardLayoutSaves.delete(requestId);
+        reject(new Error("The extension host did not answer in time."));
+      }, REQUEST_TIMEOUT_MS);
+      pendingCardLayoutSaves.set(requestId, { resolve, reject, timer });
+      vscodeApi.postMessage({ type: "saveCardLayout", requestId, layout } satisfies WebviewRequest);
+    });
+  },
+
   consumeLimitReset(resetId) {
     const requestId = `limit-reset-${++limitResetCounter}`;
     return new Promise<void>((resolve, reject) => {
@@ -677,6 +696,24 @@ window.addEventListener("message", (event: MessageEvent<HostMessage>) => {
     case "pricingSettingsError": {
       const pending = pendingPricingSaves.get(msg.requestId);
       pendingPricingSaves.delete(msg.requestId);
+      if (pending) { clearTimeout(pending.timer); }
+      pending?.reject(new Error(msg.message));
+      break;
+    }
+    case "cardLayout":
+      useStore.setState({ cardLayout: resolveCardLayout(msg.layout) });
+      break;
+    case "cardLayoutSaved": {
+      useStore.setState({ cardLayout: resolveCardLayout(msg.layout) });
+      const pending = pendingCardLayoutSaves.get(msg.requestId);
+      pendingCardLayoutSaves.delete(msg.requestId);
+      if (pending) { clearTimeout(pending.timer); }
+      pending?.resolve();
+      break;
+    }
+    case "cardLayoutError": {
+      const pending = pendingCardLayoutSaves.get(msg.requestId);
+      pendingCardLayoutSaves.delete(msg.requestId);
       if (pending) { clearTimeout(pending.timer); }
       pending?.reject(new Error(msg.message));
       break;

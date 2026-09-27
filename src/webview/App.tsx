@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { useStore } from "./store";
 import { Header } from "./components/Header";
 import { PeriodTabs } from "./components/PeriodTabs";
@@ -19,6 +20,7 @@ import { LoadingState } from "./components/LoadingState";
 import { EmptyState } from "./components/EmptyState";
 import type { Period } from "./lib/periodData";
 import { useTranslation } from "./i18n";
+import type { CardId } from "../shared/cardLayout";
 
 export function App() {
   const progress = useStore((s) => s.progress);
@@ -31,6 +33,7 @@ export function App() {
   const freshness = useStore((s) => s.freshness);
   const { t } = useTranslation();
   const activeKey = useStore((s) => s.activeKey);
+  const cardLayout = useStore((s) => s.cardLayout);
   const hasData = Object.keys(results).length > 0;
   const isLoading = progress !== undefined && progress.partial;
   /**
@@ -62,19 +65,13 @@ export function App() {
         <PeriodTabs selected={granularity}
           onChange={(p) => setFilter({ granularity: p })} />
         <div className="tw-flex-1 tw-overflow-y-auto tw-px-3 tw-pb-3 tw-space-y-2.5">
+          {/* Always first, and not part of the customisable layout. */}
           <AttentionCard />
-          <CurrentPeriodCard />
-          <SummaryCard />
-          <TopModelsCard />
-          {granularity === "today" && activeSource !== "claude" && <TodayCodexUsageCard />}
-          {granularity === "today" && activeSource !== "codex" && <TodayClaudeUsageCard />}
-          <ToolCallsCard />
-          {granularity === "today" && <TodayUsageTrend />}
           {/* <InsightCards /> */}
           {/* <CompositionCard /> */}
-          {granularity === "today" ? <TodayInsightsCard /> : <TrendChart />}
-          {granularity === "day" && <DayUsageTrend />}
-          {granularity !== "today" && <RecentPeriodsCard />}
+          {cardLayout[granularity]
+            .filter((slot) => slot.visible)
+            .map((slot) => <Fragment key={slot.id}>{renderCard(slot.id, activeSource)}</Fragment>)}
         </div>
       </>
     );
@@ -87,6 +84,26 @@ export function App() {
       <FooterBar status={status} />
     </div>
   );
+}
+
+/**
+ * The component for a card in the layout. Only the source filter is decided
+ * here; which tab a card belongs to is the layout's business.
+ */
+function renderCard(id: CardId, activeSource: string) {
+  switch (id) {
+    case "periodCost": return <CurrentPeriodCard />;
+    case "tokenUsage": return <SummaryCard />;
+    case "topModels": return <TopModelsCard />;
+    case "codexUsage": return activeSource !== "claude" ? <TodayCodexUsageCard /> : null;
+    case "claudeUsage": return activeSource !== "codex" ? <TodayClaudeUsageCard /> : null;
+    case "toolCalls": return <ToolCallsCard />;
+    case "usageTrend": return <TodayUsageTrend />;
+    case "insights": return <TodayInsightsCard />;
+    case "trendChart": return <TrendChart />;
+    case "dayTrend": return <DayUsageTrend />;
+    case "recentPeriods": return <RecentPeriodsCard />;
+  }
 }
 
 function freshnessIsToday(timestamp: number): boolean {

@@ -24,6 +24,9 @@ suite("Host message validation", () => {
       { type: "costAlertSettings", rules: [] },
       { type: "pricingSettings", table: {} },
       { type: "language", language: "vi" },
+      { type: "cardLayout", layout: {} },
+      { type: "cardLayoutSaved", requestId: "card-layout-save-1", layout: {} },
+      { type: "cardLayoutError", requestId: "card-layout-save-1", message: "boom" },
     ];
     for (const message of messages) {
       assert.ok(isValidHostMessage(message), `should accept ${JSON.stringify(message)}`);
@@ -64,6 +67,10 @@ suite("Host message validation", () => {
       { type: "language", language: "klingon" },
       { type: "pricingSettings", table: "nope" },
       { type: "costAlertSettings", rules: {} },
+      { type: "cardLayout", layout: "today" },
+      { type: "cardLayout" },
+      { type: "cardLayoutSaved", layout: {} },
+      { type: "cardLayoutError", requestId: "card-layout-save-1" },
     ];
     for (const message of malformed) {
       assert.strictEqual(

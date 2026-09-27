@@ -7,6 +7,7 @@ import { UsageStatusService, type UsageAccountLookups } from "../../host/UsageSt
 import type { TokenWatchConfig } from "../../host/config.js";
 import type { CodexConnection } from "../../provider/codex/index.js";
 import type { ClaudeConnection } from "../../provider/claude/index.js";
+import { resolveCardLayout } from "../../shared/cardLayout.js";
 
 function config(overrides: Partial<TokenWatchConfig> = {}): TokenWatchConfig {
   return {
@@ -20,6 +21,7 @@ function config(overrides: Partial<TokenWatchConfig> = {}): TokenWatchConfig {
     retention: { rawRecordDays: 0 },
     analytics: { anomalyMultiplier: 2, contextFillWarnPct: 80 },
     statusBar: { enabled: true },
+    layout: { cards: resolveCardLayout(undefined) },
     ...overrides,
   };
 }

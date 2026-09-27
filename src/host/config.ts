@@ -6,6 +6,7 @@ import type { IngestConfig, SourceConfig } from "../shared/workerProtocol.js";
 import type { PricingTable } from "../shared/types.js";
 import { validatePricingTable } from "../shared/pricingValidation.js";
 import type { DisplayCurrencyConfig } from "../shared/protocol.js";
+import { resolveCardLayout, type CardLayout } from "../shared/cardLayout.js";
 
 export interface TokenWatchConfig {
   sources: {
@@ -31,6 +32,9 @@ export interface TokenWatchConfig {
   };
   statusBar: {
     enabled: boolean;
+  };
+  layout: {
+    cards: CardLayout;
   };
 }
 
@@ -80,6 +84,11 @@ export function getConfig(): TokenWatchConfig {
     },
     statusBar: {
       enabled: cfg.get<boolean>("statusBar.enabled", true),
+    },
+    layout: {
+      // Hand-editable, so resolved rather than trusted: unknown cards are
+      // dropped and missing ones come back in their default place.
+      cards: resolveCardLayout(cfg.get<unknown>("layout.cards", {})),
     },
   };
 }

@@ -165,6 +165,70 @@
           "default": true,
           "description": "Show/hide the status bar item.",
           "scope": "window"
+        },
+        "tokenWatch.layout.cards": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "Order and visibility of the dashboard cards, per period tab. Easiest to change with **Customize layout** in the Token Watch panel; cards left out are shown in their default place.",
+          "properties": {
+            "today": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string" },
+                  "visible": { "type": "boolean", "default": true }
+                },
+                "required": ["id"]
+              }
+            },
+            "day": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string" },
+                  "visible": { "type": "boolean", "default": true }
+                },
+                "required": ["id"]
+              }
+            },
+            "week": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string" },
+                  "visible": { "type": "boolean", "default": true }
+                },
+                "required": ["id"]
+              }
+            },
+            "month": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string" },
+                  "visible": { "type": "boolean", "default": true }
+                },
+                "required": ["id"]
+              }
+            },
+            "year": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string" },
+                  "visible": { "type": "boolean", "default": true }
+                },
+                "required": ["id"]
+              }
+            }
+          },
+          "additionalProperties": false,
+          "scope": "window"
         }
       }
     },

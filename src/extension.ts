@@ -191,6 +191,10 @@ export async function activate(context: vscode.ExtensionContext) {
       if (e.affectsConfiguration("tokenWatch.analytics")) {
         provider.pushAnalytics(newConfig.analytics);
       }
+      // Also how a layout saved in another window reaches this one.
+      if (e.affectsConfiguration("tokenWatch.layout")) {
+        provider.pushCardLayout(newConfig.layout.cards);
+      }
       if (e.affectsConfiguration("tokenWatch.pricing")) {
         void coordinator?.updatePricing(newConfig.pricing.overrides).catch((error) => {
           console.error("[TokenWatch] pricing update failed:", error);
