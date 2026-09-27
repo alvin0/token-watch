@@ -30,6 +30,7 @@ suite("Usage limit reset refresh", () => {
         markConsumeStarted();
       },
       usageCacheInfo: () => ({}),
+      watchSharedUsage: () => () => undefined,
     } as unknown as CodexConnection;
     const claude = {
       usageInfo: async () => ({}),

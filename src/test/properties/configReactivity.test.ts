@@ -98,6 +98,7 @@ suite("Usage status service gating", () => {
         usageInfo: async () => ({}),
         limitResets: async () => ({}),
         usageCacheInfo: () => ({}),
+        watchSharedUsage: () => () => undefined,
       } as unknown as CodexConnection,
       claude: {
         usageInfo: async () => ({}),

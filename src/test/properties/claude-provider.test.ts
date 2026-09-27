@@ -171,6 +171,7 @@ suite("Claude provider connection", () => {
       value: { five_hour: { utilization: 10 } },
       cachedAt: now,
       expiresAt: now + midTtl,
+      requestedAt: now,
     });
   });
 

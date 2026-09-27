@@ -23,7 +23,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { closeSync, openSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, openSync, statSync, unlinkSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -40,6 +40,13 @@ export interface RefreshLockOptions {
   now?: () => number;
   /** Directory for the lock file; the system temp directory by default. */
   dir?: string;
+  /**
+   * Keep the lock fresh this often while it is held.
+   *
+   * For work that can outrun the TTL: the lock is then reclaimed only once its
+   * holder has actually died, not merely because it is slow.
+   */
+  heartbeatMs?: number;
 }
 
 export type RefreshLockOutcome<T> =
@@ -68,9 +75,12 @@ export async function withCredentialRefreshLock<T>(
   for (;;) {
     const fd = tryAcquire(lockPath, ttlMs, now);
     if (fd !== undefined) {
+      const heartbeat = options.heartbeatMs ? setInterval(() => touch(lockPath), options.heartbeatMs) : undefined;
+      heartbeat?.unref?.();
       try {
         return { ran: true, value: await refresh() };
       } finally {
+        if (heartbeat) { clearInterval(heartbeat); }
         release(lockPath, fd);
       }
     }
@@ -114,6 +124,11 @@ function tryAcquire(lockPath: string, ttlMs: number, now: () => number): number 
     }
   }
   return undefined;
+}
+
+function touch(lockPath: string): void {
+  const now = new Date();
+  try { utimesSync(lockPath, now, now); } catch { /* reclaimed as stale; nothing to keep fresh */ }
 }
 
 function release(lockPath: string, fd: number): void {

@@ -5,7 +5,17 @@ import * as path from "node:path";
 import type { UsageCacheInfo } from "../../shared/protocol";
 import { randomUsageRetryMs, rateLimitBackoffMs } from "../../shared/usageRetry";
 import { fileIdentityOf, writeFileAtomicSync, type FileIdentity } from "../atomicFile";
+import type { RefreshLockOptions } from "../credentialRefreshLock";
 import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout } from "../http";
+import {
+  adoptSharedUsage,
+  fetchOncePerMachine,
+  invalidateSharedUsage,
+  isUsable,
+  watchSharedUsage,
+  type CachedUsage,
+  type UsageCacheMaps,
+} from "../sharedUsageCache";
 
 export const DEFAULT_CODEX_AUTH_FILE = "~/.codex/auth.json";
 export const WHAM_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
@@ -22,7 +32,7 @@ const DEFAULT_ORIGINATOR = "opencode";
 const DEFAULT_USER_AGENT = "codex-standalone-client";
 const usageInfoPromises = new Map<string, Promise<unknown>>();
 const usageCooldowns = new Map<string, number>();
-const usageInfoCache = new Map<string, { value: unknown; cachedAt: number; expiresAt: number }>();
+const usageInfoCache = new Map<string, CachedUsage>();
 /**
  * Refusals in a row, per endpoint, so the wait can widen.
  *
@@ -30,6 +40,7 @@ const usageInfoCache = new Map<string, { value: unknown; cachedAt: number; expir
  * is a blip, not a pattern, and should not inherit the last one's wait.
  */
 const usageRefusals = new Map<string, number>();
+const usageMaps: UsageCacheMaps = { cache: usageInfoCache, cooldowns: usageCooldowns, refusals: usageRefusals };
 
 export interface CodexAuthFile {
   auth_mode?: string;
@@ -65,6 +76,10 @@ export interface CodexConnectionOptions {
   random?: () => number;
   /** Per-request deadline; a hung socket must not pin the refresh forever. */
   timeoutMs?: number;
+  /** Overridable for tests; the machine-wide guard that lets one window fetch for all. */
+  usageLock?: RefreshLockOptions;
+  /** Overridable for tests; see `watchSharedUsage`. */
+  sharedUsagePollMs?: number;
 }
 
 export interface CodexRequestOptions {
@@ -135,17 +150,42 @@ export class CodexConnection {
       throw new Error(`Codex usage limit reset activation failed: ${response.status} ${await response.text()}`);
     }
     // The cached usage and reset list both describe the account as it was
-    // before this call. Left in place, the card would keep offering a reset
-    // that is already spent.
-    usageInfoCache.delete(requestKey(this.options, this.options.endpoint ?? WHAM_USAGE_ENDPOINT));
-    usageInfoCache.delete(requestKey(this.options, WHAM_LIMIT_RESETS_ENDPOINT));
+    // before this call. Left in place — here or in another window — the card
+    // would keep offering a reset that is already spent.
+    const now = (this.options.now ?? Date.now)();
+    for (const key of this.sharedKeys()) {
+      invalidateSharedUsage(usageMaps, key, this.options.usageLock?.dir, now);
+    }
+  }
+
+  /** Call `onChange` when another window shares usage or resets; see `watchSharedUsage`. */
+  watchSharedUsage(onChange: () => void): () => void {
+    return watchSharedUsage(
+      usageMaps,
+      this.sharedKeys(),
+      this.options.usageLock?.dir,
+      onChange,
+      this.options.sharedUsagePollMs,
+    );
+  }
+
+  private sharedKeys(): string[] {
+    return [
+      requestKey(this.options, this.options.endpoint ?? WHAM_USAGE_ENDPOINT),
+      requestKey(this.options, WHAM_LIMIT_RESETS_ENDPOINT),
+    ];
   }
 
   private cachedGet<T>(url: string, options: CodexRequestOptions): Promise<T> {
     const key = requestKey(this.options, url);
     const now = (this.options.now ?? Date.now)();
+    const force = options.force === true;
+    // What this window had before looking at the others. A forced refresh is
+    // "what I have is stale", and a newer response from another window is not.
+    const knownCachedAt = usageInfoCache.get(key)?.cachedAt ?? Number.NEGATIVE_INFINITY;
+    adoptSharedUsage(usageMaps, key, this.options.usageLock?.dir);
     const cached = usageInfoCache.get(key);
-    if (!options.force && cached && cached.expiresAt > now) {
+    if (cached && isUsable(cached, now, force, knownCachedAt)) {
       return Promise.resolve(cached.value as T);
     }
 
@@ -162,7 +202,18 @@ export class CodexConnection {
       return inFlight as Promise<T>;
     }
 
-    const promise = this.fetchJson<T>(url, key, options)
+    const promise = fetchOncePerMachine<T>({
+      maps: usageMaps,
+      key,
+      dir: this.options.usageLock?.dir,
+      force,
+      knownCachedAt,
+      now: this.options.now ?? Date.now,
+      lock: this.options.usageLock,
+      fetch: () => this.fetchJson<T>(url, key, options),
+      rateLimited: (retryAt) => new CodexUsageRateLimitError(retryAt, true),
+      isRateLimited: isCodexUsageRateLimitError,
+    })
       .catch((error: unknown) => {
         if (!isCodexUsageRateLimitError(error)) {
           setFailureCooldown(usageCooldowns, key, (this.options.now ?? Date.now)());

@@ -20,6 +20,7 @@ suite("Claude usage shared between windows", () => {
     usageInfo: async () => ({}),
     limitResets: async () => ({}),
     usageCacheInfo: () => ({}),
+    watchSharedUsage: () => () => undefined,
   } as unknown as CodexConnection;
   const settle = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 10); });
 

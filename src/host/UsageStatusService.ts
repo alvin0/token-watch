@@ -128,7 +128,7 @@ export class UsageStatusService implements vscode.Disposable {
   private state: UsageStatusState = { codexUnavailable: false, claudeUnavailable: false };
   private disposed = false;
   private readonly runtime: Record<UsageProvider, ProviderRuntime>;
-  private stopWatchingSharedClaude: (() => void) | undefined;
+  private readonly stopWatchingShared: Partial<Record<UsageProvider, () => void>> = {};
 
   /**
    * `deps` exists so a test can watch what each provider is actually asked for.
@@ -186,15 +186,17 @@ export class UsageStatusService implements vscode.Disposable {
     if (!this.isActive()) {
       this.runtime.codex.timer.clear();
       this.runtime.claude.timer.clear();
-      this.stopWatchingSharedClaude?.();
-      this.stopWatchingSharedClaude = undefined;
+      this.stopWatchingSharedUsage();
       return;
     }
     if (!wasActive) {
-      // Another window's Claude response shows here as soon as it lands. The
-      // refresh is forced only past the spacing floor: the cache already holds
-      // what was shared, so it is answered without a request.
-      this.stopWatchingSharedClaude ??= this.claudeConnection.watchSharedUsage(() => {
+      // Another window's response shows here as soon as it lands. The refresh
+      // is forced only past the spacing floor: the cache already holds what was
+      // shared, so it is answered without a request.
+      this.stopWatchingShared.codex ??= this.codexConnection.watchSharedUsage(() => {
+        void this.refresh("codex", { force: true });
+      });
+      this.stopWatchingShared.claude ??= this.claudeConnection.watchSharedUsage(() => {
         void this.refresh("claude", { force: true });
       });
       // Deliberately not forced. The first time round there is nothing cached
@@ -275,8 +277,7 @@ export class UsageStatusService implements vscode.Disposable {
     this.activeConsumers.clear();
     this.runtime.codex.timer.clear();
     this.runtime.claude.timer.clear();
-    this.stopWatchingSharedClaude?.();
-    this.stopWatchingSharedClaude = undefined;
+    this.stopWatchingSharedUsage();
     this._onDidChange.dispose();
   }
 
@@ -350,6 +351,13 @@ export class UsageStatusService implements vscode.Disposable {
    * the figures sat frozen until someone pressed refresh or the panel was
    * reopened, which is the opposite of what a live view is for.
    */
+  private stopWatchingSharedUsage(): void {
+    for (const provider of ["codex", "claude"] as const) {
+      this.stopWatchingShared[provider]?.();
+      delete this.stopWatchingShared[provider];
+    }
+  }
+
   private scheduleNext(provider: UsageProvider): void {
     const runtime = this.runtime[provider];
     if (!this.isActive()) {

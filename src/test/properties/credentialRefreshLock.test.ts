@@ -121,4 +121,18 @@ suite("Credential refresh single-flight", () => {
     assert.deepStrictEqual(outcome, { ran: false });
     assert.ok(Date.now() - startedAt >= 100, "it should have waited for the holder first");
   });
+
+  test("a slow holder with a heartbeat keeps its lock past the TTL", async () => {
+    let releaseHolder = () => {};
+    const held = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    const holder = withCredentialRefreshLock("acct", () => held, { dir, ttlMs: 60, heartbeatMs: 10 });
+
+    // Well past the TTL: without the heartbeat this lock would read as abandoned.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const contender = await withCredentialRefreshLock("acct", async () => "second", { dir, ttlMs: 60, waitMs: 0 });
+
+    assert.deepStrictEqual(contender, { ran: false }, "a live holder must not lose its lock");
+    releaseHolder();
+    await holder;
+  });
 });

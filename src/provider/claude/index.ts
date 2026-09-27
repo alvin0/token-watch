@@ -1,5 +1,4 @@
 import { execFile, spawn } from "node:child_process";
-import { unwatchFile, watchFile, type Stats } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -9,7 +8,14 @@ import { randomUsageRetryMs, rateLimitBackoffMs } from "../../shared/usageRetry"
 import { ConcurrentCredentialWriteError, fileIdentityOf, writeFileAtomicSync, type FileIdentity } from "../atomicFile";
 import { withCredentialRefreshLock, type RefreshLockOptions } from "../credentialRefreshLock";
 import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout } from "../http";
-import { readSharedUsage, sharedUsagePath, writeSharedUsage } from "../sharedUsageCache";
+import {
+  adoptSharedUsage,
+  fetchOncePerMachine,
+  isUsable,
+  watchSharedUsage,
+  type CachedUsage,
+  type UsageCacheMaps,
+} from "../sharedUsageCache";
 
 export const DEFAULT_CLAUDE_CREDENTIALS_FILE = "~/.claude/.credentials.json";
 export const DEFAULT_CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
@@ -34,12 +40,10 @@ const DEFAULT_FAILURE_RETRY_MS = 60 * 1000;
 const execFileAsync = promisify(execFile);
 /** Bound for `security`; it can block on a Keychain prompt indefinitely. */
 const KEYCHAIN_TIMEOUT_MS = 10_000;
-/** How often to look for a response another window shared; a stat, not a request. */
-const SHARED_USAGE_POLL_MS = 2_000;
 const refreshPromises = new Map<string, Promise<ClaudeAuthSnapshot>>();
 const usageInfoPromises = new Map<string, Promise<unknown>>();
 const usageCooldowns = new Map<string, number>();
-const usageInfoCache = new Map<string, { value: unknown; cachedAt: number; expiresAt: number }>();
+const usageInfoCache = new Map<string, CachedUsage>();
 /**
  * Refusals in a row, per endpoint, so the wait can widen.
  *
@@ -47,8 +51,7 @@ const usageInfoCache = new Map<string, { value: unknown; cachedAt: number; expir
  * is a blip, not a pattern, and should not inherit the last one's wait.
  */
 const usageRefusals = new Map<string, number>();
-/** `writtenAt` of the last shared entry this process wrote or adopted, per endpoint. */
-const sharedUsageSeen = new Map<string, number>();
+const usageMaps: UsageCacheMaps = { cache: usageInfoCache, cooldowns: usageCooldowns, refusals: usageRefusals };
 
 interface ClaudeAiOauthCredentials {
   accessToken?: string;
@@ -169,7 +172,7 @@ export class ClaudeConnection {
     // What this window had before looking at the others. A forced refresh is
     // "what I have is stale", and a newer response from another window is not.
     const knownCachedAt = usageInfoCache.get(key)?.cachedAt ?? Number.NEGATIVE_INFINITY;
-    adoptSharedUsage(key, this.options.refreshLock?.dir);
+    adoptSharedUsage(usageMaps, key, this.options.refreshLock?.dir);
     const cached = usageInfoCache.get(key);
     if (cached && isUsable(cached, now, force, knownCachedAt)) {
       return Promise.resolve(cached.value as T);
@@ -188,7 +191,18 @@ export class ClaudeConnection {
       return inFlight as Promise<T>;
     }
 
-    const promise = this.fetchUsageInfoOnce<T>(key, force, knownCachedAt)
+    const promise = fetchOncePerMachine<T>({
+      maps: usageMaps,
+      key,
+      dir: this.options.refreshLock?.dir,
+      force,
+      knownCachedAt,
+      now: this.options.now ?? Date.now,
+      lock: this.options.refreshLock,
+      fetch: () => this.fetchUsageInfo<T>(key),
+      rateLimited: (retryAt) => new ClaudeUsageRateLimitError(retryAt, true),
+      isRateLimited: isClaudeUsageRateLimitError,
+    })
       .catch((error: unknown) => {
         if (!isClaudeUsageRateLimitError(error)) {
           setFailureCooldown(usageCooldowns, key, (this.options.now ?? Date.now)());
@@ -202,31 +216,15 @@ export class ClaudeConnection {
     return promise;
   }
 
-  /**
-   * Call `onChange` when another window shares a response or a refusal.
-   *
-   * By the time it is called the local cache already holds what was shared,
-   * so a non-forced `usageInfo()` answers from it without a request.
-   *
-   * Polls the file's stat rather than using `fs.watch`: every write replaces
-   * the file by rename, which a watch on the file itself does not survive on
-   * every platform. Returns the unsubscribe.
-   */
+  /** Call `onChange` when another window shares a response or a refusal; see `watchSharedUsage`. */
   watchSharedUsage(onChange: () => void): () => void {
-    const key = usageRequestKey(this.options);
-    const dir = this.options.refreshLock?.dir;
-    const file = sharedUsagePath(key, dir);
-    const listener = (current: Stats, previous: Stats) => {
-      if (current.mtimeMs === previous.mtimeMs && current.ino === previous.ino) {
-        return;
-      }
-      // This window's own writes were marked as seen when it made them.
-      if (adoptSharedUsage(key, dir)) {
-        onChange();
-      }
-    };
-    watchFile(file, { interval: this.options.sharedUsagePollMs ?? SHARED_USAGE_POLL_MS, persistent: false }, listener);
-    return () => unwatchFile(file, listener);
+    return watchSharedUsage(
+      usageMaps,
+      [usageRequestKey(this.options)],
+      this.options.refreshLock?.dir,
+      onChange,
+      this.options.sharedUsagePollMs,
+    );
   }
 
   usageCacheInfo(): UsageCacheInfo {
@@ -244,47 +242,6 @@ export class ClaudeConnection {
     };
   }
 
-  /**
-   * Fetch at most once across every window for the same account.
-   *
-   * The machine-wide lock makes the other windows wait for the one already
-   * fetching and then take its response from the shared file, instead of each
-   * spending a request on an endpoint that rate-limits hard.
-   */
-  private async fetchUsageInfoOnce<T>(key: string, force: boolean, knownCachedAt: number): Promise<T> {
-    const clock = this.options.now ?? Date.now;
-    const dir = this.options.refreshLock?.dir;
-    const outcome = await withCredentialRefreshLock(`usage:${key}`, async () => {
-      // Another window may have fetched, or been refused, while this one waited.
-      adoptSharedUsage(key, dir);
-      const now = clock();
-      const cached = usageInfoCache.get(key);
-      if (cached && isUsable(cached, now, force, knownCachedAt)) {
-        return cached.value as T;
-      }
-      const retryAt = usageCooldowns.get(key) ?? 0;
-      if (retryAt > now) {
-        if (cached) {
-          return cached.value as T;
-        }
-        throw new ClaudeUsageRateLimitError(retryAt, true);
-      }
-      return this.fetchUsageInfo<T>(key);
-    }, this.options.refreshLock);
-    if (outcome.ran) {
-      return outcome.value;
-    }
-
-    // The holder outlived the wait. Use what it left if it finished, otherwise
-    // fetch unserialized, as before the lock existed.
-    adoptSharedUsage(key, dir);
-    const cached = usageInfoCache.get(key);
-    if (cached && cached.cachedAt > knownCachedAt) {
-      return cached.value as T;
-    }
-    return this.fetchUsageInfo<T>(key);
-  }
-
   private async fetchUsageInfo<T>(key: string): Promise<T> {
     const response = await this.usage();
     if (response.status === 429) {
@@ -293,7 +250,6 @@ export class ClaudeConnection {
       usageRefusals.set(key, refusals);
       const retryAt = retryAtFromHeader(response.headers.get("retry-after"), now, refusals);
       usageCooldowns.set(key, retryAt);
-      publishSharedUsage(key, this.options.refreshLock?.dir, now);
       const cached = usageInfoCache.get(key);
       if (cached) {
         return cached.value as T;
@@ -313,7 +269,6 @@ export class ClaudeConnection {
       cachedAt: now,
       expiresAt: now + (this.options.usageCacheTtlMs ?? randomUsageRetryMs("claude", this.options.random)),
     });
-    publishSharedUsage(key, this.options.refreshLock?.dir, now);
     return value;
   }
 
@@ -718,64 +673,6 @@ function credentialStorageKey(options: ClaudeConnectionOptions): string {
 
 function usageRequestKey(options: ClaudeConnectionOptions): string {
   return `${credentialStorageKey(options)}:${options.usageEndpoint ?? CLAUDE_USAGE_ENDPOINT}`;
-}
-
-/**
- * Whether a cached response answers this request without going to the network.
- *
- * A forced refresh skips this window's own copy, but still takes a newer one
- * another window fetched: the Retry button is only enabled once the figures on
- * screen have gone stale, and a response fetched elsewhere since then is not.
- */
-function isUsable(
-  cached: { cachedAt: number; expiresAt: number },
-  now: number,
-  force: boolean,
-  knownCachedAt: number,
-): boolean {
-  return cached.expiresAt > now && (!force || cached.cachedAt > knownCachedAt);
-}
-
-/**
- * Take in whatever another window fetched, or was refused, since this one last looked.
- * Returns whether there was anything new.
- *
- * Only a newer response replaces the local one, but the cooldown and refusal
- * count follow the latest write: a success elsewhere ends the run of refusals
- * here too.
- */
-function adoptSharedUsage(key: string, dir: string | undefined): boolean {
-  const shared = readSharedUsage(sharedUsagePath(key, dir));
-  if (!shared || shared.writtenAt <= (sharedUsageSeen.get(key) ?? 0)) {
-    return false;
-  }
-  sharedUsageSeen.set(key, shared.writtenAt);
-  const local = usageInfoCache.get(key);
-  if (shared.cachedAt !== undefined && shared.expiresAt !== undefined && (!local || shared.cachedAt > local.cachedAt)) {
-    usageInfoCache.set(key, { value: shared.value, cachedAt: shared.cachedAt, expiresAt: shared.expiresAt });
-  }
-  if (shared.retryAt !== undefined && shared.retryAt > (usageCooldowns.get(key) ?? 0)) {
-    usageCooldowns.set(key, shared.retryAt);
-  }
-  if (shared.refusals) {
-    usageRefusals.set(key, shared.refusals);
-  } else {
-    usageRefusals.delete(key);
-  }
-  return true;
-}
-
-function publishSharedUsage(key: string, dir: string | undefined, now: number): void {
-  const cached = usageInfoCache.get(key);
-  const retryAt = usageCooldowns.get(key) ?? 0;
-  const refusals = usageRefusals.get(key) ?? 0;
-  sharedUsageSeen.set(key, now);
-  writeSharedUsage(sharedUsagePath(key, dir), {
-    writtenAt: now,
-    ...(cached ? { value: cached.value, cachedAt: cached.cachedAt, expiresAt: cached.expiresAt } : {}),
-    ...(retryAt > now ? { retryAt } : {}),
-    ...(refusals > 0 ? { refusals } : {}),
-  });
 }
 
 /**

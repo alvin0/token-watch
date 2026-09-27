@@ -17,6 +17,7 @@ import {
   readCodexPlanType,
   resolveCodexAuthPath,
 } from "../../provider/codex/index.js";
+import { readSharedUsage, sharedUsagePath, writeSharedUsage } from "../../provider/sharedUsageCache.js";
 
 /** What a 0.5 random lands on for this provider. */
 const { minMs, maxMs } = usageRetryBounds("codex");
@@ -163,6 +164,7 @@ suite("Codex provider connection", () => {
 
     const connection = new CodexConnection({
       authFile,
+      usageLock: { dir: tmpDir },
       fetch: async (input, init) => {
         receivedUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
         receivedMethod = init?.method ?? "GET";
@@ -203,6 +205,7 @@ suite("Codex provider connection", () => {
 
     const connection = new CodexConnection({
       authFile,
+      usageLock: { dir: tmpDir },
       fetch: async () =>
         new Response(
           JSON.stringify({
@@ -246,7 +249,7 @@ suite("Codex provider connection", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     };
-    const options = { authFile, fetch: fetchUsage, now: () => now, random: () => 0.5 };
+    const options = { authFile, usageLock: { dir: tmpDir }, fetch: fetchUsage, now: () => now, random: () => 0.5 };
     const firstConnection = new CodexConnection(options);
 
     const [first, second] = await Promise.all([
@@ -278,6 +281,7 @@ suite("Codex provider connection", () => {
     let callCount = 0;
     const connection = new CodexConnection({
       authFile,
+      usageLock: { dir: tmpDir },
       now: () => now,
       fetch: async () => {
         callCount += 1;
@@ -317,6 +321,7 @@ suite("Codex provider connection", () => {
     let receivedUrl = "";
     const connection = new CodexConnection({
       authFile,
+      usageLock: { dir: tmpDir },
       fetch: async (input) => {
         receivedUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
         return new Response(
@@ -370,6 +375,7 @@ suite("Codex provider connection", () => {
     const calls: Array<string> = [];
     const connection = new CodexConnection({
       authFile,
+      usageLock: { dir: tmpDir },
       fetch: async (input, init) => {
         const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
         calls.push(`${init?.method ?? "GET"} ${url}`);
@@ -433,6 +439,7 @@ suite("Codex provider connection", () => {
 
       const connection = new CodexConnection({
         authFile,
+        usageLock: { dir: tmpDir },
         fetch: async (input, init) => {
           calls.push({
             url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
@@ -464,6 +471,7 @@ suite("Codex provider connection", () => {
       const authFile = writeChatgptAuth(tmpDir);
       const connection = new CodexConnection({
         authFile,
+        usageLock: { dir: tmpDir },
         fetch: async () => new Response("credit already consumed", { status: 409 }),
       });
 
@@ -484,6 +492,7 @@ suite("Codex provider connection", () => {
 
       const connection = new CodexConnection({
         authFile,
+        usageLock: { dir: tmpDir },
         fetch: async (input, init) => {
           const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
           if (url.includes("/oauth/token")) {
@@ -516,6 +525,7 @@ suite("Codex provider connection", () => {
 
       const connection = new CodexConnection({
         authFile,
+        usageLock: { dir: tmpDir },
         fetch: async (input, init) => {
           const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
           if ((init?.method ?? "GET") === "GET") { gets.push(url); }
@@ -544,7 +554,83 @@ suite("Codex provider connection", () => {
       ]);
     });
   });
+
+  suite("shared between windows", () => {
+    test("uses usage another window fetched instead of fetching again", async () => {
+      const authFile = writeChatgptAuth(tmpDir);
+      const now = 1_000_000;
+      writeSharedUsage(sharedUsagePath(codexKey(authFile, WHAM_USAGE_ENDPOINT), tmpDir), {
+        writtenAt: now - 1_000,
+        value: { plan_type: "plus" },
+        cachedAt: now - 1_000,
+        expiresAt: now + 30_000,
+      });
+      let callCount = 0;
+      const connection = new CodexConnection({
+        authFile,
+        usageLock: { dir: tmpDir },
+        now: () => now,
+        fetch: async () => {
+          callCount += 1;
+          return new Response(JSON.stringify({ plan_type: "pro" }), { status: 200 });
+        },
+      });
+
+      assert.deepStrictEqual(await connection.usageInfo(), { plan_type: "plus" });
+      assert.strictEqual(callCount, 0);
+    });
+
+    test("spending a reset tells every window the cached usage is stale", async () => {
+      const authFile = writeChatgptAuth(tmpDir);
+      const connection = new CodexConnection({
+        authFile,
+        usageLock: { dir: tmpDir },
+        fetch: async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
+      });
+
+      await connection.consumeLimitReset("credit-abc");
+
+      for (const url of [WHAM_USAGE_ENDPOINT, WHAM_LIMIT_RESETS_ENDPOINT]) {
+        const shared = readSharedUsage(sharedUsagePath(codexKey(authFile, url), tmpDir));
+        assert.ok(shared?.invalidatedAt, `${url} must carry the invalidation`);
+        assert.strictEqual("value" in shared, false, `${url} must not offer the pre-reset response`);
+      }
+    });
+
+    test("ignores a response another window started before the reset was spent", async () => {
+      const authFile = writeChatgptAuth(tmpDir);
+      const gets: string[] = [];
+      const connection = new CodexConnection({
+        authFile,
+        usageLock: { dir: tmpDir },
+        fetch: async (input, init) => {
+          const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+          if ((init?.method ?? "GET") === "GET") { gets.push(url); }
+          return new Response(JSON.stringify({ fresh: true }), { status: 200, headers: { "content-type": "application/json" } });
+        },
+      });
+      const beforeReset = Date.now() - 1;
+      await connection.consumeLimitReset("credit-abc");
+      // The other window's fetch was in flight across the reset and lands now.
+      const landedAt = Date.now() + 1;
+      writeSharedUsage(sharedUsagePath(codexKey(authFile, WHAM_USAGE_ENDPOINT), tmpDir), {
+        writtenAt: landedAt,
+        value: { fresh: false },
+        cachedAt: landedAt,
+        expiresAt: landedAt + 60_000,
+        requestedAt: beforeReset,
+      });
+
+      assert.deepStrictEqual(await connection.usageInfo({ force: true }), { fresh: true });
+      assert.deepStrictEqual(gets, [WHAM_USAGE_ENDPOINT]);
+    });
+  });
 });
+
+/** The provider's cache key for an auth file and endpoint. */
+function codexKey(authFile: string, url: string): string {
+  return `codex:${authFile}:${url}`;
+}
 
 /** A minimal signed-in ChatGPT auth file, the state every consume test starts from. */
 function writeChatgptAuth(dir: string): string {
