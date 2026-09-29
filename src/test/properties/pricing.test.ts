@@ -163,6 +163,16 @@ suite("PricingEngine property tests", () => {
       DEFAULT_PRICING["claude-mythos-5-1"],
       DEFAULT_PRICING["claude-mythos-5.1"],
     );
+    assert.deepStrictEqual(DEFAULT_PRICING["claude-sonnet-5.5"], {
+      inputPer1K: 0.002,
+      cachedInputPer1K: 0.0002,
+      cacheCreationPer1K: 0.0025,
+      outputPer1K: 0.01,
+    });
+    assert.deepStrictEqual(
+      DEFAULT_PRICING["claude-sonnet-5-5"],
+      DEFAULT_PRICING["claude-sonnet-5.5"],
+    );
     assert.deepStrictEqual(DEFAULT_PRICING["claude-sonnet-5"], {
       inputPer1K: 0.002,
       cachedInputPer1K: 0.0002,

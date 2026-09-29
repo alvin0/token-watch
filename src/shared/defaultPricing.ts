@@ -105,6 +105,8 @@ export const DEFAULT_PRICING: PricingTable = {
   // the 0.025x cache reads.
   "claude-mythos-5.1": { inputPer1K: 0.01, cachedInputPer1K: 0.00025, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
   "claude-mythos-5-1": { inputPer1K: 0.01, cachedInputPer1K: 0.00025, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
+  "claude-sonnet-5.5": { inputPer1K: 0.002, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.0025, outputPer1K: 0.01 },
+  "claude-sonnet-5-5": { inputPer1K: 0.002, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.0025, outputPer1K: 0.01 },
   "claude-sonnet-5": { inputPer1K: 0.002, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.0025, outputPer1K: 0.01 },
   "claude-sonnet-4.6": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
   "claude-sonnet-4-6": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },

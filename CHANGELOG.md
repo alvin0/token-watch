@@ -2,6 +2,13 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.2.7]
+
+### Added
+
+- Pricing for Claude Sonnet 5.5 (`claude-sonnet-5.5` / `claude-sonnet-5-5`),
+  priced the same as Sonnet 5 ($2 input / $10 output per MTok).
+
 ## [0.2.6]
 
 ### Added
