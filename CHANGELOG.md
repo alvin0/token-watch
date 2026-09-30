@@ -2,6 +2,13 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.2.8]
+
+### Added
+
+- Pricing for OpenAI's GPT-6.1 Sol (`gpt-6.1-sol`), including a
+  `-long-context` entry for prompts over 272K tokens.
+
 ## [0.2.7]
 
 ### Added

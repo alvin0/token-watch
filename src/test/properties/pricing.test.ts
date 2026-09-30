@@ -81,6 +81,8 @@ suite("PricingEngine property tests", () => {
       ["gpt-6-sol-long-context", { inputPer1K: 0.004, cachedInputPer1K: 0.0004, cacheCreationPer1K: 0.005, outputPer1K: 0.015 }],
       ["gpt-6-luna", { inputPer1K: 0.0001, cachedInputPer1K: 0.00001, cacheCreationPer1K: 0.000125, outputPer1K: 0.0005 }],
       ["gpt-6-luna-long-context", { inputPer1K: 0.0002, cachedInputPer1K: 0.00002, cacheCreationPer1K: 0.00025, outputPer1K: 0.00075 }],
+      ["gpt-6.1-sol", { inputPer1K: 0.002, cachedInputPer1K: 0.0001, cacheCreationPer1K: 0.0025, outputPer1K: 0.01 }],
+      ["gpt-6.1-sol-long-context", { inputPer1K: 0.004, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.005, outputPer1K: 0.015 }],
       ["gpt-4.1", { inputPer1K: 0.002, cachedInputPer1K: 0.0005, outputPer1K: 0.008 }],
       ["gpt-4.1-mini", { inputPer1K: 0.0004, cachedInputPer1K: 0.0001, outputPer1K: 0.0016 }],
       ["gpt-4.1-nano", { inputPer1K: 0.0001, cachedInputPer1K: 0.000025, outputPer1K: 0.0004 }],
