@@ -2,6 +2,13 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.2.9]
+
+### Added
+
+- Pricing for Claude Haiku 5.5 (`claude-haiku-5.5` / `claude-haiku-5-5`), including
+  the separate rates Anthropic uses for prompts up to and over 100K tokens.
+
 ## [0.2.8]
 
 ### Added

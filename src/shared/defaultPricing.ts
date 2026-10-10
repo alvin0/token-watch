@@ -117,6 +117,12 @@ export const DEFAULT_PRICING: PricingTable = {
   "claude-sonnet-4-5": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
   "claude-sonnet-4": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
   "claude-sonnet-4-20250514": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
+  // Haiku 5.5: prompts over 100K tokens use the higher rates for the whole request.
+  // https://www.anthropic.com/claude-haiku-5-5
+  "claude-haiku-5.5": { inputPer1K: 0.0001, cachedInputPer1K: 0.00001, cacheCreationPer1K: 0.000125, outputPer1K: 0.0005 },
+  "claude-haiku-5-5": { inputPer1K: 0.0001, cachedInputPer1K: 0.00001, cacheCreationPer1K: 0.000125, outputPer1K: 0.0005 },
+  "claude-haiku-5.5-long-context": { inputPer1K: 0.0005, cachedInputPer1K: 0.00005, cacheCreationPer1K: 0.000625, outputPer1K: 0.0025 },
+  "claude-haiku-5-5-long-context": { inputPer1K: 0.0005, cachedInputPer1K: 0.00005, cacheCreationPer1K: 0.000625, outputPer1K: 0.0025 },
   "claude-haiku-4.5": { inputPer1K: 0.001, cachedInputPer1K: 0.0001, cacheCreationPer1K: 0.00125, outputPer1K: 0.005 },
   "claude-haiku-4-5-20251001": { inputPer1K: 0.001, cachedInputPer1K: 0.0001, cacheCreationPer1K: 0.00125, outputPer1K: 0.005 },
   "claude-haiku-4-5": { inputPer1K: 0.001, cachedInputPer1K: 0.0001, cacheCreationPer1K: 0.00125, outputPer1K: 0.005 },

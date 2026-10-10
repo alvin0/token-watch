@@ -201,6 +201,26 @@ suite("PricingEngine property tests", () => {
     });
   });
 
+  test("Bundled Claude Haiku 5.5 pricing covers both Anthropic prompt tiers", () => {
+    const standardRate = {
+      inputPer1K: 0.0001,
+      cachedInputPer1K: 0.00001,
+      cacheCreationPer1K: 0.000125,
+      outputPer1K: 0.0005,
+    };
+    const longContextRate = {
+      inputPer1K: 0.0005,
+      cachedInputPer1K: 0.00005,
+      cacheCreationPer1K: 0.000625,
+      outputPer1K: 0.0025,
+    };
+
+    assert.deepStrictEqual(DEFAULT_PRICING["claude-haiku-5.5"], standardRate);
+    assert.deepStrictEqual(DEFAULT_PRICING["claude-haiku-5-5"], standardRate);
+    assert.deepStrictEqual(DEFAULT_PRICING["claude-haiku-5.5-long-context"], longContextRate);
+    assert.deepStrictEqual(DEFAULT_PRICING["claude-haiku-5-5-long-context"], longContextRate);
+  });
+
   test("Custom pricing overrides bundled models, fallback overrides are ignored, and model ids stay unique", () => {
     const merged = mergePricingConfig({
       "gpt-5": { inputPer1K: 999, outputPer1K: 999 },
