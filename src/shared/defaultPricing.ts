@@ -56,6 +56,8 @@ export const DEFAULT_PRICING: PricingTable = {
   // has not published the rate after that)
   "gpt-5.6-sol": { inputPer1K: 0.004, cachedInputPer1K: 0.0004, cacheCreationPer1K: 0.005, outputPer1K: 0.02 },
   "gpt-5.6-sol-long-context": { inputPer1K: 0.008, cachedInputPer1K: 0.0008, cacheCreationPer1K: 0.01, outputPer1K: 0.03 },
+  "gpt-5.6-cyber": { inputPer1K: 0.0125, cachedInputPer1K: 0.00125, cacheCreationPer1K: 0.015625, outputPer1K: 0.075 },
+  "gpt-5.6-cyber-long-context": { inputPer1K: 0.025, cachedInputPer1K: 0.0025, cacheCreationPer1K: 0.03125, outputPer1K: 0.1125 },
   "gpt-5.6-terra": { inputPer1K: 0.002, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.0025, outputPer1K: 0.012 },
   "gpt-5.6-terra-long-context": { inputPer1K: 0.004, cachedInputPer1K: 0.0004, cacheCreationPer1K: 0.005, outputPer1K: 0.018 },
   "gpt-5.6-luna": { inputPer1K: 0.0002, cachedInputPer1K: 0.00002, cacheCreationPer1K: 0.00025, outputPer1K: 0.0012 },
@@ -68,9 +70,13 @@ export const DEFAULT_PRICING: PricingTable = {
   "gpt-6-sol-long-context": { inputPer1K: 0.004, cachedInputPer1K: 0.0004, cacheCreationPer1K: 0.005, outputPer1K: 0.015 },
   "gpt-6-luna": { inputPer1K: 0.0001, cachedInputPer1K: 0.00001, cacheCreationPer1K: 0.000125, outputPer1K: 0.0005 },
   "gpt-6-luna-long-context": { inputPer1K: 0.0002, cachedInputPer1K: 0.00002, cacheCreationPer1K: 0.00025, outputPer1K: 0.00075 },
-  // GPT-6.1 Sol
+  // GPT-6.1 (standard pricing; cache writes use 30-minute retention)
+  // https://developers.openai.com/api/docs/pricing
   "gpt-6.1-sol": { inputPer1K: 0.002, cachedInputPer1K: 0.0001, cacheCreationPer1K: 0.0025, outputPer1K: 0.01 },
   "gpt-6.1-sol-long-context": { inputPer1K: 0.004, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.005, outputPer1K: 0.015 },
+  "gpt-6.1-terra": { inputPer1K: 0.001, cachedInputPer1K: 0.00005, cacheCreationPer1K: 0.00125, outputPer1K: 0.005 },
+  "gpt-6.1-terra-long-context": { inputPer1K: 0.002, cachedInputPer1K: 0.0001, cacheCreationPer1K: 0.0025, outputPer1K: 0.0075 },
+  "chat-latest": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, outputPer1K: 0.03 },
   // GPT-4 / o-series
   "gpt-4.1": { inputPer1K: 0.002, cachedInputPer1K: 0.0005, outputPer1K: 0.008 },
   "gpt-4.1-mini": { inputPer1K: 0.0004, cachedInputPer1K: 0.0001, outputPer1K: 0.0016 },
@@ -83,7 +89,8 @@ export const DEFAULT_PRICING: PricingTable = {
   "codex-mini-latest": { inputPer1K: 0.0015, cachedInputPer1K: 0.000375, outputPer1K: 0.006 },
   "codex-auto-review": { inputPer1K: 0.0025, cachedInputPer1K: 0.00025, outputPer1K: 0.015 },
   // Claude (cacheCreationPer1K uses Anthropic's 5m cache write price)
-  // Opus 5.5 reads cache at 0.05x input ($0.20/MTok) instead of the usual 0.1x.
+  // Opus 5.5 and Sonnet 5.5 read cache at 0.05x input instead of the usual 0.1x.
+  // https://platform.claude.com/docs/en/about-claude/pricing
   "claude-opus-5.5": { inputPer1K: 0.004, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.005, outputPer1K: 0.02 },
   "claude-opus-5-5": { inputPer1K: 0.004, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.005, outputPer1K: 0.02 },
   "claude-opus-5": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, cacheCreationPer1K: 0.00625, outputPer1K: 0.025 },
@@ -108,8 +115,9 @@ export const DEFAULT_PRICING: PricingTable = {
   // the 0.025x cache reads.
   "claude-mythos-5.1": { inputPer1K: 0.01, cachedInputPer1K: 0.00025, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
   "claude-mythos-5-1": { inputPer1K: 0.01, cachedInputPer1K: 0.00025, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
-  "claude-sonnet-5.5": { inputPer1K: 0.002, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.0025, outputPer1K: 0.01 },
-  "claude-sonnet-5-5": { inputPer1K: 0.002, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.0025, outputPer1K: 0.01 },
+  "claude-mythos-5": { inputPer1K: 0.01, cachedInputPer1K: 0.001, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
+  "claude-sonnet-5.5": { inputPer1K: 0.002, cachedInputPer1K: 0.0001, cacheCreationPer1K: 0.0025, outputPer1K: 0.01 },
+  "claude-sonnet-5-5": { inputPer1K: 0.002, cachedInputPer1K: 0.0001, cacheCreationPer1K: 0.0025, outputPer1K: 0.01 },
   "claude-sonnet-5": { inputPer1K: 0.002, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.0025, outputPer1K: 0.01 },
   "claude-sonnet-4.6": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },
   "claude-sonnet-4-6": { inputPer1K: 0.003, cachedInputPer1K: 0.0003, cacheCreationPer1K: 0.00375, outputPer1K: 0.015 },

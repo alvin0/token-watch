@@ -2,6 +2,18 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.2.10]
+
+### Added
+
+- Pricing for GPT-6.1 Terra and GPT-5.6 Cyber, including long-context rates.
+- Pricing for OpenAI's `chat-latest` and Claude Mythos 5.
+
+### Fixed
+
+- Corrected Claude Sonnet 5.5 cache-read pricing to $0.10 per million tokens
+  for both model aliases.
+
 ## [0.2.9]
 
 ### Added

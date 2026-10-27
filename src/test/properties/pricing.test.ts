@@ -167,7 +167,7 @@ suite("PricingEngine property tests", () => {
     );
     assert.deepStrictEqual(DEFAULT_PRICING["claude-sonnet-5.5"], {
       inputPer1K: 0.002,
-      cachedInputPer1K: 0.0002,
+      cachedInputPer1K: 0.0001,
       cacheCreationPer1K: 0.0025,
       outputPer1K: 0.01,
     });
