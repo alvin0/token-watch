@@ -2,6 +2,19 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.2.11]
+
+### Added
+
+- Pricing for Claude Fable 5.2 and Mythos 5.2, including both model aliases.
+- Pricing for GPT-6 Cyber, including long-context rates, GPT-6 Rosalind, and
+  GPT-6 Astra for Law.
+- Regression tests for the new models' session costs, cache pricing, and aliases.
+
+### Changed
+
+- Updated the GPT-5.6 Sol promotional pricing note to November 30, 2026.
+
 ## [0.2.10]
 
 ### Added

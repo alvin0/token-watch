@@ -40,6 +40,65 @@ const unknownModelName = fc.string({ minLength: 1, maxLength: 20 }).filter(
 );
 
 suite("PricingEngine property tests", () => {
+  // Expected USD totals use the providers' published per-MTok prices, checked
+  // 2026-11-10, independently of the bundled per-1K representation.
+  // https://developers.openai.com/api/docs/pricing
+  // https://platform.claude.com/docs/en/about-claude/pricing
+  for (const { model, expectedUsd } of [
+    { model: "claude-fable-5.2", expectedUsd: 0.21 },
+    { model: "claude-fable-5-2", expectedUsd: 0.21 },
+    { model: "claude-mythos-5.2", expectedUsd: 0.21 },
+    { model: "claude-mythos-5-2", expectedUsd: 0.21 },
+    { model: "gpt-6-cyber", expectedUsd: 0.6 },
+    { model: "gpt-6-rosalind", expectedUsd: 0.45 },
+  ]) {
+    test(`${model} prices a cached session without falling back`, () => {
+      const engine = new PricingEngine(DEFAULT_PRICING);
+      const result = engine.costOfTokens(model, {
+        inputTokens: 10_000,
+        outputTokens: 2_000,
+        cacheReadTokens: 50_000,
+        cacheCreationTokens: 4_000,
+        reasoningTokens: 0,
+      });
+
+      assert.strictEqual(result.unknown, false);
+      assert.strictEqual(result.effectiveModel, model);
+      assertAlmostEqual(result.usd, expectedUsd);
+    });
+  }
+
+  test("GPT-6 Astra for Law prices input, output, and cache reads without falling back", () => {
+    const engine = new PricingEngine(DEFAULT_PRICING);
+    const result = engine.costOfTokens("gpt-6-astra-law", {
+      inputTokens: 10_000,
+      outputTokens: 2_000,
+      cacheReadTokens: 50_000,
+      cacheCreationTokens: 0,
+      reasoningTokens: 0,
+    });
+
+    assert.strictEqual(result.unknown, false);
+    assertAlmostEqual(result.usd, 0.25);
+  });
+
+  test("GPT-6 Cyber applies bundled long-context prices to every token bucket", () => {
+    const engine = new PricingEngine(DEFAULT_PRICING);
+    const result = engine.costOfTokens("gpt-6-cyber", {
+      inputTokens: 300_000,
+      outputTokens: 2_000,
+      cacheReadTokens: 50_000,
+      cacheCreationTokens: 4_000,
+      reasoningTokens: 0,
+    }, { contextUsedTokens: 354_000 });
+
+    assert.strictEqual(result.unknown, false);
+    assert.strictEqual(result.effectiveModel, "gpt-6-cyber-long-context");
+    assert.strictEqual(result.longContextApplied, true);
+    assert.strictEqual(result.longContextMissingRate, false);
+    assertAlmostEqual(result.usd, 12.7);
+  });
+
   test("Bundled GPT pricing matches migrated OpenAI MTok rates", () => {
     assertRates([
       ["gpt-5", { inputPer1K: 0.00125, cachedInputPer1K: 0.000125, outputPer1K: 0.01 }],
