@@ -1,19 +1,34 @@
 import * as vscode from "vscode";
 import { LIMIT_RESET_EXPIRY_WARNING_MS } from "../shared/codexUsage";
 import { localeTag, translate, type AppLanguage } from "../shared/i18n";
-import type { UsageLimitReset, UsageLimitResetsInfo } from "../shared/protocol";
+import type { UsageLimitReset, UsageLimitResetsInfo, UsageProvider } from "../shared/protocol";
 
 export const LIMIT_RESET_REMINDERS_STORAGE_KEY = "tokenWatch.limitResetReminders.v1";
+/**
+ * Claude keeps its own list. Each evaluation forgets the ids its provider no
+ * longer reports, so a shared list would have every Codex evaluation forget
+ * the Claude reminders and warn about them again on the next Claude one.
+ */
+export const CLAUDE_LIMIT_RESET_REMINDERS_STORAGE_KEY = "tokenWatch.limitResetReminders.claude.v1";
+
+const STORAGE_KEYS: Record<UsageProvider, string> = {
+  codex: LIMIT_RESET_REMINDERS_STORAGE_KEY,
+  claude: CLAUDE_LIMIT_RESET_REMINDERS_STORAGE_KEY,
+};
+
+const NOTIFICATION_KEYS = {
+  codex: "limitResets.expiringNotification",
+  claude: "limitResets.expiringNotificationClaude",
+} as const;
 
 export type LimitResetNotifier = (message: string) => Thenable<unknown>;
 
 /**
- * Reminds the user about a Codex usage limit reset that is about to expire, so
- * it is not silently lost. Warns once per granted reset; the reset itself is
- * used inside Codex, this only surfaces the deadline.
+ * Reminds the user about a usage limit reset that is about to expire, so it is
+ * not silently lost. Warns once per granted reset, per provider.
  */
 export class LimitResetReminder {
-  private notified: string[];
+  private readonly notified: Record<UsageProvider, string[]>;
   private storageQueue: Promise<void> = Promise.resolve();
 
   constructor(
@@ -22,11 +37,14 @@ export class LimitResetReminder {
     private readonly getLanguage: () => AppLanguage = () => "en",
     private readonly now: () => number = Date.now,
   ) {
-    this.notified = loadNotifiedIds(globalState.get<unknown>(LIMIT_RESET_REMINDERS_STORAGE_KEY));
+    this.notified = {
+      codex: loadNotifiedIds(globalState.get<unknown>(STORAGE_KEYS.codex)),
+      claude: loadNotifiedIds(globalState.get<unknown>(STORAGE_KEYS.claude)),
+    };
   }
 
-  /** Called after each Codex usage refresh with the resets the account has left. */
-  async evaluate(limitResets?: UsageLimitResetsInfo): Promise<void> {
+  /** Called after each usage refresh with the resets the provider's account has left. */
+  async evaluate(limitResets?: UsageLimitResetsInfo, provider: UsageProvider = "codex"): Promise<void> {
     const resets = limitResets?.resets;
     if (!resets) {
       return;
@@ -35,30 +53,31 @@ export class LimitResetReminder {
     const now = this.now();
     const liveIds = new Set(resets.map((reset) => reset.id));
     const expiringSoon = resets.filter((reset) => isExpiringSoon(reset, now));
-    const unnotified = expiringSoon.filter((reset) => !this.notified.includes(reset.id));
+    const notified = this.notified[provider];
+    const unnotified = expiringSoon.filter((reset) => !notified.includes(reset.id));
 
     // Drop resets the account no longer has, so used or expired grants stop
     // taking up storage. Ids are unique per grant, so they never come back.
-    const retained = this.notified.filter((id) => liveIds.has(id));
+    const retained = notified.filter((id) => liveIds.has(id));
     const nextNotified = [...retained, ...unnotified.map((reset) => reset.id)];
 
     const language = this.getLanguage();
     for (const reset of unnotified) {
-      void this.notify(translate(language, "limitResets.expiringNotification", {
+      void this.notify(translate(language, NOTIFICATION_KEYS[provider], {
         date: formatExpiry(reset.expiresAtUtc, language),
       }));
     }
 
-    if (nextNotified.length !== this.notified.length || unnotified.length > 0) {
-      this.notified = nextNotified;
-      await this.persist();
+    if (nextNotified.length !== notified.length || unnotified.length > 0) {
+      this.notified[provider] = nextNotified;
+      await this.persist(provider);
     }
   }
 
-  private persist(): Promise<void> {
-    const snapshot = [...this.notified];
+  private persist(provider: UsageProvider): Promise<void> {
+    const snapshot = [...this.notified[provider]];
     this.storageQueue = this.storageQueue
-      .then(() => this.globalState.update(LIMIT_RESET_REMINDERS_STORAGE_KEY, snapshot))
+      .then(() => this.globalState.update(STORAGE_KEYS[provider], snapshot))
       .then(() => undefined, (error: unknown) => {
         console.warn("[TokenWatch] Failed to store usage limit reset reminders:", error);
       });

@@ -9,6 +9,7 @@ import { resolveClaudePlan, resolveCodexPlan } from "./usagePlan";
 import { UsageRefreshTimer } from "./UsageRefreshTimer";
 import type { LimitResetReminder } from "./LimitResetReminder";
 import { providerRequestsEnabled } from "../shared/testMode";
+import { isLimitResetNotSpent } from "../provider/limitReset";
 import type {
   ClaudeRateLimitInfo,
   RateLimitInfo,
@@ -86,6 +87,13 @@ export interface UsageStatusDeps {
   accounts?: UsageAccountLookups;
 }
 
+const CLAUDE_CODE_EXTENSION_ID = "anthropic.claude-code";
+
+function readExtensionVersion(id: string): string | undefined {
+  const version: unknown = vscode.extensions.getExtension(id)?.packageJSON?.version;
+  return typeof version === "string" ? version : undefined;
+}
+
 const REAL_ACCOUNT_LOOKUPS: UsageAccountLookups = {
   codexAuthMode: () => readCodexAuthMode(DEFAULT_CODEX_AUTH_FILE),
   codexPlan: resolveCodexPlan,
@@ -115,6 +123,12 @@ interface ProviderRuntime {
   inFlight: Promise<void> | undefined;
   lastRefreshAt: number;
   timer: UsageRefreshTimer;
+  /**
+   * Bumped by each reset claim that spent, or may have spent, a reset. A
+   * reading that began before the bump lists resets as they were, so its list
+   * is not shown.
+   */
+  claimEpoch: number;
 }
 
 export class UsageStatusService implements vscode.Disposable {
@@ -143,18 +157,24 @@ export class UsageStatusService implements vscode.Disposable {
   ) {
     this.codexConnection = deps?.codex
       ?? new CodexConnection({ authFile: DEFAULT_CODEX_AUTH_FILE });
-    this.claudeConnection = deps?.claude ?? new ClaudeConnection();
+    this.claudeConnection = deps?.claude ?? new ClaudeConnection({
+      // The Claude Code extension bundles its CLI at the extension's version;
+      // for someone with no standalone install it is the only one there is.
+      cliVersionHints: () => [readExtensionVersion(CLAUDE_CODE_EXTENSION_ID)],
+    });
     this.accounts = deps?.accounts ?? REAL_ACCOUNT_LOOKUPS;
     this.runtime = {
       codex: {
         inFlight: undefined,
         lastRefreshAt: 0,
         timer: new UsageRefreshTimer(() => { void this.refresh("codex", { force: true }); }),
+        claimEpoch: 0,
       },
       claude: {
         inFlight: undefined,
         lastRefreshAt: 0,
         timer: new UsageRefreshTimer(() => { void this.refresh("claude", { force: true }); }),
+        claimEpoch: 0,
       },
     };
   }
@@ -221,9 +241,10 @@ export class UsageStatusService implements vscode.Disposable {
       ? { codexUsageCache: { ...this.cacheInfo("codex"), refreshing: true, unavailable: !this.state.codexRateLimit } }
       : { claudeUsageCache: { ...this.cacheInfo("claude"), refreshing: true, unavailable: !this.state.claudeRateLimit } });
 
+    const epoch = runtime.claimEpoch;
     const work = (provider === "codex"
-      ? this.refreshCodex(options)
-      : this.refreshClaude(options)
+      ? this.refreshCodex(options, epoch)
+      : this.refreshClaude(options, epoch)
     ).finally(() => {
       runtime.lastRefreshAt = Date.now();
       runtime.inFlight = undefined;
@@ -238,26 +259,56 @@ export class UsageStatusService implements vscode.Disposable {
   }
 
   /**
-   * Spend one Codex usage limit reset, then re-read the quota.
+   * Spend one usage limit reset on the provider's account.
    *
-   * The re-read is forced past both the spacing floor and the response cache:
-   * the whole point of activating a reset is that the numbers on screen have
-   * just changed. Rejects with the provider's own message so the WebView can
-   * show why it failed.
+   * Settles as soon as the provider has answered the claim, so the WebView is
+   * not left waiting on the quota re-read as well; that runs on afterwards and
+   * reaches the screen through the usual state change. Rejects with the
+   * provider's own message so the WebView can show why it failed.
    */
-  async consumeCodexLimitReset(resetId: string): Promise<void> {
+  async consumeLimitReset(provider: UsageProvider, resetId: string): Promise<void> {
     if (this.disposed) {
       throw new Error("Token Watch is shutting down.");
     }
     if (!providerRequestsEnabled()) {
       throw new Error("Usage limit resets cannot be activated in test mode.");
     }
-    await this.codexConnection.consumeLimitReset(resetId);
-    // A refresh that started before the reset only describes the old quota.
-    // Let it finish, then start the forced read below instead of letting
-    // refresh() coalesce this request into that stale in-flight work.
-    await this.runtime.codex.inFlight?.catch(() => undefined);
-    await this.refresh("codex", { force: true, bypassCache: true });
+    try {
+      await (provider === "codex"
+        ? this.codexConnection.consumeLimitReset(resetId)
+        : this.claudeConnection.consumeLimitReset(resetId));
+    } catch (error) {
+      // A refusal leaves the account as it was: nothing to hide, and no reason
+      // to spend a quota read on a service that tolerates little polling. A
+      // timeout or an unreadable answer may have spent the reset, though.
+      if (!isLimitResetNotSpent(error)) {
+        this.afterSpend(provider);
+      }
+      throw error;
+    }
+    this.afterSpend(provider);
+  }
+
+  /**
+   * A reset was, or may have been, spent: take the list off the screen and
+   * re-read the quota.
+   *
+   * The list now offers a reset that may be gone. If the re-read is refused
+   * (Claude's usage endpoint cools down for minutes) it would stay there, one
+   * click from spending another, so it goes until a reading taken after the
+   * claim says what is left.
+   */
+  private afterSpend(provider: UsageProvider): void {
+    const runtime = this.runtime[provider];
+    runtime.claimEpoch += 1;
+    this.dropLimitResets(provider);
+    // A refresh that started before the claim only describes the old quota.
+    // Let it finish, then start a forced read instead of letting refresh()
+    // coalesce this request into that stale in-flight work.
+    void (async () => {
+      await runtime.inFlight?.catch(() => undefined);
+      await this.refresh(provider, { force: true, bypassCache: true });
+    })();
   }
 
   dispose(): void {
@@ -271,7 +322,7 @@ export class UsageStatusService implements vscode.Disposable {
 
   // --- Private ---
 
-  private async refreshCodex(options: UsageRefreshOptions): Promise<void> {
+  private async refreshCodex(options: UsageRefreshOptions, epoch: number): Promise<void> {
     try {
       const authMode = await this.accounts.codexAuthMode();
       if (authMode && authMode !== "chatgpt") {
@@ -292,8 +343,11 @@ export class UsageStatusService implements vscode.Disposable {
       }
       const plan = await this.accounts.codexPlan(usage.plan_type, this.state.codexPlan);
       if (this.disposed) { return; }
+      if (rateLimit && epoch !== this.runtime.codex.claimEpoch) {
+        rateLimit.limitResets = undefined;
+      }
       if (rateLimit) {
-        void this.limitResetReminder?.evaluate(rateLimit.limitResets);
+        void this.limitResetReminder?.evaluate(rateLimit.limitResets, "codex");
       }
       this.patch({
         codexPlan: plan,
@@ -310,12 +364,18 @@ export class UsageStatusService implements vscode.Disposable {
     }
   }
 
-  private async refreshClaude(options: UsageRefreshOptions): Promise<void> {
+  private async refreshClaude(options: UsageRefreshOptions, epoch: number): Promise<void> {
     try {
       const plan = await this.accounts.claudePlan(this.state.claudePlan);
       const usage = await this.claudeConnection.usageInfo<ClaudeUsageResponse>({ force: options.bypassCache });
       if (this.disposed) { return; }
       const rateLimit = mapClaudeUsageToRateLimitInfo(usage);
+      if (rateLimit && epoch !== this.runtime.claude.claimEpoch) {
+        rateLimit.limitResets = undefined;
+      }
+      if (rateLimit) {
+        void this.limitResetReminder?.evaluate(rateLimit.limitResets, "claude");
+      }
       this.patch({
         claudePlan: plan,
         ...(rateLimit ? { claudeRateLimit: rateLimit } : {}),
@@ -346,6 +406,16 @@ export class UsageStatusService implements vscode.Disposable {
       return;
     }
     runtime.timer.schedule(nextRefreshAt(this.cacheInfo(provider), provider, Date.now()));
+  }
+
+  private dropLimitResets(provider: UsageProvider): void {
+    if (provider === "codex") {
+      const rateLimit = this.state.codexRateLimit;
+      if (rateLimit?.limitResets) { this.patch({ codexRateLimit: { ...rateLimit, limitResets: undefined } }); }
+    } else {
+      const rateLimit = this.state.claudeRateLimit;
+      if (rateLimit?.limitResets) { this.patch({ claudeRateLimit: { ...rateLimit, limitResets: undefined } }); }
+    }
   }
 
   private patch(partial: Partial<UsageStatusState>): void {

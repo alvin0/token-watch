@@ -6,6 +6,7 @@ import type { UsageCacheInfo } from "../../shared/protocol";
 import { randomUsageRetryMs, rateLimitBackoffMs } from "../../shared/usageRetry";
 import { fileIdentityOf, writeFileAtomicSync, type FileIdentity } from "../atomicFile";
 import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout } from "../http";
+import { LimitResetNotSpentError } from "../limitReset";
 
 export const DEFAULT_CODEX_AUTH_FILE = "~/.codex/auth.json";
 export const WHAM_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
@@ -125,6 +126,12 @@ export class CodexConnection {
    */
   async consumeLimitReset(creditId: string, options: CodexRequestOptions = {}): Promise<void> {
     const body = JSON.stringify({ credit_id: creditId, redeem_request_id: randomUUID() });
+    // The cached usage and reset list both describe the account as it was
+    // before this call. Cleared before sending rather than after success: a
+    // claim that times out may still have been applied, and left in place the
+    // card would keep offering a reset that is already spent.
+    usageInfoCache.delete(requestKey(this.options, this.options.endpoint ?? WHAM_USAGE_ENDPOINT));
+    usageInfoCache.delete(requestKey(this.options, WHAM_LIMIT_RESETS_ENDPOINT));
     const response = await this.requestWithRefresh(WHAM_LIMIT_RESET_CONSUME_ENDPOINT, {
       ...options,
       method: "POST",
@@ -132,13 +139,10 @@ export class CodexConnection {
       headers: { ...headersToRecord(options.headers), "content-type": "application/json" },
     });
     if (!response.ok) {
-      throw new Error(`Codex usage limit reset activation failed: ${response.status} ${await response.text()}`);
+      const message = `Codex usage limit reset activation failed: ${response.status} ${await response.text()}`;
+      // A 4xx is the server refusing the claim; a 5xx may have come after it applied it.
+      throw response.status < 500 ? new LimitResetNotSpentError(message) : new Error(message);
     }
-    // The cached usage and reset list both describe the account as it was
-    // before this call. Left in place, the card would keep offering a reset
-    // that is already spent.
-    usageInfoCache.delete(requestKey(this.options, this.options.endpoint ?? WHAM_USAGE_ENDPOINT));
-    usageInfoCache.delete(requestKey(this.options, WHAM_LIMIT_RESETS_ENDPOINT));
   }
 
   private cachedGet<T>(url: string, options: CodexRequestOptions): Promise<T> {

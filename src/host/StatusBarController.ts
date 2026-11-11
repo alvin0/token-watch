@@ -374,7 +374,9 @@ function buildClaudeUsageLines(rateLimit: ClaudeRateLimitInfo | undefined, langu
   if (!rateLimit) {
     return [];
   }
-  return buildCompactUsageLines(providerTitle('CLAUDE CODE', plan), rateLimit.windows, CLAUDE_PRIMARY_WINDOW_IDS, language);
+  const lines = buildCompactUsageLines(providerTitle('CLAUDE CODE', plan), rateLimit.windows, CLAUDE_PRIMARY_WINDOW_IDS, language);
+  const limitResets = formatLimitResets(rateLimit.limitResets, language);
+  return lines.length > 0 && limitResets ? [...lines, limitResets] : lines;
 }
 
 function buildCompactUsageLines(

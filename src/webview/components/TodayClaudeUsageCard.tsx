@@ -11,5 +11,15 @@ export function TodayClaudeUsageCard() {
     return null;
   }
 
-  return <ProviderUsageCard provider="claude" title={t("quota.claude")} windows={rateLimit?.windows ?? []} cacheInfo={cacheInfo} plan={plan} />;
+  return (
+    <ProviderUsageCard
+      provider="claude"
+      title={t("quota.claude")}
+      windows={rateLimit?.windows ?? []}
+      cacheInfo={cacheInfo}
+      plan={plan}
+      limitResets={rateLimit?.limitResets}
+      limitResetsNotice={rateLimit?.limitResetsNeedNewerCli ? t("quota.limitResetsNeedNewerCli") : undefined}
+    />
+  );
 }

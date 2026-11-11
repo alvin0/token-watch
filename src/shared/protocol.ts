@@ -135,6 +135,8 @@ export interface UsageLimitReset {
   id: string;
   title?: string;
   expiresAtUtc?: number;
+  /** False when the provider says it cannot be spent right now (e.g. not at a limit yet). Absent means usable. */
+  usableNow?: boolean;
 }
 
 /**
@@ -164,6 +166,9 @@ export interface ClaudeRateLimitInfo {
   fiveHourResetAtUtc?: number;
   weeklyResetAtUtc?: number;
   windows: UsageQuotaWindow[];
+  limitResets?: UsageLimitResetsInfo;
+  /** The server withholds usage limit resets until Claude Code is updated (`ineligible_reason: "cli_version"`). */
+  limitResetsNeedNewerCli?: boolean;
   tsUtc?: number;
 }
 
@@ -332,10 +337,10 @@ export type WebviewRequest =
   | { type: "updatePricing"; table: PricingTable }
   | { type: "refreshUsage"; provider: UsageProvider }
   /**
-   * Spend one Codex usage limit reset. Codex-only: no other provider grants
-   * them. State-changing, so it carries a request ID and is answered.
+   * Spend one usage limit reset on the given provider's account.
+   * State-changing, so it carries a request ID and is answered.
    */
-  | { type: "consumeLimitReset"; requestId: string; resetId: string }
+  | { type: "consumeLimitReset"; requestId: string; provider: UsageProvider; resetId: string }
   | { type: "openSetting"; key: string }
   | { type: "setLanguage"; language: AppLanguage }
   | { type: "savePricingSettings"; requestId: string; table: PricingTable }

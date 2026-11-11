@@ -28,6 +28,7 @@ export function ProviderUsageCard({
   cacheInfo,
   plan,
   limitResets,
+  limitResetsNotice,
 }: {
   provider: QuotaProvider;
   title: string;
@@ -35,6 +36,8 @@ export function ProviderUsageCard({
   cacheInfo?: UsageCacheInfo;
   plan?: UsagePlanInfo;
   limitResets?: UsageLimitResetsInfo;
+  /** Why the provider is withholding resets, when the user can do something about it. */
+  limitResetsNotice?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [, refreshRetryState] = useState(0);
@@ -133,6 +136,11 @@ export function ProviderUsageCard({
         )}
 
         <LimitResets limitResets={limitResets} locale={locale} />
+        {limitResetsNotice && !(limitResets && limitResets.availableCount > 0) && (
+          <div className="tw-mt-2 tw-min-w-0 tw-text-[9px] tw-leading-snug tw-text-chart-yellow" role="note">
+            {limitResetsNotice}
+          </div>
+        )}
 
         {cacheInfo && (
           <div className="tw-mt-2 tw-flex tw-items-center tw-justify-between tw-gap-3 tw-border-t tw-border-edge tw-pt-2">
@@ -187,11 +195,6 @@ export function ProviderUsageCard({
 }
 
 /**
- * Usage limit resets left on the account — these restore a reached 5h/weekly
- * limit and expire, so the deadline is called out once it is close. The reset
- * itself is used inside Codex; this card only reports it.
- */
-/**
  * How many resets are left and when the first of them runs out.
  *
  * The full list used to sit here, one line per reset. It is reference material
@@ -218,12 +221,7 @@ function LimitResets({ limitResets, locale }: { limitResets?: UsageLimitResetsIn
   );
 }
 
-/**
- * The itemised resets, shown once the card is expanded.
- *
- * Only Codex grants these, and only Codex can spend one, so the activation
- * button is gated on the provider rather than on the list being non-empty.
- */
+/** The itemised resets, shown once the card is expanded, each with its activation button. */
 function LimitResetDetails({
   provider,
   limitResets,
@@ -236,6 +234,18 @@ function LimitResetDetails({
   const { t } = useTranslation();
   const [confirming, setConfirming] = useState<UsageLimitReset>();
   const resets = limitResets?.resets ?? [];
+  // Read from the live list, not the snapshot taken at the click: a refresh
+  // that spends, expires or blocks the reset must take the dialog with it
+  // rather than leave an Activate button pointing at it.
+  const confirmingReset = confirming
+    ? resets.find((reset) => reset.id === confirming.id && reset.usableNow !== false)
+    : undefined;
+  const confirmationLost = Boolean(confirming) && !confirmingReset;
+  useEffect(() => {
+    // Forget it outright, so the dialog does not reopen on its own if the
+    // reset comes back in a later reading.
+    if (confirmationLost) { setConfirming(undefined); }
+  }, [confirmationLost]);
   if (resets.length === 0) {
     return null;
   }
@@ -252,13 +262,14 @@ function LimitResetDetails({
             reset={reset}
             position={index + 1}
             locale={locale}
-            {...(provider === "codex" ? { onActivate: () => setConfirming(reset) } : {})}
+            onActivate={() => setConfirming(reset)}
           />
         ))}
       </ol>
-      {confirming && (
+      {confirmingReset && (
         <LimitResetConfirmDialog
-          reset={confirming}
+          provider={provider}
+          reset={confirmingReset}
           availableCount={availableCount}
           locale={locale}
           onClose={() => setConfirming(undefined)}
@@ -298,8 +309,10 @@ function LimitResetItem({
         <button
           type="button"
           aria-label={t("quota.limitResetActivateLabel", { title })}
+          disabled={reset.usableNow === false}
+          title={reset.usableNow === false ? t("quota.limitResetNotUsableNow") : undefined}
           onClick={onActivate}
-          className="tw-shrink-0 tw-cursor-pointer tw-rounded tw-border tw-border-control tw-px-2 tw-py-0.5 tw-text-[8px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] hover:tw-bg-hover"
+          className="tw-shrink-0 tw-rounded tw-border tw-border-control tw-px-2 tw-py-0.5 tw-text-[8px] tw-font-medium tw-text-[var(--vscode-textLink-foreground)] enabled:tw-cursor-pointer enabled:hover:tw-bg-hover disabled:tw-cursor-not-allowed disabled:tw-opacity-50"
         >
           {t("quota.limitResetActivate")}
         </button>

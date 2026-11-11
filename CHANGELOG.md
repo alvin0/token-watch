@@ -2,6 +2,41 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.2.12]
+
+### Added
+
+- Claude Code usage limit resets. The Claude Code card now shows how many
+  resets you have and when the first one expires, and the status bar tooltip
+  lists them too. Expand the card to see each reset and activate it with the
+  same confirmation dialog as Codex.
+- A reset that only works once you reach a limit shows a disabled
+  **Activate** button, with a tooltip explaining why, instead of failing after
+  you confirm.
+- A warning before a Claude Code reset expires, kept separately from the Codex
+  warnings so neither repeats the other's.
+- If Claude withholds resets because Claude Code is out of date, the card says
+  so and tells you to update Claude Code.
+
+### Changed
+
+- Activating a reset (Codex or Claude Code) now closes the dialog as soon as the
+  provider answers; the card refreshes on its own right after.
+- After a reset is used, or might have been used (a timeout or an unreadable
+  answer), the reset list is hidden until a fresh reading arrives. It used to
+  stay on screen and could be clicked again, spending a second reset, when the
+  refresh after activation was rate limited.
+- If the provider refuses the activation, Token Watch no longer reloads usage.
+  Repeated attempts no longer run into the provider's rate limit.
+
+### Fixed
+
+- A Codex reset activation that timed out could leave the old reset list in
+  the cache and show it again.
+- The panel could report a timeout for an activation the extension was still
+  sending. It now waits long enough for the slowest case, and if it does give
+  up it warns that the reset may still have been used.
+
 ## [0.2.11]
 
 ### Added

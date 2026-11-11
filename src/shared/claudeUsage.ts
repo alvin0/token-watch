@@ -1,11 +1,43 @@
-import type { ClaudeRateLimitInfo, UsagePlanInfo, UsageQuotaWindow } from "./protocol";
+import type {
+  ClaudeRateLimitInfo,
+  UsageLimitReset,
+  UsageLimitResetsInfo,
+  UsagePlanInfo,
+  UsageQuotaWindow,
+} from "./protocol";
 
 export interface ClaudeUsageResponse {
   five_hour?: ClaudeUsageWindow | null;
   seven_day?: ClaudeUsageWindow | null;
   limits?: ClaudeDynamicLimit[];
+  /** Usage limit resets granted to the account; only sent when asked for with `cedar_ember=1`. */
+  cedar_ember?: ClaudeLimitResetStatus | null;
   [key: string]: unknown;
 }
+
+/** The `cedar_ember` block: whether the account can use resets, and the grants it holds. */
+export interface ClaudeLimitResetStatus {
+  eligible?: boolean;
+  /** Why an ineligible account gets no resets, e.g. `cli_version` or `surface`. */
+  ineligible_reason?: string | null;
+  grants?: Array<ClaudeLimitResetGrant | null> | null;
+  /** The grant the server would have spent next; a claim on another can be refused as `not_next_grant`. */
+  next_grant_id?: string | null;
+}
+
+/** One grant of usage limit resets. A grant can hold several resets, all expiring together. */
+export interface ClaudeLimitResetGrant {
+  id?: string;
+  label?: string;
+  resets_left?: number;
+  ends_at?: string | null;
+  paused?: boolean;
+  /** Most grants only clear a limit already reached; this is false until then. */
+  usable_now?: boolean;
+}
+
+/** Grant ids Claude Code will claim; it drops any other grant as malformed. */
+const CLAUDE_GRANT_ID = /^[a-z0-9_-]{1,40}$/;
 
 export interface ClaudeUsageWindow {
   utilization?: number;
@@ -35,6 +67,8 @@ export function mapClaudeUsageToRateLimitInfo(
     return undefined;
   }
 
+  const limitResets = mapClaudeLimitResets(usage.cedar_ember, fetchedAtUtc);
+
   return {
     tsUtc: fetchedAtUtc,
     fiveHourPct: finiteNumber(fiveHour?.utilization),
@@ -42,7 +76,60 @@ export function mapClaudeUsageToRateLimitInfo(
     fiveHourResetAtUtc: timestamp(fiveHour?.resets_at),
     weeklyResetAtUtc: timestamp(weekly?.resets_at),
     windows,
+    ...(limitResets ? { limitResets } : {}),
+    ...(usage.cedar_ember?.eligible === false && usage.cedar_ember.ineligible_reason === "cli_version"
+      ? { limitResetsNeedNewerCli: true }
+      : {}),
   };
+}
+
+/**
+ * The usage limit resets the account can spend, soonest expiry first.
+ *
+ * Each grant becomes one entry, redeemed by its grant id; the count is the sum
+ * of resets left across grants. Paused, spent and already expired grants are
+ * left out. The server's next grant leads, then soonest expiry. Absent when the account is not eligible or holds nothing, so the
+ * card shows nothing rather than a zero. A grant the server says cannot be
+ * used yet is still listed — it is the user's — but marked so it is not
+ * offered for activation.
+ */
+export function mapClaudeLimitResets(
+  status: ClaudeLimitResetStatus | null | undefined,
+  now = Date.now(),
+): UsageLimitResetsInfo | undefined {
+  if (!status?.eligible || !Array.isArray(status.grants)) {
+    return undefined;
+  }
+  let availableCount = 0;
+  const resets: UsageLimitReset[] = [];
+  for (const grant of status.grants) {
+    const id = grant?.id;
+    const left = grant?.resets_left;
+    if (!grant || typeof id !== "string" || !CLAUDE_GRANT_ID.test(id) || grant.paused
+      || typeof left !== "number" || !Number.isInteger(left) || left <= 0) {
+      continue;
+    }
+    const expiresAtUtc = timestamp(grant.ends_at ?? undefined);
+    if (expiresAtUtc !== undefined && expiresAtUtc <= now) {
+      continue;
+    }
+    availableCount += left;
+    const label = grant.label?.trim();
+    const title = label && left > 1 ? `${label} (×${left})` : label;
+    resets.push({
+      id,
+      ...(title ? { title } : {}),
+      ...(expiresAtUtc === undefined ? {} : { expiresAtUtc }),
+      ...(grant.usable_now === true ? {} : { usableNow: false }),
+    });
+  }
+  if (availableCount === 0) {
+    return undefined;
+  }
+  const next = status.next_grant_id;
+  resets.sort((a, b) => Number(b.id === next) - Number(a.id === next)
+    || (a.expiresAtUtc ?? Infinity) - (b.expiresAtUtc ?? Infinity));
+  return { availableCount, resets };
 }
 
 /** Subscription slugs stored on `claudeAiOauth.subscriptionType`. */

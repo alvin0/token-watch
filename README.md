@@ -24,6 +24,12 @@ the file's existing permissions, and are refused if the other tool rotated the
 credentials first. Turn the panels off with `tokenWatch.statusBar.enabled` and
 by closing the sidebar if you would rather it never touched them.
 
+Claude usage requests and Claude usage limit reset activations are sent with
+Claude Code CLI's client identity (`claude-cli/<version>` user agent, using the
+newest version found locally), because Claude only reports resets to its own
+clients. Activating a Claude reset also reads your account profile to find the
+organization the reset belongs to.
+
 Claude credential refreshes are coordinated with Claude Code and across VS Code
 windows: Token Watch re-reads credentials before refreshing, waits briefly for
 Claude Code to rotate a newly expired token itself, and uses a machine-wide
@@ -42,9 +48,10 @@ lock so two windows cannot spend the same refresh grant.
   and comparisons with the previous period, filterable by source.
 - Live Codex and Claude Code subscription quota cards, including account plan,
   5-hour and weekly windows, reset times, and model- or feature-specific limits.
-- Codex usage limit resets: see the remaining count and expiry, get warned before
-  one expires, and activate one from the expanded Codex card after an explicit
-  confirmation. Usage is fetched again without cache after activation.
+- Codex and Claude Code usage limit resets: see the remaining count and expiry,
+  get warned before one expires, and activate one from the expanded card after
+  an explicit confirmation. Usage is fetched again without cache after
+  activation.
 - Status bar summary for today's tokens and cost plus each provider's 5-hour
   quota; a low weekly quota is surfaced alongside it, with the full breakdown
   in the tooltip.

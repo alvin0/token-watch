@@ -10,6 +10,7 @@ import type {
   DisplayCurrencyConfig,
   UsageCacheInfo,
   UsagePlanInfo,
+  UsageProvider,
   CostAlertRule,
   HostMessage,
   WebviewRequest,
@@ -68,6 +69,13 @@ function persistViewState(state: PersistedViewState): void {
  * panel sits on a spinner with no way forward.
  */
 const REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * Deadline for a usage limit reset activation. Longer than the host's own
+ * worst case for a claim — credential read, token refresh, profile read and a
+ * 25 s claim, each retried once after a refused token — so the panel does not
+ * report a failure for a claim the host is still sending.
+ */
+const LIMIT_RESET_TIMEOUT_MS = 150_000;
 
 // --- Slice interfaces ---
 
@@ -130,8 +138,8 @@ interface Actions {
   clearDailyHourly: () => void;
   saveCostAlertRules: (rules: CostAlertRule[]) => Promise<void>;
   savePricingTable: (table: PricingTable) => Promise<void>;
-  /** Spend one Codex usage limit reset. Resolves once the quota has been re-read. */
-  consumeLimitReset: (resetId: string) => Promise<void>;
+  /** Spend one usage limit reset. Resolves once the quota has been re-read. */
+  consumeLimitReset: (provider: UsageProvider, resetId: string) => Promise<void>;
   setLanguage: (language: AppLanguage) => void;
   dismissWarnings: (signature: string) => void;
 }
@@ -555,15 +563,15 @@ export const useStore = create<Store>((set, get) => ({
     });
   },
 
-  consumeLimitReset(resetId) {
+  consumeLimitReset(provider, resetId) {
     const requestId = `limit-reset-${++limitResetCounter}`;
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         pendingLimitResets.delete(requestId);
-        reject(new Error("The extension host did not answer in time."));
-      }, REQUEST_TIMEOUT_MS);
+        reject(new Error("The extension host did not answer in time. The reset may still have been used; check the count before trying again."));
+      }, LIMIT_RESET_TIMEOUT_MS);
       pendingLimitResets.set(requestId, { resolve, reject, timer });
-      vscodeApi.postMessage({ type: "consumeLimitReset", requestId, resetId } satisfies WebviewRequest);
+      vscodeApi.postMessage({ type: "consumeLimitReset", requestId, provider, resetId } satisfies WebviewRequest);
     });
   },
 

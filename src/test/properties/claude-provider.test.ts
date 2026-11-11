@@ -1,9 +1,11 @@
 import * as assert from "node:assert";
 import { usageRetryBounds } from "../../shared/usageRetry.js";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import {
+  CLAUDE_ORGANIZATIONS_ENDPOINT,
+  CLAUDE_PROFILE_ENDPOINT,
   CLAUDE_TOKEN_ENDPOINT,
   CLAUDE_USAGE_ENDPOINT,
   ClaudeConnection,
@@ -13,6 +15,7 @@ import {
   resolveClaudeCredentialsPath,
 } from "../../provider/claude/index.js";
 import { refreshLockPath } from "../../provider/credentialRefreshLock.js";
+import { isLimitResetNotSpent } from "../../provider/limitReset.js";
 
 /** What a 0.5 random lands on for this provider. */
 const { minMs, maxMs } = usageRetryBounds("claude");
@@ -347,6 +350,133 @@ suite("Claude provider connection", () => {
       });
 
       await assert.rejects(connection.usageInfo(), /Claude token refresh failed: 503/);
+    });
+  });
+
+  suite("usage limit reset activation", () => {
+    type Call = { url: string; method?: string; headers: Headers; body: string };
+
+    /** Answers the profile read and the claim; `claim` decides the claim's answer per attempt. */
+    function connectionFor(
+      claim: (attempt: number) => Response | Promise<Response>,
+      profile?: () => Response,
+      cliVersionHints?: () => Array<string | undefined>,
+    ) {
+      const calls: Call[] = [];
+      let claims = 0;
+      const versionsDir = join(tmpDir, "versions");
+      mkdirSync(versionsDir, { recursive: true });
+      const connection = new ClaudeConnection({
+        credentialsFile: writeCredentials(tmpDir, Date.now() + 60_000),
+        platform: "linux",
+        refreshLock: { dir: tmpDir },
+        cliVersionsDir: versionsDir,
+        cliVersionHints,
+        fetch: async (input, init) => {
+          const url = String(input);
+          calls.push({ url, method: init?.method, headers: new Headers(init?.headers), body: String(init?.body ?? "") });
+          if (url === CLAUDE_PROFILE_ENDPOINT) {
+            return profile?.() ?? new Response(JSON.stringify({ organization: { uuid: "org-123" } }), { status: 200 });
+          }
+          if (url === CLAUDE_TOKEN_ENDPOINT) {
+            return new Response(JSON.stringify({ access_token: "access-token-2", refresh_token: "refresh-token-2", expires_in: 3600 }), { status: 200 });
+          }
+          claims += 1;
+          return claim(claims);
+        },
+      });
+      return { connection, calls, versionsDir };
+    }
+
+    test("claims the grant for the token's own organization as Claude Code does", async () => {
+      const { connection, calls } = connectionFor(() => new Response(JSON.stringify({ result: "reset" }), { status: 200 }));
+
+      await connection.consumeLimitReset("grant-abc");
+
+      assert.deepStrictEqual(calls.map((call) => call.url), [
+        CLAUDE_PROFILE_ENDPOINT,
+        `${CLAUDE_ORGANIZATIONS_ENDPOINT}/org-123/reset_rate_limits`,
+      ]);
+      const claim = calls[1];
+      assert.strictEqual(claim.method, "POST");
+      assert.strictEqual(claim.headers.get("authorization"), "Bearer access-token");
+      assert.strictEqual(claim.headers.get("content-type"), "application/json");
+      assert.strictEqual(claim.headers.get("user-agent"), "claude-cli/2.1.318 (external, cli)");
+      assert.strictEqual(claim.headers.get("x-app"), "cli");
+      const body = JSON.parse(claim.body) as { program: string; grant_id: string; request_id: string };
+      assert.strictEqual(body.program, "cedar_ember");
+      assert.strictEqual(body.grant_id, "grant-abc");
+      assert.match(body.request_id, /^[0-9a-f-]{36}$/);
+    });
+
+    test("presents the newest installed Claude Code version when it is newer", async () => {
+      const { connection, calls, versionsDir } = connectionFor(() => new Response(JSON.stringify({ result: "reset" }), { status: 200 }));
+      for (const name of ["2.1.300", "2.10.2", "2.2.999", "not-a-version"]) {
+        mkdirSync(join(versionsDir, name));
+      }
+
+      await connection.consumeLimitReset("grant-abc");
+
+      assert.strictEqual(calls[1].headers.get("user-agent"), "claude-cli/2.10.2 (external, cli)");
+    });
+
+    test("takes the Claude Code extension's version when there is no standalone install", async () => {
+      const reset = () => new Response(JSON.stringify({ result: "reset" }), { status: 200 });
+      const newer = connectionFor(reset, undefined, () => ["2.1.400", undefined]);
+      await newer.connection.consumeLimitReset("grant-abc");
+      assert.strictEqual(newer.calls[1].headers.get("user-agent"), "claude-cli/2.1.400 (external, cli)");
+
+      // An older extension, or none at all, never presents less than the fallback.
+      const older = connectionFor(reset, undefined, () => ["2.0.1"]);
+      await older.connection.consumeLimitReset("grant-abc");
+      assert.strictEqual(older.calls[1].headers.get("user-agent"), "claude-cli/2.1.318 (external, cli)");
+    });
+
+    test("replays the same request id after a refused token, so a replay cannot cost a second reset", async () => {
+      const { connection, calls } = connectionFor((attempt) => attempt === 1
+        ? new Response("expired", { status: 401 })
+        : new Response(JSON.stringify({ result: "reset" }), { status: 200 }));
+
+      await connection.consumeLimitReset("grant-abc");
+
+      const claims = calls.filter((call) => call.url.endsWith("/reset_rate_limits"));
+      assert.strictEqual(claims.length, 2);
+      assert.strictEqual(claims[0].body, claims[1].body);
+      assert.strictEqual(claims[1].headers.get("authorization"), "Bearer access-token-2");
+    });
+
+    test("does not refresh the token for a 403, which refuses the account rather than the token", async () => {
+      const { connection, calls } = connectionFor(() => new Response("forbidden", { status: 403 }));
+
+      await assert.rejects(connection.consumeLimitReset("grant-abc"), (error: Error) =>
+        isLimitResetNotSpent(error) && /403 forbidden/.test(error.message));
+      assert.ok(!calls.some((call) => call.url === CLAUDE_TOKEN_ENDPOINT));
+    });
+
+    test("a refusal from the server is known not to have spent anything", async () => {
+      const { connection } = connectionFor(() =>
+        new Response(JSON.stringify({ result: "not_limited", reason: "needs_limit" }), { status: 200 }));
+
+      await assert.rejects(connection.consumeLimitReset("grant-abc"), (error: Error) =>
+        isLimitResetNotSpent(error) && /not_limited \(needs_limit\)/.test(error.message));
+    });
+
+    test("a 5xx or an unreadable answer may have spent the reset", async () => {
+      for (const answer of [new Response("oops", { status: 502 }), new Response("<html>", { status: 200 })]) {
+        const { connection } = connectionFor(() => answer.clone());
+        await assert.rejects(connection.consumeLimitReset("grant-abc"), (error: Error) => !isLimitResetNotSpent(error));
+      }
+    });
+
+    test("sends no claim when the token's organization cannot be read", async () => {
+      const { connection, calls } = connectionFor(
+        () => new Response("{}", { status: 200 }),
+        () => new Response(JSON.stringify({ account: {} }), { status: 200 }),
+      );
+
+      await assert.rejects(connection.consumeLimitReset("grant-abc"), (error: Error) =>
+        isLimitResetNotSpent(error) && /not in an organization/.test(error.message));
+      assert.ok(!calls.some((call) => call.url.endsWith("/reset_rate_limits")));
     });
   });
 });

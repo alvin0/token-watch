@@ -217,11 +217,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
         break;
       case "consumeLimitReset":
         if (typeof message.requestId !== "string" || !message.requestId
+          || (message.provider !== "codex" && message.provider !== "claude")
           || typeof message.resetId !== "string" || !message.resetId) {
           console.warn("[TokenWatch] ignored a usage limit reset activation with an invalid payload");
           break;
         }
-        this.usageStatus.consumeCodexLimitReset(message.resetId).then(
+        this.usageStatus.consumeLimitReset(message.provider, message.resetId).then(
           () => this.postMessage({ type: "limitResetConsumed", requestId: message.requestId }),
           (error) => {
             console.warn("[TokenWatch] usage limit reset activation failed:", error);

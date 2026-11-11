@@ -1,6 +1,10 @@
 import * as assert from "node:assert";
 import * as vscode from "vscode";
-import { LIMIT_RESET_REMINDERS_STORAGE_KEY, LimitResetReminder } from "../../host/LimitResetReminder.js";
+import {
+  CLAUDE_LIMIT_RESET_REMINDERS_STORAGE_KEY,
+  LIMIT_RESET_REMINDERS_STORAGE_KEY,
+  LimitResetReminder,
+} from "../../host/LimitResetReminder.js";
 import { withLimitResetDetails } from "../../host/limitResets.js";
 import { LIMIT_RESET_EXPIRY_WARNING_MS } from "../../shared/codexUsage.js";
 
@@ -33,6 +37,23 @@ suite("Usage limit reset reminder", () => {
     assert.ok(messages[0].includes("Token Watch"));
     assert.ok(/expires/i.test(messages[0]));
     assert.deepStrictEqual(state.get(LIMIT_RESET_REMINDERS_STORAGE_KEY), ["reset-1"]);
+  });
+
+  test("keeps each provider's reminders apart, so one never re-warns the other", async () => {
+    const { reminder, messages, state } = build();
+    const codex = { availableCount: 1, resets: [{ id: "codex-1", expiresAtUtc: inDays(3) }] };
+    const claude = { availableCount: 1, resets: [{ id: "claude-1", expiresAtUtc: inDays(3) }] };
+
+    await reminder.evaluate(codex, "codex");
+    await reminder.evaluate(claude, "claude");
+    await reminder.evaluate(codex, "codex");
+    await reminder.evaluate(claude, "claude");
+
+    assert.strictEqual(messages.length, 2);
+    assert.ok(messages[0].includes("Codex"));
+    assert.ok(messages[1].includes("Claude"));
+    assert.deepStrictEqual(state.get(LIMIT_RESET_REMINDERS_STORAGE_KEY), ["codex-1"]);
+    assert.deepStrictEqual(state.get(CLAUDE_LIMIT_RESET_REMINDERS_STORAGE_KEY), ["claude-1"]);
   });
 
   test("stays quiet for resets that are further out, already expired, or undated", async () => {

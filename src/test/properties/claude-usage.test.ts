@@ -1,5 +1,5 @@
 import * as assert from "node:assert";
-import { claudePlanInfo, mapClaudeUsageToRateLimitInfo } from "../../shared/claudeUsage.js";
+import { claudePlanInfo, mapClaudeLimitResets, mapClaudeUsageToRateLimitInfo } from "../../shared/claudeUsage.js";
 
 suite("Claude usage mapping", () => {
   test("maps Claude Code five-hour and weekly quota windows", () => {
@@ -101,5 +101,88 @@ suite("Claude usage mapping", () => {
     });
 
     assert.ok(!info?.windows.some((window) => /fable/i.test(window.label)));
+  });
+});
+
+suite("Claude usage limit resets mapping", () => {
+  test("lists usable grants soonest expiry first and sums the resets left", () => {
+    const now = Date.parse("2026-11-15T00:00:00.000Z");
+    const info = mapClaudeLimitResets({
+      eligible: true,
+      grants: [
+        { id: "grant-late", label: "Weekly reset", resets_left: 2, ends_at: "2026-12-20T00:00:00.000Z", usable_now: true },
+        { id: "grant-soon", label: "5-hour reset", resets_left: 1, ends_at: "2026-12-01T00:00:00.000Z", usable_now: true },
+        { id: "grant-paused", label: "Paused", resets_left: 3, paused: true },
+        { id: "grant-spent", label: "Spent", resets_left: 0 },
+        { id: "grant-expired", label: "Expired", resets_left: 1, ends_at: "2026-11-14T00:00:00.000Z" },
+        { id: "Grant With Spaces", label: "Malformed id", resets_left: 1 },
+        { id: "grant-half", label: "Fractional", resets_left: 1.5 },
+        null,
+      ],
+    }, now);
+
+    assert.deepStrictEqual(info, {
+      availableCount: 3,
+      resets: [
+        { id: "grant-soon", title: "5-hour reset", expiresAtUtc: Date.parse("2026-12-01T00:00:00.000Z") },
+        { id: "grant-late", title: "Weekly reset (×2)", expiresAtUtc: Date.parse("2026-12-20T00:00:00.000Z") },
+      ],
+    });
+  });
+
+  test("puts the server's next grant first", () => {
+    const info = mapClaudeLimitResets({
+      eligible: true,
+      next_grant_id: "later",
+      grants: [
+        { id: "sooner", resets_left: 1, usable_now: true, ends_at: "2026-12-01T00:00:00.000Z" },
+        { id: "later", resets_left: 1, usable_now: true, ends_at: "2026-12-20T00:00:00.000Z" },
+      ],
+    }, Date.parse("2026-11-15T00:00:00.000Z"));
+
+    assert.deepStrictEqual(info?.resets?.map((reset) => reset.id), ["later", "sooner"]);
+  });
+
+  test("keeps a grant that cannot be used yet, marked so it is not offered", () => {
+    const info = mapClaudeLimitResets({
+      eligible: true,
+      grants: [
+        { id: "needs-limit", resets_left: 1, usable_now: false },
+        { id: "unstated", resets_left: 1 },
+      ],
+    });
+
+    assert.deepStrictEqual(info, {
+      availableCount: 2,
+      resets: [{ id: "needs-limit", usableNow: false }, { id: "unstated", usableNow: false }],
+    });
+  });
+
+  test("shows nothing for an ineligible account or one without usable grants", () => {
+    assert.strictEqual(mapClaudeLimitResets(undefined), undefined);
+    assert.strictEqual(mapClaudeLimitResets(null), undefined);
+    assert.strictEqual(mapClaudeLimitResets({ eligible: false, grants: [{ id: "g", resets_left: 1 }] }), undefined);
+    assert.strictEqual(mapClaudeLimitResets({ eligible: true, grants: [] }), undefined);
+  });
+
+  test("flags resets withheld for an outdated Claude Code, and only that reason", () => {
+    const withReason = (reason: string) => mapClaudeUsageToRateLimitInfo({
+      five_hour: { utilization: 10 },
+      cedar_ember: { eligible: false, ineligible_reason: reason, grants: [] },
+    });
+
+    assert.strictEqual(withReason("cli_version")?.limitResetsNeedNewerCli, true);
+    assert.strictEqual(withReason("surface")?.limitResetsNeedNewerCli, undefined);
+    assert.strictEqual(withReason("tier")?.limitResetsNeedNewerCli, undefined);
+    assert.strictEqual(mapClaudeUsageToRateLimitInfo({ five_hour: { utilization: 10 } })?.limitResetsNeedNewerCli, undefined);
+  });
+
+  test("attaches the resets to the Claude quota", () => {
+    const info = mapClaudeUsageToRateLimitInfo({
+      five_hour: { utilization: 100, resets_at: "2026-12-01T05:00:00.000Z" },
+      cedar_ember: { eligible: true, grants: [{ id: "grant-1", resets_left: 1, usable_now: true }] },
+    });
+
+    assert.deepStrictEqual(info?.limitResets, { availableCount: 1, resets: [{ id: "grant-1" }] });
   });
 });

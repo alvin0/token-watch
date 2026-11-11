@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import type { UsageLimitReset } from "../../shared/protocol";
+import type { UsageLimitReset, UsageProvider } from "../../shared/protocol";
 import { useTranslation } from "../i18n";
 import { useModalFocus } from "../hooks/useModalFocus";
 import { useStore } from "../store";
@@ -14,11 +14,13 @@ import { formatLimitResetExpiry } from "../limitResets";
  * acknowledgement rather than a single stray click on a small button.
  */
 export function LimitResetConfirmDialog({
+  provider,
   reset,
   availableCount,
   locale,
   onClose,
 }: {
+  provider: UsageProvider;
   reset: UsageLimitReset;
   availableCount: number;
   locale: string;
@@ -43,7 +45,7 @@ export function LimitResetConfirmDialog({
     setActivating(true);
     setError(undefined);
     try {
-      await consumeLimitReset(reset.id);
+      await consumeLimitReset(provider, reset.id);
       onClose();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : t("quota.limitResetError"));
@@ -84,7 +86,7 @@ export function LimitResetConfirmDialog({
 
         <div className="tw-min-h-0 tw-flex-1 tw-overflow-y-auto tw-p-3">
           <div className="tw-rounded-md tw-border tw-border-control tw-bg-recessed tw-px-2.5 tw-py-2 tw-text-[10px] tw-leading-relaxed tw-text-[var(--vscode-descriptionForeground)]">
-            {t("quota.limitResetConfirmDescription")}
+            {t(provider === "claude" ? "quota.limitResetConfirmDescriptionClaude" : "quota.limitResetConfirmDescription")}
           </div>
 
           <dl className="tw-mt-2.5 tw-space-y-1.5 tw-text-[11px]">
