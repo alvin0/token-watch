@@ -41,7 +41,7 @@ const unknownModelName = fc.string({ minLength: 1, maxLength: 20 }).filter(
 
 suite("PricingEngine property tests", () => {
   // Expected USD totals use the providers' published per-MTok prices, checked
-  // 2026-11-10, independently of the bundled per-1K representation.
+  // 2026-11-18, independently of the bundled per-1K representation.
   // https://developers.openai.com/api/docs/pricing
   // https://platform.claude.com/docs/en/about-claude/pricing
   for (const { model, expectedUsd } of [
@@ -50,7 +50,10 @@ suite("PricingEngine property tests", () => {
     { model: "claude-mythos-5.2", expectedUsd: 0.21 },
     { model: "claude-mythos-5-2", expectedUsd: 0.21 },
     { model: "gpt-6-cyber", expectedUsd: 0.6 },
-    { model: "gpt-6-rosalind", expectedUsd: 0.45 },
+    { model: "gpt-6-rosalind", expectedUsd: 0.3 },
+    { model: "gpt-6.2-astra", expectedUsd: 0.22 },
+    { model: "gpt-6.2-sol", expectedUsd: 0.055 },
+    { model: "gpt-6.2-astra-law", expectedUsd: 0.22 },
   ]) {
     test(`${model} prices a cached session without falling back`, () => {
       const engine = new PricingEngine(DEFAULT_PRICING);

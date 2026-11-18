@@ -2,6 +2,17 @@
 
 All notable changes to the "token-watch" extension will be documented in this file.
 
+## [0.2.13]
+
+### Added
+
+- Standard API pricing for GPT-6.2 Astra and Sol, including long-context
+  rates, and GPT-6.2 Astra for Law.
+
+### Changed
+
+- Updated GPT-6 Rosalind to OpenAI's current promotional API rate.
+
 ## [0.2.12]
 
 ### Added

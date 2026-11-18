@@ -76,12 +76,19 @@ export const DEFAULT_PRICING: PricingTable = {
   "gpt-6.1-sol-long-context": { inputPer1K: 0.004, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.005, outputPer1K: 0.015 },
   "gpt-6.1-terra": { inputPer1K: 0.001, cachedInputPer1K: 0.00005, cacheCreationPer1K: 0.00125, outputPer1K: 0.005 },
   "gpt-6.1-terra-long-context": { inputPer1K: 0.002, cachedInputPer1K: 0.0001, cacheCreationPer1K: 0.0025, outputPer1K: 0.0075 },
+  // GPT-6.2 (Standard pricing with 30-minute cache writes)
+  // https://developers.openai.com/api/docs/pricing
+  "gpt-6.2-astra": { inputPer1K: 0.008, cachedInputPer1K: 0.0004, cacheCreationPer1K: 0.01, outputPer1K: 0.04 },
+  "gpt-6.2-astra-long-context": { inputPer1K: 0.016, cachedInputPer1K: 0.0008, cacheCreationPer1K: 0.02, outputPer1K: 0.06 },
+  "gpt-6.2-sol": { inputPer1K: 0.002, cachedInputPer1K: 0.0001, cacheCreationPer1K: 0.0025, outputPer1K: 0.01 },
+  "gpt-6.2-sol-long-context": { inputPer1K: 0.004, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.005, outputPer1K: 0.015 },
   // Specialized GPT-6 models (standard pricing; 30-minute cache writes where supported)
   // https://developers.openai.com/api/docs/pricing
   "gpt-6-cyber": { inputPer1K: 0.02, cachedInputPer1K: 0.002, cacheCreationPer1K: 0.025, outputPer1K: 0.1 },
   "gpt-6-cyber-long-context": { inputPer1K: 0.04, cachedInputPer1K: 0.004, cacheCreationPer1K: 0.05, outputPer1K: 0.15 },
-  "gpt-6-rosalind": { inputPer1K: 0.015, cachedInputPer1K: 0.0015, cacheCreationPer1K: 0.01875, outputPer1K: 0.075 },
-  // Astra for Law promotional pricing is available through at least 2026-12-31.
+  // Rosalind and Astra for Law promotional pricing is available through at least 2026-12-31.
+  "gpt-6-rosalind": { inputPer1K: 0.01, cachedInputPer1K: 0.001, cacheCreationPer1K: 0.0125, outputPer1K: 0.05 },
+  "gpt-6.2-astra-law": { inputPer1K: 0.008, cachedInputPer1K: 0.0004, cacheCreationPer1K: 0.01, outputPer1K: 0.04 },
   "gpt-6-astra-law": { inputPer1K: 0.01, cachedInputPer1K: 0.001, outputPer1K: 0.05 },
   "chat-latest": { inputPer1K: 0.005, cachedInputPer1K: 0.0005, outputPer1K: 0.03 },
   // GPT-4 / o-series
@@ -95,7 +102,7 @@ export const DEFAULT_PRICING: PricingTable = {
   "o4-mini": { inputPer1K: 0.0011, cachedInputPer1K: 0.000275, outputPer1K: 0.0044 },
   "codex-mini-latest": { inputPer1K: 0.0015, cachedInputPer1K: 0.000375, outputPer1K: 0.006 },
   "codex-auto-review": { inputPer1K: 0.0025, cachedInputPer1K: 0.00025, outputPer1K: 0.015 },
-  // Claude (cacheCreationPer1K uses Anthropic's 5m cache write price)
+  // Claude (5-minute cache writes; Claude 5 rates verified 2026-11-18)
   // Opus 5.5 and Sonnet 5.5 read cache at 0.05x input instead of the usual 0.1x.
   // https://platform.claude.com/docs/en/about-claude/pricing
   "claude-opus-5.5": { inputPer1K: 0.004, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.005, outputPer1K: 0.02 },
@@ -114,8 +121,7 @@ export const DEFAULT_PRICING: PricingTable = {
   "claude-opus-4": { inputPer1K: 0.015, cachedInputPer1K: 0.0015, cacheCreationPer1K: 0.01875, outputPer1K: 0.075 },
   "claude-opus-4-20250514": { inputPer1K: 0.015, cachedInputPer1K: 0.0015, cacheCreationPer1K: 0.01875, outputPer1K: 0.075 },
   // Fable 5.2 and Mythos 5.2 use $8/$40 per MTok input/output, $10 for 5m
-  // cache writes, and $0.20 for cache reads (verified 2026-11-10).
-  // https://platform.claude.com/docs/en/about-claude/pricing
+  // cache writes, and $0.20 for cache reads.
   "claude-fable-5.2": { inputPer1K: 0.008, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.01, outputPer1K: 0.04 },
   "claude-fable-5-2": { inputPer1K: 0.008, cachedInputPer1K: 0.0002, cacheCreationPer1K: 0.01, outputPer1K: 0.04 },
   // Fable 5.1 keeps Fable 5's input/output/cache-write rates but reads cache at
